@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# Travel Album Site V2 .gitignore
+#
+# 原则：
+# 1. 运行时产物、机器特定文件、敏感信息不入库。
+# 2. 锁文件 (package-lock.json / pnpm-lock.yaml / yarn.lock) 必须入库，
+#    本文件不忽略它们。
+# 3. .env.example 必须入库 (P0.T4)；真实 .env 永远不入库。
+# ---------------------------------------------------------------------------
+
+# ---- Node / TypeScript ----
+node_modules/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.turbo/
+.cache/
+.parcel-cache/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# ---- 日志 ----
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- 环境变量 ----
+.env
+.env.*
+!.env.example
+
+# ---- 项目运行时数据（design §5.2 / §1.2） ----
+# 用户上传的原始 / 派生文件，永远不入库
+storage/
+# SQLite 数据库与 WAL 文件
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ---- 临时与上传缓存 ----
+tmp/
+temp/
+.uploads/
+
+# ---- 测试产物 ----
+.nyc_output/
+junit.xml
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---- 编辑器 / IDE ----
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# ---- 其他 ----
+*.pid
+*.seed
+*.pid.lock
