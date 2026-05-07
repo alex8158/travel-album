@@ -65,7 +65,22 @@ npm run format:check   # Prettier 仅检查
 
 > 当前 `server/src/index.ts` 仅打印一行占位日志，HTTP 路由、数据库、Worker 等功能将在后续任务（P0.T4 起）逐步引入。
 
-前端（`client/`）尚未初始化，将在 P0.T3 创建。
+前端（`client/`，由 P0.T3 初始化）：
+
+```bash
+cd client
+npm install            # 首次安装依赖
+npm run dev            # Vite dev server，默认 http://localhost:5173
+npm run build          # 类型检查 + 生产打包到 dist/
+npm run preview        # 预览生产构建
+npm run typecheck      # tsc -b（仅类型检查）
+npm run lint           # ESLint
+npm run lint:fix       # ESLint 自动修复
+npm run format         # Prettier 写入
+npm run format:check   # Prettier 仅检查
+```
+
+> 当前 `client/src/App.tsx` 只挂了 `/` 首页占位与 `*` 404 兜底；其余业务路由按 [docs/design.md](docs/design.md) §2.2 在各自任务中逐步引入。
 
 ## 开发执行规则
 
