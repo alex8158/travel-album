@@ -42,9 +42,30 @@
 
 ## 其他依赖
 
-- **Node.js**：建议 LTS 版本（具体版本在 P0.T2 初始化 `package.json` 时确定）。
-- **SQLite**：第一版数据库；项目使用 `better-sqlite3`，会随 npm 安装。
+- **Node.js**：`>=20.11.0`（在 `server/package.json` 的 `engines` 中声明，覆盖 Node 20 LTS 与更新版本）。
+- **SQLite**：第一版数据库；项目计划使用 `better-sqlite3`（在 P0.T5 引入，目前尚未安装）。
 - **磁盘空间**：原始图片 / 视频 + 派生文件均落盘到 `storage/`，请预留足够空间。
+
+## 开发命令
+
+后端（`server/`，由 P0.T2 初始化）：
+
+```bash
+cd server
+npm install            # 首次安装依赖
+npm run build          # tsc 编译到 dist/
+npm run typecheck      # 仅做类型检查，不输出
+npm run dev            # tsx watch 热重载启动 src/index.ts
+npm run start          # 运行已构建的 dist/index.js
+npm run lint           # ESLint
+npm run lint:fix       # ESLint 自动修复
+npm run format         # Prettier 写入
+npm run format:check   # Prettier 仅检查
+```
+
+> 当前 `server/src/index.ts` 仅打印一行占位日志，HTTP 路由、数据库、Worker 等功能将在后续任务（P0.T4 起）逐步引入。
+
+前端（`client/`）尚未初始化，将在 P0.T3 创建。
 
 ## 开发执行规则
 
