@@ -48,7 +48,16 @@
 
 ## 开发命令
 
-后端（`server/`，由 P0.T2 初始化）：
+> 后端启动会先加载 `.env`（先找 `server/.env`，再找仓库根 `.env`，先到先得），由 [`server/src/config/index.ts`](server/src/config/index.ts) 用 zod 校验。`.env.example` 已列出全部变量；只有 `NODE_ENV` 没有默认值，缺失时启动会以非零退出码报错。
+
+首次拉取后请先准备 `.env`：
+
+```bash
+cp .env.example .env   # 仓库根；按需修改 NODE_ENV / PORT / 阈值等
+# 或：cp .env.example server/.env
+```
+
+后端（`server/`，由 P0.T2 初始化、P0.T4 接入配置层）：
 
 ```bash
 cd server
@@ -63,7 +72,7 @@ npm run format         # Prettier 写入
 npm run format:check   # Prettier 仅检查
 ```
 
-> 当前 `server/src/index.ts` 仅打印一行占位日志，HTTP 路由、数据库、Worker 等功能将在后续任务（P0.T4 起）逐步引入。
+> 当前 `server/src/index.ts` 启动时只做配置加载与摘要打印；HTTP 路由、数据库、Worker、ffmpeg 检测等功能将在后续任务（P0.T5 起）逐步引入。
 
 前端（`client/`，由 P0.T3 初始化）：
 
