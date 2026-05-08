@@ -357,3 +357,69 @@ a {
   color: #1f2328;
   font-size: 1.05rem;
 }
+
+/* ---- Delete confirmation modal (P1.T7) --------------------------- */
+
+.btn-danger {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: #cf222e;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-weight: 500;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-danger:hover {
+  background: #a40e26;
+}
+
+.btn-danger[disabled] {
+  background: #d39499;
+  cursor: not-allowed;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.modal-card {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+}
+
+.modal-card p {
+  margin: 0 0 0.75rem;
+  color: #1f2328;
+  line-height: 1.5;
+}
+
+.modal-card p:last-of-type {
+  margin-bottom: 0;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}

@@ -149,3 +149,19 @@ export async function updateTrip(id: string, patch: UpdateTripInput): Promise<Tr
   const body = (await res.json()) as SingleTripResponse;
   return body.trip;
 }
+
+/**
+ * Soft-delete a trip. The server marks `deleted_at` and returns
+ * `{ deleted: true }`; we discard the body. The trip remains in the
+ * database (recoverable) but disappears from default list / detail
+ * queries — design.md §4.3, CLAUDE.md §2.4.
+ */
+export async function deleteTrip(id: string): Promise<void> {
+  const res = await fetch(`/api/trips/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+}
