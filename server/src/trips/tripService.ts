@@ -16,9 +16,9 @@
 //      surface to clients with the same vocabulary as zod issues.
 
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
 
 import { NotFoundError, ValidationError } from "../errors/AppError.js";
+import { parseOrThrow } from "../util/zodParse.js";
 import { TripRepository } from "./tripRepository.js";
 import {
   createTripSchema,
@@ -105,20 +105,6 @@ export class TripService {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new ValidationError("Validation failed", {
-      issues: result.error.issues.map((i) => ({
-        path: i.path.join(".") || "(root)",
-        message: i.message,
-        code: i.code,
-      })),
-    });
-  }
-  return result.data;
 }
 
 function translateDbConstraintError(err: unknown): unknown {

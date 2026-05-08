@@ -11,6 +11,7 @@ import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { createLogger, type Logger } from "./logger.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
+import { TripRepository, TripService } from "./trips/index.js";
 
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
 
@@ -133,13 +134,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // 7) Domain services. The TripService is stateless beyond the DB
+  // handle; future services (media, jobs) follow the same pattern.
+  const tripService = new TripService(new TripRepository(dbHandle.db));
+
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
 
-  // 7) HTTP server.
+  // 8) HTTP server.
   const app = createApp({
     logger,
     capabilities,
     storage,
+    tripService,
     debugRoutes: config.nodeEnv !== "production",
   });
 
@@ -150,7 +156,7 @@ async function main(): Promise<void> {
     );
   });
 
-  // 8) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
+  // 9) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
   // exceptions: stop accepting new connections, close the DB, exit.
   let shuttingDown = false;
   const shutdown = (reason: string, exitCode: number): void => {

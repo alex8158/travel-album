@@ -232,6 +232,62 @@ npm run format:check   # Prettier 仅检查
   # 预期 22/22 PASS（含 11 项负面用例覆盖 zod 与 DB CHECK 翻译）
   ```
 
+### Trip API 路由（P1.T3）
+
+挂载在 `/api/trips`，由 [server/src/routes/trips.ts](server/src/routes/trips.ts) 实现。所有 handler 通过 `asyncHandler`（[server/src/middleware/asyncHandler.ts](server/src/middleware/asyncHandler.ts)）兜底 Promise rejection，错误统一走 P0.T6 的 errorHandler，响应都带 `requestId`。
+
+| 方法 路径 | 状态码 | 成功响应 |
+|---|---|---|
+| `POST /api/trips` | 201 | `{ "trip": { ... } }` |
+| `GET /api/trips` | 200 | `{ "trips": [ ... ] }` |
+| `GET /api/trips/:id` | 200 | `{ "trip": { ... } }` |
+| `PATCH /api/trips/:id` | 200 | `{ "trip": { ... } }` |
+| `DELETE /api/trips/:id` | 200 | `{ "deleted": true }` |
+| `POST /api/trips/:id/cover` | 200 | `{ "trip": { ... } }`，body `{ "coverMediaId": "..." }` |
+
+校验在两层：
+
+- **路由层**：id 不为空（`req.params.id`）、PATCH 非空 body、`POST /:id/cover` 必填且只接 `coverMediaId`。
+- **Service 层**：通过 P1.T2 的 zod schemas 校验所有字段（标题、日期、跨字段顺序等）；UUID / 实体 id 格式与 storage 层完全一致。
+
+错误一律返回统一形态：
+
+```json
+{ "error": { "code": "VALIDATION_FAILED", "message": "...", "requestId": "..." } }
+```
+
+`code` 取值：`VALIDATION_FAILED`(400/422)、`NOT_FOUND`(404)、`INTERNAL_ERROR`(500)。
+
+`POST /:id/cover` 仅做 `coverMediaId` 的格式校验，不验存在性（media_items 表在 P2.T1 才建）。返回的 trip 中 `coverMediaId` 直接是 path-safe 字符串，前端封面 URL 由后续阶段的 storage / 数据库连结实现。
+
+curl 示例：
+
+```bash
+# 创建
+curl -i -X POST http://localhost:3000/api/trips \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Tokyo 2026","destination":"Tokyo"}'
+
+# 列表
+curl -s http://localhost:3000/api/trips | jq
+
+# 获取
+curl -s http://localhost:3000/api/trips/<UUID> | jq
+
+# 更新
+curl -i -X PATCH http://localhost:3000/api/trips/<UUID> \
+  -H "Content-Type: application/json" \
+  -d '{"description":"Spring break"}'
+
+# 设置封面（仅格式校验）
+curl -i -X POST http://localhost:3000/api/trips/<UUID>/cover \
+  -H "Content-Type: application/json" \
+  -d '{"coverMediaId":"some-media-id-001"}'
+
+# 软删除
+curl -i -X DELETE http://localhost:3000/api/trips/<UUID>
+```
+
 前端（`client/`，由 P0.T3 初始化）：
 
 ```bash

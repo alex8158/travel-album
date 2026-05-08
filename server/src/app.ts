@@ -24,8 +24,10 @@ import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js"
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
 import { makeHealthRouter } from "./routes/health.js";
+import { makeTripsRouter } from "./routes/trips.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
+import type { TripService } from "./trips/index.js";
 
 export interface CreateAppOptions {
   readonly logger: Logger;
@@ -33,6 +35,8 @@ export interface CreateAppOptions {
   readonly capabilities: Capabilities;
   /** Storage provider; surfaced through /api/health for diagnostics. */
   readonly storage: LocalStorageProvider;
+  /** Trip domain service powering /api/trips (P1.T3). */
+  readonly tripService: TripService;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -41,7 +45,7 @@ export interface CreateAppOptions {
 }
 
 export function createApp(opts: CreateAppOptions): Express {
-  const { logger, capabilities, storage, debugRoutes } = opts;
+  const { logger, capabilities, storage, tripService, debugRoutes } = opts;
 
   const app = express();
   app.disable("x-powered-by");
@@ -59,6 +63,9 @@ export function createApp(opts: CreateAppOptions): Express {
   // Capability-aware health endpoint (P0.T8). Reads from a cached
   // snapshot; never re-spawns ffmpeg / ffprobe.
   app.use("/api/health", makeHealthRouter({ capabilities, storage }));
+
+  // Trip CRUD (P1.T3).
+  app.use("/api/trips", makeTripsRouter({ service: tripService }));
 
   if (debugRoutes) {
     // Demonstrates the AppError path: chosen status, code, message, details.
