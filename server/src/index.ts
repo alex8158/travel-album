@@ -1,97 +1,156 @@
-// Entry point. P0.T5 wires the SQLite connection + migration runner on
-// top of the configuration loader from P0.T4. The actual HTTP server,
-// storage provider, ffmpeg detection, and queue workers are introduced
-// by:
-//   P0.T6 structured logging + error responses
+// Entry point. P0.T6 wires the Express app, structured logger, and
+// graceful-shutdown signal handlers on top of the configuration loader
+// (P0.T4) and SQLite + migrations (P0.T5).
+//
+// Subsequent tasks layer in:
 //   P0.T7 StorageProvider abstraction
 //   P0.T8 ffmpeg/ffprobe startup detection + /api/health
 //   P1.T3 Trip routes
 // See docs/tasks.md.
 
+import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
+import { createLogger, type Logger } from "./logger.js";
 
-function printSummary(config: Config, dbHandle: DbHandle, migrationResult: MigrationResult): void {
-  const lines: string[] = [
-    "travel-album server: configuration + database initialised (P0.T5).",
-    `  NODE_ENV                  = ${config.nodeEnv}`,
-    `  PORT                      = ${config.port}`,
-    `  STORAGE_DRIVER            = ${config.storage.driver}`,
-    `  STORAGE_LOCAL_ROOT        = ${config.storage.localRoot}`,
-    `  DATABASE_PATH (raw)       = ${config.database.path}`,
-    `  DATABASE_PATH (resolved)  = ${dbHandle.resolvedPath}`,
-    `  PRAGMA foreign_keys       = ${dbHandle.foreignKeysPragma}`,
-    `  PRAGMA journal_mode       = ${dbHandle.journalModePragma}`,
-    `  migrations directory      = ${migrationResult.migrationsDir}`,
-    `  migrations total files    = ${migrationResult.totalFiles}`,
-    `  migrations applied now    = ${
-      migrationResult.appliedNow.length === 0 ? "(none)" : migrationResult.appliedNow.join(", ")
-    }`,
-    `  migrations already done   = ${
-      migrationResult.alreadyApplied.length === 0
-        ? "(none)"
-        : migrationResult.alreadyApplied.join(", ")
-    }`,
-    `  IMAGE_WORKER_CONCURRENCY  = ${config.workers.imageConcurrency}`,
-    `  VIDEO_WORKER_CONCURRENCY  = ${config.workers.videoConcurrency}`,
-    `  AI_WORKER_CONCURRENCY     = ${config.workers.aiConcurrency}`,
-    `  AI_ENABLED                = ${config.ai.enabled}`,
-    `  PERMANENT_DELETE_ENABLED  = ${config.delete.permanentDeleteEnabled}`,
-    `  FFMPEG_PATH               = ${config.ffmpeg.ffmpegPath ?? "(from PATH)"}`,
-    `  FFPROBE_PATH              = ${config.ffmpeg.ffprobePath ?? "(from PATH)"}`,
-    `  upload allowed image ext  = ${config.upload.allowedImageExt.join(", ")}`,
-    `  upload allowed video ext  = ${config.upload.allowedVideoExt.join(", ")}`,
-  ];
-  if (config.meta.loadedDotenvFiles.length > 0) {
-    lines.push(`  .env files loaded         = ${config.meta.loadedDotenvFiles.join(", ")}`);
-  } else {
-    lines.push("  .env files loaded         = (none; using process.env / defaults only)");
+const FORCE_EXIT_TIMEOUT_MS = 10_000;
+
+function logStartup(
+  logger: Logger,
+  config: Config,
+  dbHandle: DbHandle,
+  migrationResult: MigrationResult,
+): void {
+  logger.info(
+    {
+      config: {
+        nodeEnv: config.nodeEnv,
+        port: config.port,
+        storage: config.storage,
+        database: { path: config.database.path },
+        workers: config.workers,
+        ai: { enabled: config.ai.enabled },
+        delete: config.delete,
+        ffmpegPathSet: config.ffmpeg.ffmpegPath !== undefined,
+        ffprobePathSet: config.ffmpeg.ffprobePath !== undefined,
+      },
+      database: {
+        resolvedPath: dbHandle.resolvedPath,
+        foreignKeys: dbHandle.foreignKeysPragma,
+        journalMode: dbHandle.journalModePragma,
+      },
+      migrations: {
+        appliedNow: migrationResult.appliedNow,
+        alreadyApplied: migrationResult.alreadyApplied,
+        totalFiles: migrationResult.totalFiles,
+      },
+      dotenv: { loaded: config.meta.loadedDotenvFiles },
+    },
+    "server initialised",
+  );
+}
+
+function serializeReason(reason: unknown): unknown {
+  if (reason instanceof Error) {
+    return { name: reason.name, message: reason.message, stack: reason.stack };
   }
-  lines.push("HTTP routes / workers will be wired in subsequent P0 tasks.");
-  console.log(lines.join("\n"));
+  return reason;
 }
 
 function main(): void {
+  // 1) Configuration. No logger yet; failures go to stderr.
   let config: Config;
   try {
     config = loadConfig();
   } catch (err) {
-    if (err instanceof ConfigError) {
-      console.error(`[startup] ${err.message}`);
-    } else if (err instanceof Error) {
-      console.error(`[startup] Unexpected error during configuration: ${err.message}`);
-    } else {
-      console.error("[startup] Unknown error during configuration.");
-    }
+    const msg =
+      err instanceof ConfigError
+        ? err.message
+        : err instanceof Error
+          ? `Unexpected error during configuration: ${err.message}`
+          : "Unknown error during configuration.";
+    process.stderr.write(`[startup] ${msg}\n`);
     process.exit(1);
   }
 
+  // 2) Logger. From here on, all errors go through structured logging.
+  const logger = createLogger({ nodeEnv: config.nodeEnv });
+
+  // 3) Database.
   let dbHandle: DbHandle;
   try {
     dbHandle = openDatabase(config.database.path);
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`[startup] Failed to open database: ${detail}`);
+    logger.fatal({ err: serializeReason(err) }, "failed to open database");
     process.exit(1);
   }
 
+  // 4) Migrations.
   let migrationResult: MigrationResult;
   try {
     migrationResult = runMigrations(dbHandle.db);
   } catch (err) {
     closeDatabase(dbHandle);
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(`[startup] Migration failed: ${detail}`);
+    logger.fatal({ err: serializeReason(err) }, "migration failed");
     process.exit(1);
   }
 
-  printSummary(config, dbHandle, migrationResult);
+  logStartup(logger, config, dbHandle, migrationResult);
 
-  // Close cleanly so WAL gets checkpointed before process exit.
-  // Once the HTTP server is wired up (P1.T3), this close moves to a
-  // shutdown handler instead.
-  closeDatabase(dbHandle);
+  // 5) HTTP server.
+  const app = createApp({
+    logger,
+    debugRoutes: config.nodeEnv !== "production",
+  });
+
+  const server = app.listen(config.port, () => {
+    logger.info(
+      { port: config.port, address: `http://localhost:${config.port}` },
+      "http server listening",
+    );
+  });
+
+  // 6) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
+  // exceptions: stop accepting new connections, close the DB, exit.
+  let shuttingDown = false;
+  const shutdown = (reason: string, exitCode: number): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ reason }, "shutting down");
+
+    const forceExit = setTimeout(() => {
+      logger.warn(
+        { timeoutMs: FORCE_EXIT_TIMEOUT_MS },
+        "graceful shutdown timed out; forcing exit",
+      );
+      process.exit(1);
+    }, FORCE_EXIT_TIMEOUT_MS);
+    forceExit.unref();
+
+    server.close((closeErr) => {
+      if (closeErr) {
+        logger.error({ err: serializeReason(closeErr) }, "error closing http server");
+      }
+      try {
+        closeDatabase(dbHandle);
+      } catch (dbErr) {
+        logger.error({ err: serializeReason(dbErr) }, "error closing database");
+      }
+      clearTimeout(forceExit);
+      process.exit(closeErr ? 1 : exitCode);
+    });
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT", 0));
+  process.on("SIGTERM", () => shutdown("SIGTERM", 0));
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ err: serializeReason(err) }, "uncaught exception");
+    shutdown("uncaughtException", 1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ reason: serializeReason(reason) }, "unhandled promise rejection");
+  });
 }
 
 main();

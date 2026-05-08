@@ -72,7 +72,7 @@ npm run format         # Prettier 写入
 npm run format:check   # Prettier 仅检查
 ```
 
-> 当前 `server/src/index.ts` 启动时做：加载配置 → 打开 SQLite → 跑迁移 → 打印摘要。HTTP 路由、Worker、ffmpeg 检测等功能将在后续任务（P0.T6 起）逐步引入。
+> 当前 `server/src/index.ts` 启动时做：加载配置 → 打开 SQLite → 跑迁移 → 创建 Express → 监听端口 → 注册优雅关停。HTTP 真实业务路由、Worker、ffmpeg 检测等功能将在后续任务（P0.T7 起）逐步引入。
 
 ### 数据库与迁移（P0.T5）
 
@@ -93,6 +93,36 @@ npm run format:check   # Prettier 仅检查
   #   migrations already done   = 000_init.sql   （再次启动）
   ```
   也可以直接 `sqlite3 data/app.db ".tables"` 看到 `_schema_migrations` 表。
+
+### 日志与错误响应（P0.T6）
+
+- **日志**：`pino`（v9）。开发环境（`NODE_ENV=development`）走 `pino-pretty`，彩色单行可读输出；测试 / 生产输出 line-delimited JSON。日志级别默认 `debug`(dev) / `warn`(test) / `info`(prod)，可被 `LOG_LEVEL` 覆盖。
+- **每个请求**一行结构化日志，字段：`requestId`、`method`、`path`、`statusCode`、`durationMs`；`5xx → error`，`4xx → warn`，其他 `info`。
+- **requestId**：入站若带合理的 `x-request-id` 头（≤128 字符）则透传，否则用 `crypto.randomUUID()` 生成；同名头会回写到响应里。
+- **错误响应统一格式**：
+
+  ```json
+  {
+    "error": {
+      "code": "BAD_REQUEST",
+      "message": "demo bad request",
+      "requestId": "8f3c…",
+      "details": { "hint": "..." }
+    }
+  }
+  ```
+
+  `details` 仅在 `AppError` 携带时出现；未知错误固定回 `code=INTERNAL_ERROR` + `message="Internal server error"`，**永不外泄堆栈或内部信息**（堆栈只写日志）。
+- **如何本地验证**（启动 `npm run dev` 后）：
+
+  ```bash
+  curl -i http://localhost:3000/api/ping                  # 200，{"status":"ok",...}
+  curl -i http://localhost:3000/no-such-path              # 404, code=NOT_FOUND
+  curl -i http://localhost:3000/__debug/app-error         # 400, code=BAD_REQUEST，含 details
+  curl -i http://localhost:3000/__debug/throw             # 500, code=INTERNAL_ERROR，stack 不外泄
+  ```
+
+  `/__debug/*` 仅在 `NODE_ENV !== "production"` 注册，用于本任务及后续验证。
 
 前端（`client/`，由 P0.T3 初始化）：
 
