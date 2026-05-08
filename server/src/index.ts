@@ -1,7 +1,7 @@
-// Entry point. P0.T7 layers the LocalStorageProvider on top of the
-// startup sequence introduced in P0.T4-T6. Subsequent tasks add:
-//   P0.T8 ffmpeg/ffprobe startup detection + /api/health
-//   P1.T3 Trip routes
+// Entry point. P0.T8 layers ffmpeg / ffprobe startup detection and the
+// /api/health route on top of the sequence introduced in P0.T4-T7.
+// Subsequent tasks add:
+//   P1.T3 Trip routes (and the rest of the business surface)
 // See docs/tasks.md.
 
 import { createApp } from "./app.js";
@@ -9,6 +9,7 @@ import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { createLogger, type Logger } from "./logger.js";
+import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
@@ -19,6 +20,7 @@ function logStartup(
   dbHandle: DbHandle,
   migrationResult: MigrationResult,
   storage: LocalStorageProvider,
+  capabilities: Capabilities,
 ): void {
   logger.info(
     {
@@ -48,6 +50,14 @@ function logStartup(
         rawRoot: config.storage.localRoot,
         resolvedRoot: storage.root,
       },
+      capabilities: {
+        ffmpegAvailable: capabilities.ffmpegAvailable,
+        ffmpegVersion: capabilities.ffmpegVersion,
+        ffprobeAvailable: capabilities.ffprobeAvailable,
+        ffprobeVersion: capabilities.ffprobeVersion,
+        permanentDeleteEnabled: capabilities.permanentDeleteEnabled,
+        aiEnabled: capabilities.aiEnabled,
+      },
       dotenv: { loaded: config.meta.loadedDotenvFiles },
     },
     "server initialised",
@@ -61,7 +71,7 @@ function serializeReason(reason: unknown): unknown {
   return reason;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   // 1) Configuration. No logger yet; failures go to stderr.
   let config: Config;
   try {
@@ -110,11 +120,26 @@ function main(): void {
     process.exit(1);
   }
 
-  logStartup(logger, config, dbHandle, migrationResult, storage);
+  // 6) Runtime capabilities (ffmpeg / ffprobe). Probes are bounded by a
+  // 3s timeout each and never throw — missing binaries become structured
+  // warnings, not a fatal error. The result is frozen and consumed by
+  // /api/health and (later) video workers.
+  let capabilities: Capabilities;
+  try {
+    capabilities = await detectCapabilities(config, logger);
+  } catch (err) {
+    closeDatabase(dbHandle);
+    logger.fatal({ err: serializeReason(err) }, "capability detection failed unexpectedly");
+    process.exit(1);
+  }
 
-  // 6) HTTP server.
+  logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
+
+  // 7) HTTP server.
   const app = createApp({
     logger,
+    capabilities,
+    storage,
     debugRoutes: config.nodeEnv !== "production",
   });
 
@@ -125,7 +150,7 @@ function main(): void {
     );
   });
 
-  // 7) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
+  // 8) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
   // exceptions: stop accepting new connections, close the DB, exit.
   let shuttingDown = false;
   const shutdown = (reason: string, exitCode: number): void => {
@@ -167,4 +192,10 @@ function main(): void {
   });
 }
 
-main();
+void main().catch((err) => {
+  // No logger if main() failed before createLogger ran, so fall back to stderr.
+  process.stderr.write(
+    `[startup] unexpected error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+  );
+  process.exit(1);
+});

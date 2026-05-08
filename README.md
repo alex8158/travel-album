@@ -167,6 +167,49 @@ npm run format:check   # Prettier 仅检查
   # 启动日志中应看到 "storage initialised"，含 resolvedRoot 绝对路径。
   ```
 
+### 运行时能力检测 / `/api/health`（P0.T8）
+
+- **启动一次性探测**：server 启动序列里在 storage 初始化之后并行 spawn `ffmpeg -version` 与 `ffprobe -version`（每个 3 秒超时，不走 shell，不可注入），结果冻结进 `Capabilities` 快照。后续 `/api/health` 与未来的视频 Worker（design §8.4）只读这个内存快照，不再 spawn。
+- **缺失行为**：
+  - ffmpeg 或 ffprobe 缺失时，server **正常启动**（不 exit），日志写一条 `warn`，含命令、错误原因（`ENOENT` / `timed out` 等）与安装提示。
+  - 视频任务在出队时会按 `capabilities.ffmpegAvailable` 检查；失败用 `FFMPEG_NOT_AVAILABLE` 错误码（已在 P0.T6 errorCodes 中注册）。
+  - 图片处理路径完全不受影响。
+- **`/api/health` 响应示例**（默认环境，ffmpeg 已装）：
+
+  ```json
+  {
+    "status": "ok",
+    "requestId": "9b4f…",
+    "capabilities": {
+      "ffmpegAvailable": true,
+      "ffmpegVersion": "ffmpeg version 8.1 Copyright (c) 2000-2026 the FFmpeg developers",
+      "ffprobeAvailable": true,
+      "ffprobeVersion": "ffprobe version 8.1 Copyright (c) 2007-2026 the FFmpeg developers",
+      "permanentDeleteEnabled": false,
+      "aiEnabled": false
+    },
+    "storage": {
+      "available": true,
+      "resolvedRoot": "/abs/path/to/storage"
+    }
+  }
+  ```
+
+  > 不暴露 `ffmpegPath` / `ffprobePath` 与错误原文 — 这些只进启动日志。
+- **如何手动验证**：
+
+  ```bash
+  cd server && npm start
+  curl -s http://localhost:3000/api/health | jq
+
+  # 强制 ffmpeg 缺失（路径打偏）：
+  FFMPEG_PATH=/no/such/binary NODE_ENV=development npm start
+  # 启动日志：[warn] ffmpeg not available + 安装提示
+  # /api/health: ffmpegAvailable=false, ffmpegVersion=null
+  # ffprobeAvailable 仍按 PATH 中 ffprobe 决定。
+  ```
+- **`/api/ping` 仍保留**：极轻量 liveness，不跑探测，适合编排器健康检查。
+
 前端（`client/`，由 P0.T3 初始化）：
 
 ```bash

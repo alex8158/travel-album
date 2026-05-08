@@ -1,4 +1,4 @@
-// Express app factory (P0.T6).
+// Express app factory (P0.T6 + P0.T8).
 //
 // Middleware order (matters):
 //   1. express.json (small limit; tighten/expand per route in later tasks)
@@ -23,9 +23,16 @@ import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
+import { makeHealthRouter } from "./routes/health.js";
+import type { Capabilities } from "./runtime/capabilities.js";
+import type { LocalStorageProvider } from "./storage/index.js";
 
 export interface CreateAppOptions {
   readonly logger: Logger;
+  /** Frozen runtime capability snapshot built at startup (P0.T8). */
+  readonly capabilities: Capabilities;
+  /** Storage provider; surfaced through /api/health for diagnostics. */
+  readonly storage: LocalStorageProvider;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -34,7 +41,7 @@ export interface CreateAppOptions {
 }
 
 export function createApp(opts: CreateAppOptions): Express {
-  const { logger, debugRoutes } = opts;
+  const { logger, capabilities, storage, debugRoutes } = opts;
 
   const app = express();
   app.disable("x-powered-by");
@@ -43,11 +50,15 @@ export function createApp(opts: CreateAppOptions): Express {
   app.use(requestIdMiddleware);
   app.use(makeRequestLogger(logger));
 
-  // Minimal liveness probe. The richer health check that surfaces ffmpeg
-  // availability and feature flags lands in P0.T8 at /api/health.
+  // Minimal liveness probe. Returns immediately and does no I/O — useful
+  // for orchestrators that just need a fast 200.
   app.get("/api/ping", (_req, res) => {
     res.json({ status: "ok", time: new Date().toISOString() });
   });
+
+  // Capability-aware health endpoint (P0.T8). Reads from a cached
+  // snapshot; never re-spawns ffmpeg / ffprobe.
+  app.use("/api/health", makeHealthRouter({ capabilities, storage }));
 
   if (debugRoutes) {
     // Demonstrates the AppError path: chosen status, code, message, details.
