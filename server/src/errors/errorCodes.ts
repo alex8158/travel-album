@@ -15,6 +15,13 @@ export const ERROR_CODES = {
   // State machines
   INVALID_STATE_TRANSITION: "INVALID_STATE_TRANSITION",
 
+  // Storage (P0.T7) — see server/src/storage/.
+  STORAGE_INVALID_KEY: "STORAGE_INVALID_KEY",
+  STORAGE_PATH_TRAVERSAL: "STORAGE_PATH_TRAVERSAL",
+  STORAGE_ALREADY_EXISTS: "STORAGE_ALREADY_EXISTS",
+  STORAGE_NOT_FOUND: "STORAGE_NOT_FOUND",
+  STORAGE_IO_ERROR: "STORAGE_IO_ERROR",
+
   // Domain — reserved for later phases. Defined now so the surface is
   // visible in one place and clients can prepare to handle them.
   DUPLICATE_GROUP_RECOMMENDED: "DUPLICATE_GROUP_RECOMMENDED",

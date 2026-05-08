@@ -124,6 +124,49 @@ npm run format:check   # Prettier 仅检查
 
   `/__debug/*` 仅在 `NODE_ENV !== "production"` 注册，用于本任务及后续验证。
 
+### 存储层（P0.T7）
+
+- **抽象接口**：`StorageProvider`（[server/src/storage/StorageProvider.ts](server/src/storage/StorageProvider.ts)）。第一版只有 `LocalStorageProvider` 实现；S3 后续接入时只需新增实现类，业务代码无需改动。
+- **目录布局**（按 [docs/design.md](docs/design.md) §5.2）：
+
+  ```
+  {STORAGE_LOCAL_ROOT}/
+    trips/
+      {tripId}/
+        originals/
+          {mediaId}.{ext}             # putOriginal —— 永不覆盖
+        derived/
+          {mediaId}/
+            thumb.webp
+            preview.webp
+            enhanced.jpg
+            video_cover.jpg
+            frames/{name}.jpg          # putDerived 支持任意嵌套相对路径
+            segments/{name}.mp4
+  ```
+
+  `STORAGE_LOCAL_ROOT` 默认 `./storage`，相对路径以仓库根解析；启动时 `LocalStorageProvider.create()` 会同步 `mkdirSync` 创建。
+- **接口契约**：
+  - `putOriginal({tripId, mediaId, extension, data})` → 拒绝覆盖，已存在抛 `STORAGE_ALREADY_EXISTS`。
+  - `putDerived({tripId, mediaId, relPath, data, overwrite=false})` → 默认拒绝覆盖；显式 `overwrite: true` 才替换。
+  - `read(logicalPath)` → 返回 Readable 流；不存在抛 `STORAGE_NOT_FOUND`。
+  - `remove(logicalPath)` → 返回 `{removed: boolean}`；不存在不当作错误，`removed=false` 给出明确信号。
+  - `exists(logicalPath)` → 布尔；IO/权限错误仍抛。
+- **路径安全**：每个输入都过 `pathUtils.ts` 三层校验（每段正则 → POSIX 归一化 → `path.relative` 二次确认不出根）；`/`, `\`, `..`, null byte、绝对路径等全部拦截，统一抛 `STORAGE_INVALID_KEY` 或 `STORAGE_PATH_TRAVERSAL`。
+- **错误模型**：`StorageError extends AppError`，可被全局 errorHandler 直接渲染成 P0.T6 的统一错误响应。
+- **如何手动验证**：
+  ```bash
+  cd server
+  npm run smoke:storage
+  # 在临时目录里跑完 putOriginal / putDerived / read / remove / exists
+  # + 8 个路径越权 / 非法键的负面用例，全部应输出 PASS。
+  ```
+  也可直接启动 server：
+  ```bash
+  cd server && npm start
+  # 启动日志中应看到 "storage initialised"，含 resolvedRoot 绝对路径。
+  ```
+
 前端（`client/`，由 P0.T3 初始化）：
 
 ```bash

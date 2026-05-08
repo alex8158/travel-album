@@ -20,7 +20,7 @@ export interface AppErrorOptions {
 }
 
 export class AppError extends Error {
-  override readonly name = "AppError";
+  override readonly name: string = "AppError";
   readonly code: ErrorCode;
   readonly statusCode: number;
   readonly details: Record<string, unknown> | undefined;

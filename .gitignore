@@ -36,10 +36,11 @@ pnpm-debug.log*
 !.env.example
 
 # ---- 项目运行时数据（design §5.2 / §1.2） ----
-# 用户上传的原始 / 派生文件，永远不入库
-storage/
+# 用户上传的原始 / 派生文件，永远不入库。
+# 注意：用 root-anchored 模式，避免误伤 server/src/storage/ 源代码目录。
+/storage/
 # SQLite 数据库与 WAL 文件
-data/
+/data/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal

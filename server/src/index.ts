@@ -1,9 +1,5 @@
-// Entry point. P0.T6 wires the Express app, structured logger, and
-// graceful-shutdown signal handlers on top of the configuration loader
-// (P0.T4) and SQLite + migrations (P0.T5).
-//
-// Subsequent tasks layer in:
-//   P0.T7 StorageProvider abstraction
+// Entry point. P0.T7 layers the LocalStorageProvider on top of the
+// startup sequence introduced in P0.T4-T6. Subsequent tasks add:
 //   P0.T8 ffmpeg/ffprobe startup detection + /api/health
 //   P1.T3 Trip routes
 // See docs/tasks.md.
@@ -13,6 +9,7 @@ import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { createLogger, type Logger } from "./logger.js";
+import { LocalStorageProvider } from "./storage/index.js";
 
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
 
@@ -21,6 +18,7 @@ function logStartup(
   config: Config,
   dbHandle: DbHandle,
   migrationResult: MigrationResult,
+  storage: LocalStorageProvider,
 ): void {
   logger.info(
     {
@@ -44,6 +42,11 @@ function logStartup(
         appliedNow: migrationResult.appliedNow,
         alreadyApplied: migrationResult.alreadyApplied,
         totalFiles: migrationResult.totalFiles,
+      },
+      storage: {
+        driver: config.storage.driver,
+        rawRoot: config.storage.localRoot,
+        resolvedRoot: storage.root,
       },
       dotenv: { loaded: config.meta.loadedDotenvFiles },
     },
@@ -96,9 +99,20 @@ function main(): void {
     process.exit(1);
   }
 
-  logStartup(logger, config, dbHandle, migrationResult);
+  // 5) Storage. Creates the configured root directory if it does not
+  // exist so subsequent put* calls do not race on mkdir.
+  let storage: LocalStorageProvider;
+  try {
+    storage = LocalStorageProvider.create(config.storage.localRoot);
+  } catch (err) {
+    closeDatabase(dbHandle);
+    logger.fatal({ err: serializeReason(err) }, "failed to initialise storage");
+    process.exit(1);
+  }
 
-  // 5) HTTP server.
+  logStartup(logger, config, dbHandle, migrationResult, storage);
+
+  // 6) HTTP server.
   const app = createApp({
     logger,
     debugRoutes: config.nodeEnv !== "production",
@@ -111,7 +125,7 @@ function main(): void {
     );
   });
 
-  // 6) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
+  // 7) Graceful shutdown. Same path for SIGINT, SIGTERM, and uncaught
   // exceptions: stop accepting new connections, close the DB, exit.
   let shuttingDown = false;
   const shutdown = (reason: string, exitCode: number): void => {
