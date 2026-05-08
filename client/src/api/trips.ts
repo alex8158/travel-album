@@ -24,6 +24,10 @@ interface ListTripsResponse {
   trips: Trip[];
 }
 
+interface SingleTripResponse {
+  trip: Trip;
+}
+
 interface ApiErrorEnvelope {
   error: {
     code: string;
@@ -32,6 +36,28 @@ interface ApiErrorEnvelope {
     details?: unknown;
   };
 }
+
+/**
+ * Body shape accepted by POST /api/trips. Mirrors the server's
+ * createTripSchema (server/src/trips/tripSchemas.ts). All optional
+ * fields stay optional here so callers can omit them; supply
+ * "YYYY-MM-DD" for dates.
+ */
+export interface CreateTripInput {
+  readonly title: string;
+  readonly description?: string;
+  readonly destination?: string;
+  readonly startDate?: string;
+  readonly endDate?: string;
+  readonly coverMediaId?: string;
+}
+
+/**
+ * Body shape accepted by PATCH /api/trips/:id. The server requires at
+ * least one field; an empty body returns 400. Title can be present
+ * but must still be non-blank when sent.
+ */
+export type UpdateTripInput = Partial<CreateTripInput>;
 
 /**
  * Fetch the active Trip list from the backend.
@@ -63,4 +89,61 @@ async function readErrorMessage(res: Response): Promise<string> {
     // Non-JSON error body; fall through.
   }
   return `HTTP ${res.status}`;
+}
+
+/**
+ * Create a new trip. Throws on any non-2xx response with the message
+ * lifted from the unified error envelope when available.
+ */
+export async function createTrip(input: CreateTripInput): Promise<Trip> {
+  const res = await fetch("/api/trips", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as SingleTripResponse;
+  return body.trip;
+}
+
+/**
+ * Fetch a single trip by id. Throws when the trip does not exist
+ * (the server returns 404 for soft-deleted rows too) or when the id
+ * is malformed (server returns 400).
+ */
+export async function getTripById(id: string): Promise<Trip> {
+  const res = await fetch(`/api/trips/${encodeURIComponent(id)}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as SingleTripResponse;
+  return body.trip;
+}
+
+/**
+ * Patch an existing trip with the given partial fields. The server
+ * rejects empty bodies with 400, so callers must pass at least one
+ * field. Refreshed `updatedAt` is returned in the response trip.
+ */
+export async function updateTrip(id: string, patch: UpdateTripInput): Promise<Trip> {
+  const res = await fetch(`/api/trips/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as SingleTripResponse;
+  return body.trip;
 }

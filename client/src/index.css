@@ -165,3 +165,97 @@ a {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ---- TripFormPage (P1.T5) ---------------------------------------- */
+
+.trip-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 600px;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-row-pair {
+  flex-direction: row;
+  gap: 1rem;
+}
+
+.form-half {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-label {
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: #1f2328;
+}
+
+.form-required {
+  color: #cf222e;
+  font-weight: 600;
+}
+
+.trip-form input,
+.trip-form textarea {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  background: #ffffff;
+  color: #1f2328;
+}
+
+.trip-form input:focus,
+.trip-form textarea:focus {
+  outline: 2px solid #0969da;
+  outline-offset: -1px;
+  border-color: #0969da;
+}
+
+.trip-form textarea {
+  resize: vertical;
+  min-height: 6rem;
+}
+
+.form-error {
+  margin: 0;
+  color: #cf222e;
+  font-size: 0.875rem;
+}
+
+.form-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.btn-primary[disabled] {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: #ffffff;
+  color: #1f2328;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-secondary:hover {
+  background: #f6f8fa;
+  color: #1f2328;
+}
