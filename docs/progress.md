@@ -159,12 +159,162 @@ curl -s http://localhost:3000/api/health
 
 ## 阶段 P1：Trip 管理 CRUD
 
-- 状态：**未开始**
-- 任务范围：P1.T1 – P1.T8（参见 [docs/tasks.md](tasks.md) §阶段 1）
-- 入口任务：**P1.T1 [MUST]** 新增 `trips` 表 migration
-  - 字段以 [docs/requirements.md](requirements.md) §8.1 为准
-  - 必含软删除字段 `deleted_at`
-  - 通过 `_schema_migrations` 跟踪，文件名建议 `001_*.sql`
+- 状态：**已完成**（4 PASS + 2 PARTIAL，PARTIAL 项均明确依赖 P2）
+- 任务范围：P1.T1 – P1.T8（8 / 8）
+- 提交范围：`ccfa85f` … `90f7adb`
+- 完成日期：2026-05-08
+
+### 已完成任务
+
+#### P1.T1 trips 表 migration（含软删除）
+
+- Commit：`ccfa85f` feat(server): trips table migration with soft delete (P1.T1)
+- 主要成果：
+  - `server/migrations/001_create_trips.sql`：STRICT 表，按 [docs/requirements.md](requirements.md) §8.1 字段（`destination` 取代 `location` 以匹配前端表单措辞）
+  - 约束 `trips_title_not_blank`（CHECK `length(trim(title)) > 0`）+ `trips_date_order`（CHECK `end >= start` when both set）
+  - 索引：`idx_trips_created_at` / `idx_trips_deleted_at` / `idx_trips_destination`
+  - `cover_media_id` 故意不加 FK（media_items 在 P2.T1 才建；SQLite 不支持 ALTER TABLE ADD CONSTRAINT，留作后续表重建迁移）
+- 验证：清空 DB 后启动 → `appliedNow: ["000_init.sql", "001_create_trips.sql"]`；二次启动 → `alreadyApplied` 含两条；9 个 INSERT 测试用例（合法 / 空 title / 反序日期 / NULL title / 重复 PK 等）行为全部正确
+
+#### P1.T2 Trip Repository + Service
+
+- Commit：`a00fa8a` feat(server): Trip repository + service with zod validation (P1.T2)
+- 主要成果：
+  - `server/src/trips/`：`tripTypes.ts` / `tripSchemas.ts` / `tripRepository.ts` / `tripService.ts` / `index.ts`
+  - Repository：5 个 prepared statements + dynamic `update` SET；`softDelete` 用 `WHERE deleted_at IS NULL`；不抛 AppError
+  - Service：zod 验入参 → ValidationError；Repository 返回 null/false → NotFoundError；DB CHECK 触发翻译为 ValidationError；`crypto.randomUUID()` 生成 trip id
+  - zod schema：`entityIdSchema`（与 storage 层正则对齐）、`isoDateSchema`（regex + Date.UTC 日历有效性 refine，拒 `2024-02-30`）；`createTripSchema` / `updateTripSchema` 用 `.strict()` 拒未知字段，superRefine 强制 `endDate >= startDate`
+- 验证：`npm run smoke:trips` 22/22 PASS（11 项正面 + 11 项负面用例）；过程发现并修复正则缺 capture groups 的 bug
+
+#### P1.T3 Trip API 路由
+
+- Commits：`6e9dadc` feat(server): Trip CRUD API routes (P1.T3) + `ef64f9a` fix(server): validate GET /api/trips query at the route layer (P1.T3 follow-up)
+- 主要成果：
+  - `server/src/middleware/asyncHandler.ts` 兜底 Express 4 async route 的 unhandled rejection
+  - `server/src/util/zodParse.ts` 共用 zod → ValidationError 翻译
+  - `server/src/routes/trips.ts` 6 个端点：`POST/GET /api/trips`、`GET/PATCH/DELETE /api/trips/:id`、`POST /api/trips/:id/cover`
+  - `ValidationError` 默认 statusCode 由 422 改为 400（用户 spec）
+  - **后续 fix**：`GET /api/trips` query 增加路由层 `listQuerySchema`（limit 1-100 默认 50；offset ≥ 0 默认 0）
+- 验证：18 项 curl 端到端用例（创建 / 列表 / 详情 / 更新 / 删除 / cover / 各类负面用例）全部 PASS；错误响应统一 `{error: {code, message, requestId, details?}}` 含堆栈不外泄
+
+#### P1.T4 前端 Trip 列表页
+
+- Commit：`3be2dd0` feat(client): Trip list page wired to /api/trips (P1.T4)
+- 主要成果：
+  - `client/src/api/trips.ts`：`Trip` 类型 + `fetchTrips(signal?)`
+  - `client/src/hooks/useTrips.ts`：mount-on 拉取，`AbortController` 处理 strict-mode 双 mount
+  - `client/src/pages/TripListPage.tsx`：四态守卫（loading / error / 空 / 网格）；CSS Grid `auto-fill, minmax(240px, 1fr)`；TripCard 整张可点击 link
+  - `client/public/placeholder-cover.svg`（627 字节，role="img" + aria-label）
+  - `client/vite.config.ts`：`/api` proxy 到 `http://localhost:3000`，dev 同源转发
+- 验证：6 项端到端 smoke（HTML / SVG / proxy 三条路径）全部 PASS
+
+#### P1.T5 前端 Trip 创建/编辑页
+
+- Commit：`4948f24` feat(client): Trip create / edit form (P1.T5)
+- 主要成果：
+  - `client/src/api/trips.ts` 加 `CreateTripInput` / `UpdateTripInput` + `createTrip` / `getTripById` / `updateTrip`
+  - `client/src/pages/TripFormPage.tsx`：`mode: "create" | "edit"` 切换；客户端轻量校验（required + endDate >= startDate）；`<input type="date">` 强制 YYYY-MM-DD
+  - 路由 `/trips/new` 与 `/trips/:id/edit` 都指向同一组件
+- 验证：build / typecheck / lint / format:check 一次过；P1.T6 闭合了"提交后 navigate 到 `/trips/:id`"和"edit cancel 回详情页"两个 TODO
+
+#### P1.T6 前端 Trip 详情页骨架
+
+- Commit：`a7658b6` feat(client): Trip detail page skeleton with refetch contract (P1.T6)（含 P1.T6 follow-up：useTrip 暴露 refetch + location.key 监听）
+- 主要成果：
+  - `client/src/hooks/useTrip.ts`：`useTrip(id)` → `{trip, loading, error, refetch}`；`useCallback` 包稳定引用；`previousIdRef` 区分换 id（清旧数据）vs 同 id refetch（保留旧数据，stale-while-revalidate）
+  - `client/src/pages/TripDetailPage.tsx`：标题 / 描述 / 4 计数卡（dl/dt/dd 语义，硬编 0）/ Gallery 占位；back link + Edit + Upload 按钮
+  - 监听 `useLocation().key`：首次挂载只记录、不触发 refetch；后续路径变化触发 refetch（防御未来同实例下的 mutation）
+  - `getTripById(id, signal?)` 加 cancellation 支持
+- 验证：build / typecheck / lint / format:check 一次过
+
+#### P1.T7 Trip 删除二次确认
+
+- Commit：`90f7adb` feat(client): Trip delete with confirmation modal (P1.T7)
+- 主要成果：
+  - `client/src/api/trips.ts` 加 `deleteTrip(id): Promise<void>`
+  - `client/src/hooks/useTrips.ts` 加 `refetch`，与 `useTrip` 对称；顺手补 P1.T4 留下的 success-path `aborted` 检查
+  - `client/src/pages/TripDetailPage.tsx`：header 加 btn-danger `Delete` 按钮；inline 确认 modal（`role="dialog"` + `aria-modal` + 标题/描述 aria-id），含可恢复说明文案
+  - 关闭路径三条：Cancel 按钮 / Escape / 遮罩点击；提交中全部禁用
+  - 成功后 `navigate("/", { replace: true })` 防 Back 进 404
+  - `index.css` 加 `.btn-danger` + `.modal-*` 样式
+- 验证：build / typecheck / lint / format:check 一次过
+
+#### P1.T8 阶段验收
+
+- 无代码改动；仅本文件 P1 小节追加 + 端到端验证。
+- 6 条验收（[requirements §7.1](requirements.md)）结果如下：
+
+| # | 验收项 | 结果 | 说明 |
+|---|---|---|---|
+| 1 | 未填写 Trip 标题时不能创建 | **PASS** | curl 测试 3 个变体（空 body / `""` / `"   "`）全部 400 `VALIDATION_FAILED`；前端 button disabled |
+| 2 | 创建 Trip 后可以进入上传页面 | **PARTIAL** | TripDetailPage UI 入口存在（"Upload media" 按钮 + Gallery 占位区底部 CTA）；目标路由 `/trips/:id/upload` 待 **P2.T6** 落地 |
+| 3 | Trip 列表按创建时间或旅行时间倒序展示 | **PASS** | 后端 `ORDER BY created_at DESC, id DESC`；创建 3 个 trip 后列表顺序正确（最新在最上） |
+| 4 | Trip 卡片显示标题、说明摘要、封面图和素材数量 | **PARTIAL** | 标题 ✓ / 说明摘要（line-clamp 2 行）✓ / 占位封面 ✓；**素材数量**等媒体表 + 聚合查询，待 **P2.T1 / P2.T2 / P2.T7** |
+| 5 | Trip 可以修改标题和说明 | **PASS** | PATCH 200 OK，`updatedAt > createdAt` 正确刷新；前端 TripFormPage edit 模式联通 |
+| 6 | 删除 Trip 不应造成数据库外键错误 | **PASS** | 软删除走 UPDATE 不走 DELETE；`PRAGMA foreign_key_check` 空输出（无 FK 错误）；DB 中行保留 `deleted_at` 非空，可恢复 |
+
+### 阶段 P1 验证命令
+
+后端集中复跑（`server/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+npm run smoke:storage         # 19 / 19 PASS（P0.T7 引入，仍有效）
+npm run smoke:trips           # 22 / 22 PASS
+```
+
+前端集中复跑（`client/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+```
+
+P1.T8 端到端 curl 验收（后端构建 / 启动后跑 18 项，覆盖 6 条验收标准的 API 层）—— 详见 P1.T3 验证记录。
+
+### 阶段 P1 PARTIAL 项与依赖
+
+| 验收项 | 缺口 | 何时完成 |
+|---|---|---|
+| 验收 #2 上传页面 | `/trips/:id/upload` 路由 404 | P2.T6 |
+| 验收 #4 素材数量 | 后端无 `media_items` 表与 count 聚合；前端硬编 0 | P2.T1（建表）+ P2.T2（job 状态机）+ P2.T7（前端拿数）；建议 P2 阶段验收时补 `GET /api/trips` 增强 `imageCount` / `videoCount` 字段 |
+
+### 阶段 P1 剩余风险
+
+下列风险均已知，**不阻断 P1 完成**：
+
+| 编号 | 风险 | 触发跟进的时机 |
+|---|---|---|
+| R-13 | `cover_media_id` schema 层无 FK 约束 | P2.T1（建 media_items）后用表重建迁移加 FK |
+| R-14 | 客户端 `Trip` 类型与服务端 `Trip` 手抄同步 | X.T1 / X.T2 引入 openapi-typescript 或共享 types 包 |
+| R-15 | 没有 `useTrips` / `useTrip` 缓存共享，多页面之间会重复 fetch | 引入 React Query / SWR 时统一 |
+| R-16 | 无 focus trap 与 body scroll lock：modal 期间键盘 Tab 可逃逸到背景 | X.T2 抽 `ConfirmDialog` 组件时统一 |
+| R-17 | TripFormPage 的 inline edit-mode 拉数据未复用 `useTrip` | 引入 `useTrip` 时本可复用，留作后续 polish |
+| R-18 | "未保存改动"离开提示缺失 | X.T1 / 后续 router blocker |
+| R-19 | DB CHECK 翻译丢失约束名（统一回 `Validation failed at database layer`） | 后续可解析 `err.message` 抽 constraint name 进 `details` |
+| R-20 | 列表页 Trip 卡片无素材数量字段（验收 #4 PARTIAL） | P2.T1+；阶段验收已记录 |
+| R-21 | 详情页 Upload 入口指向的 `/trips/:id/upload` 当前 404（验收 #2 PARTIAL） | P2.T6 |
+
+承自 P0 的 R-01 … R-12 继续延续。
+
+---
+
+## 下一阶段入口
+
+进入阶段 2：媒体上传与文件识别（[docs/tasks.md](tasks.md) §阶段 2）。
+
+第一项任务：
+
+- **P2.T1 [MUST]**：迁移 `media_items` 表（含 `status`、`user_decision`、软删除）
+  - 字段以 [docs/requirements.md](requirements.md) §8.2 为准
+  - 同时承接补充迁移：给 `trips.cover_media_id` 加 FK → `media_items(id) ON DELETE SET NULL`（消化 R-13）
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
