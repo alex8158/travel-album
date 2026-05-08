@@ -43,7 +43,7 @@
 ## 其他依赖
 
 - **Node.js**：`>=20.11.0`（在 `server/package.json` 的 `engines` 中声明，覆盖 Node 20 LTS 与更新版本）。
-- **SQLite**：第一版数据库；项目计划使用 `better-sqlite3`（在 P0.T5 引入，目前尚未安装）。
+- **SQLite**：第一版数据库，通过 `better-sqlite3`（npm 包，自带 SQLite 引擎，原生模块在 `npm install` 时下载预编译二进制）。无需在系统层安装 sqlite3。
 - **磁盘空间**：原始图片 / 视频 + 派生文件均落盘到 `storage/`，请预留足够空间。
 
 ## 开发命令
@@ -72,7 +72,27 @@ npm run format         # Prettier 写入
 npm run format:check   # Prettier 仅检查
 ```
 
-> 当前 `server/src/index.ts` 启动时只做配置加载与摘要打印；HTTP 路由、数据库、Worker、ffmpeg 检测等功能将在后续任务（P0.T5 起）逐步引入。
+> 当前 `server/src/index.ts` 启动时做：加载配置 → 打开 SQLite → 跑迁移 → 打印摘要。HTTP 路由、Worker、ffmpeg 检测等功能将在后续任务（P0.T6 起）逐步引入。
+
+### 数据库与迁移（P0.T5）
+
+- **位置**：默认 `<repo>/data/app.db`（由 `DATABASE_PATH` 控制）。`DATABASE_PATH` 写相对路径时以**仓库根**解析，绝对路径直通；启动时父目录会自动创建。WAL 模式会额外产生 `app.db-wal` / `app.db-shm` 两个旁路文件，已被 `.gitignore` 排除。
+- **迁移目录**：`server/migrations/`，文件按文件名升序执行；当前只有一个 `000_init.sql`，仅设置持久 PRAGMA（`application_id` / `user_version`）和注释，不创建任何业务表。后续阶段（P1.T1 起）每个表用独立迁移文件。
+- **迁移记录表**：`_schema_migrations(name PRIMARY KEY, applied_at)`，迁移已应用即跳过，不会重复执行。
+- **PRAGMA**：连接级 `foreign_keys = ON` 与 `journal_mode = WAL` 在 `server/src/db/connection.ts` 中设置；启动摘要会打印实测值，可肉眼确认。
+- **如何执行迁移**：`npm run dev` / `npm start` 启动时会自动执行所有未应用的迁移；目前没有独立的 `db:migrate` CLI（按需在后续任务中加入）。
+- **如何验证**：
+  ```bash
+  cd server
+  npm start
+  # 摘要中应看到：
+  #   PRAGMA foreign_keys       = 1
+  #   PRAGMA journal_mode       = wal
+  #   migrations applied now    = 000_init.sql   （首次启动）
+  #   migrations applied now    = (none)         （再次启动）
+  #   migrations already done   = 000_init.sql   （再次启动）
+  ```
+  也可以直接 `sqlite3 data/app.db ".tables"` 看到 `_schema_migrations` 表。
 
 前端（`client/`，由 P0.T3 初始化）：
 
