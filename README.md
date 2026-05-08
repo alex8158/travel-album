@@ -217,7 +217,7 @@ npm run format:check   # Prettier 仅检查
   - `TripService.createTrip(input)` — `crypto.randomUUID()` 生成 id，初始 `createdAt === updatedAt`。
   - `TripService.listTrips(options?)` — 默认仅返回 `deleted_at IS NULL`，按 `created_at DESC` 排序；`{ includeDeleted: true }` 才显示软删除项。
   - `TripService.getTripById(id)` — 不存在或已软删均抛 `NotFoundError(404)`。
-  - `TripService.updateTrip(id, patch)` — 仅写出现的字段；`updated_at` 由 Repository 兜底刷新；DB CHECK 触发时翻译为 `ValidationError(422)`。
+  - `TripService.updateTrip(id, patch)` — 仅写出现的字段；`updated_at` 由 Repository 兜底刷新；DB CHECK 触发时翻译为 `ValidationError(400)`。
   - `TripService.softDeleteTrip(id)` — `UPDATE … WHERE deleted_at IS NULL`；命中 0 行抛 `NotFoundError`。
 - **校验规则**：
   - id 格式 `/^[A-Za-z0-9_-]{1,128}$/`（与 storage 层完全一致，UUID 包含其中）。
@@ -256,7 +256,16 @@ npm run format:check   # Prettier 仅检查
 { "error": { "code": "VALIDATION_FAILED", "message": "...", "requestId": "..." } }
 ```
 
-`code` 取值：`VALIDATION_FAILED`(400/422)、`NOT_FOUND`(404)、`INTERNAL_ERROR`(500)。
+`code` 取值：`VALIDATION_FAILED`(400)、`NOT_FOUND`(404)、`INTERNAL_ERROR`(500)。
+
+`GET /api/trips` 支持两个 query 参数（路由层 zod 校验，超范围直接 400）：
+
+| 参数 | 默认 | 范围 |
+|---|---|---|
+| `limit`  | 50 | 1 ≤ limit ≤ 100 |
+| `offset` | 0  | offset ≥ 0 |
+
+未知 query key 静默忽略，不会触发 400。
 
 `POST /:id/cover` 仅做 `coverMediaId` 的格式校验，不验存在性（media_items 表在 P2.T1 才建）。返回的 trip 中 `coverMediaId` 直接是 path-safe 字符串，前端封面 URL 由后续阶段的 storage / 数据库连结实现。
 

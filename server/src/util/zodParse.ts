@@ -5,7 +5,7 @@
 // without duplicating the issue-formatting logic.
 //
 // Use this any time you have an `unknown` payload (req.body, req.query,
-// CLI argv, etc.) and want a typed value or a 422 ValidationError —
+// CLI argv, etc.) and want a typed value or a 400 ValidationError —
 // the latter then renders as the project-standard error envelope via
 // the global error middleware (P0.T6).
 

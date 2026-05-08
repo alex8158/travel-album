@@ -30,6 +30,28 @@ const setCoverBodySchema = z
   })
   .strict();
 
+/**
+ * Route-level query schema for GET /api/trips. Stricter than the
+ * Service-level `listTripsOptionsSchema` (which caps limit at 200) —
+ * the public HTTP surface holds page sizes to 1..100 to keep responses
+ * predictable. Unknown query keys are silently dropped (default zod
+ * `strip`) so future cache-busters / instrumentation params don't
+ * trigger 400s here.
+ */
+const listQuerySchema = z.object({
+  limit: z.coerce
+    .number({ invalid_type_error: "limit must be a number" })
+    .int("limit must be an integer")
+    .min(1, "limit must be >= 1")
+    .max(100, "limit must be <= 100")
+    .default(50),
+  offset: z.coerce
+    .number({ invalid_type_error: "offset must be a number" })
+    .int("offset must be an integer")
+    .nonnegative("offset must be >= 0")
+    .default(0),
+});
+
 export function makeTripsRouter(deps: TripsRouterDeps): Router {
   const router = Router();
   const { service } = deps;
@@ -43,11 +65,14 @@ export function makeTripsRouter(deps: TripsRouterDeps): Router {
     }),
   );
 
-  // GET /api/trips — list (default deleted_at IS NULL)
+  // GET /api/trips — list (default deleted_at IS NULL).
+  // Pagination is enforced HERE rather than in the Service, so the public
+  // HTTP cap (1..100) is independent of the Service contract.
   router.get(
     "/",
     asyncHandler((req, res) => {
-      const trips = service.listTrips(req.query);
+      const query = parseOrThrow(listQuerySchema, req.query, "query parameters");
+      const trips = service.listTrips(query);
       res.json({ trips });
     }),
   );
