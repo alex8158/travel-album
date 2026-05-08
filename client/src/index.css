@@ -35,3 +35,133 @@ main {
 a {
   color: #0969da;
 }
+
+/* ---- TripListPage (P1.T4) ---------------------------------------- */
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.page-header-text h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+.page-header-text p {
+  margin: 0;
+  color: #57606a;
+}
+
+.btn-primary {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: #0969da;
+  color: #ffffff;
+  border-radius: 6px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-primary:hover {
+  background: #0552ab;
+  color: #ffffff;
+}
+
+.status-text {
+  color: #57606a;
+}
+
+.status-error {
+  color: #cf222e;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  border: 1px dashed #d0d7de;
+  border-radius: 8px;
+  background: #f6f8fa;
+}
+
+.empty-state h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.empty-state p {
+  margin: 0 0 1.5rem;
+  color: #57606a;
+}
+
+.trip-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.trip-card {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.trip-card:hover,
+.trip-card:focus-within {
+  border-color: #0969da;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.trip-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.trip-card-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  background: #f6f8fa;
+}
+
+.trip-card-body {
+  padding: 0.75rem 1rem 1rem;
+}
+
+.trip-card-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+
+.trip-card-meta {
+  margin: 0;
+  color: #57606a;
+  font-size: 0.875rem;
+}
+
+.trip-card-description {
+  margin: 0.5rem 0 0;
+  color: #1f2328;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

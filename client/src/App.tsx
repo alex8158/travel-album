@@ -1,10 +1,11 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import HomePage from "./pages/HomePage";
 import NotFoundPage from "./pages/NotFoundPage";
+import TripListPage from "./pages/TripListPage";
 
-// Route shell only. Business routes (per docs/design.md §2.2) will be added
-// in their corresponding tasks:
+// Route shell. Business routes (per docs/design.md §2.2) land in their
+// corresponding tasks:
 //
+//   /                           -> P1.T4 (TripListPage)            ✓ wired
 //   /trips/new                  -> P1.T5 (TripCreatePage)
 //   /trips/:id/edit             -> P1.T5 (TripEditPage)
 //   /trips/:id                  -> P1.T6 / P2.T7 (Gallery)
@@ -14,14 +15,12 @@ import NotFoundPage from "./pages/NotFoundPage";
 //   /media/:id                  -> P3.T4 / P6 / P8 / P10 (MediaDetailPage)
 //   /videos/:id/segments        -> P9.T9 (VideoSegmentsPage)
 //   /jobs                       -> P4.T6 (JobsPage)
-//
-// Until then, only "/" and the 404 fallback are wired up.
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<HomePage />} />
+        <Route path="/" element={<TripListPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>

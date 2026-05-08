@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" role="img" aria-label="No cover available">
+  <rect width="600" height="400" fill="#e6e8ec" />
+  <circle cx="475" cy="95" r="40" fill="#fcd34d" />
+  <path d="M0 320 L130 200 L240 270 L370 160 L490 250 L600 220 L600 400 L0 400 Z" fill="#9ca3af" />
+  <path d="M0 360 L60 320 L180 360 L320 310 L460 360 L600 320 L600 400 L0 400 Z" fill="#6b7280" />
+  <text
+    x="300"
+    y="375"
+    fill="#374151"
+    font-family="system-ui, -apple-system, sans-serif"
+    font-size="14"
+    text-anchor="middle"
+  >No cover yet</text>
+</svg>
