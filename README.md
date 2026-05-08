@@ -210,6 +210,28 @@ npm run format:check   # Prettier 仅检查
   ```
 - **`/api/ping` 仍保留**：极轻量 liveness，不跑探测，适合编排器健康检查。
 
+### Trip 领域层（P1.T2）
+
+- **位置**：[server/src/trips/](server/src/trips/)。分四个文件：`tripTypes.ts`（类型）、`tripSchemas.ts`（zod 校验）、`tripRepository.ts`（DB 访问）、`tripService.ts`（业务规则与错误翻译）。`index.ts` 是 barrel。
+- **接口**：
+  - `TripService.createTrip(input)` — `crypto.randomUUID()` 生成 id，初始 `createdAt === updatedAt`。
+  - `TripService.listTrips(options?)` — 默认仅返回 `deleted_at IS NULL`，按 `created_at DESC` 排序；`{ includeDeleted: true }` 才显示软删除项。
+  - `TripService.getTripById(id)` — 不存在或已软删均抛 `NotFoundError(404)`。
+  - `TripService.updateTrip(id, patch)` — 仅写出现的字段；`updated_at` 由 Repository 兜底刷新；DB CHECK 触发时翻译为 `ValidationError(422)`。
+  - `TripService.softDeleteTrip(id)` — `UPDATE … WHERE deleted_at IS NULL`；命中 0 行抛 `NotFoundError`。
+- **校验规则**：
+  - id 格式 `/^[A-Za-z0-9_-]{1,128}$/`（与 storage 层完全一致，UUID 包含其中）。
+  - 日期 `YYYY-MM-DD` 正则 + 日历有效性 refine（拒 `2024-02-30` 这种）。
+  - 跨字段：两端都填时 `endDate >= startDate`；只填一端的更新由 DB CHECK 兜底，Service 翻译错误码。
+  - `title` 自动 `trim()`，trim 后长度必须 ≥ 1。
+  - 严格模式 `.strict()`：未知字段直接拒。
+- **如何手动验证**：
+  ```bash
+  cd server
+  npm run smoke:trips
+  # 预期 22/22 PASS（含 11 项负面用例覆盖 zod 与 DB CHECK 翻译）
+  ```
+
 前端（`client/`，由 P0.T3 初始化）：
 
 ```bash

@@ -16,7 +16,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "smoke:storage": "tsx src/scripts/storage-smoke.ts"
+    "smoke:storage": "tsx src/scripts/storage-smoke.ts",
+    "smoke:trips": "tsx src/scripts/trips-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
