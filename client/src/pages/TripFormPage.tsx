@@ -15,9 +15,9 @@
 // schemas are the single source of truth and any rejection comes back
 // as `error.message` in the unified envelope, which we surface inline.
 //
-// After a successful submit we navigate to "/" (the list page) until
-// P1.T6 lands the detail page; that follow-up will switch the target
-// to `/trips/${trip.id}`.
+// After a successful submit we navigate to /trips/:id (the detail
+// page wired by P1.T6). Cancel goes back to the same detail page in
+// edit mode and to "/" in create mode (no detail to return to yet).
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -117,14 +117,17 @@ export default function TripFormPage({ mode }: TripFormPageProps) {
     setSubmitting(true);
 
     try {
+      let resultId: string;
       if (mode === "create") {
-        await createTrip(buildPayload());
+        const created = await createTrip(buildPayload());
+        resultId = created.id;
       } else {
         if (!id) throw new Error("Edit mode requires an id in the URL");
         const patch: UpdateTripInput = buildPayload();
         await updateTrip(id, patch);
+        resultId = id;
       }
-      navigate("/");
+      navigate(`/trips/${resultId}`);
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
@@ -164,6 +167,9 @@ export default function TripFormPage({ mode }: TripFormPageProps) {
   const heading = mode === "create" ? "New trip" : "Edit trip";
   const submitLabel = mode === "create" ? "Create trip" : "Save changes";
   const submittingLabel = mode === "create" ? "Creating…" : "Saving…";
+  // Edit mode goes back to the detail page; create mode has no detail
+  // page to return to so it falls back to the list.
+  const cancelTo = mode === "edit" && id ? `/trips/${id}` : "/";
 
   return (
     <main>
@@ -172,7 +178,7 @@ export default function TripFormPage({ mode }: TripFormPageProps) {
           <h1>{heading}</h1>
           <p>Fields marked with * are required.</p>
         </div>
-        <Link to="/" className="btn-secondary">
+        <Link to={cancelTo} className="btn-secondary">
           Cancel
         </Link>
       </header>

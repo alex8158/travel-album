@@ -259,3 +259,101 @@ a {
   background: #f6f8fa;
   color: #1f2328;
 }
+
+/* ---- TripDetailPage (P1.T6) -------------------------------------- */
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  color: #57606a;
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: #0969da;
+  text-decoration: underline;
+}
+
+.page-header-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.trip-detail-meta {
+  margin: 0.25rem 0 0;
+  color: #57606a;
+  font-size: 0.95rem;
+}
+
+.trip-detail-meta-label {
+  font-weight: 500;
+  color: #1f2328;
+}
+
+.trip-detail-section {
+  margin-top: 2rem;
+}
+
+.trip-detail-section h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
+}
+
+.trip-detail-description {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #1f2328;
+  line-height: 1.6;
+}
+
+.counts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.count-card {
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.count-card dt {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #57606a;
+}
+
+.count-card dd {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.gallery-placeholder {
+  border: 1px dashed #d0d7de;
+  border-radius: 8px;
+  padding: 2rem 1rem;
+  text-align: center;
+  background: #f6f8fa;
+}
+
+.gallery-placeholder p {
+  margin: 0 0 0.75rem;
+  color: #57606a;
+}
+
+.gallery-placeholder p:first-child {
+  font-weight: 500;
+  color: #1f2328;
+  font-size: 1.05rem;
+}

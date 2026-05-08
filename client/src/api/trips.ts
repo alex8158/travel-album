@@ -114,12 +114,14 @@ export async function createTrip(input: CreateTripInput): Promise<Trip> {
 /**
  * Fetch a single trip by id. Throws when the trip does not exist
  * (the server returns 404 for soft-deleted rows too) or when the id
- * is malformed (server returns 400).
+ * is malformed (server returns 400). Pass an AbortSignal to allow the
+ * caller (e.g. useTrip on unmount) to cancel the request.
  */
-export async function getTripById(id: string): Promise<Trip> {
-  const res = await fetch(`/api/trips/${encodeURIComponent(id)}`, {
-    headers: { Accept: "application/json" },
-  });
+export async function getTripById(id: string, signal?: AbortSignal): Promise<Trip> {
+  const init: RequestInit = { headers: { Accept: "application/json" } };
+  if (signal) init.signal = signal;
+
+  const res = await fetch(`/api/trips/${encodeURIComponent(id)}`, init);
   if (!res.ok) {
     throw new Error(await readErrorMessage(res));
   }
