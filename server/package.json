@@ -17,7 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke:storage": "tsx src/scripts/storage-smoke.ts",
-    "smoke:trips": "tsx src/scripts/trips-smoke.ts"
+    "smoke:trips": "tsx src/scripts/trips-smoke.ts",
+    "smoke:classify": "tsx src/scripts/classify-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
