@@ -22,7 +22,8 @@
     "smoke:upload": "tsx src/scripts/upload-smoke.ts",
     "smoke:media": "tsx src/scripts/media-smoke.ts",
     "smoke:storage-route": "tsx src/scripts/storage-route-smoke.ts",
-    "smoke:image-channel-executor": "tsx src/scripts/image-channel-executor-smoke.ts"
+    "smoke:image-channel-executor": "tsx src/scripts/image-channel-executor-smoke.ts",
+    "smoke:media-versions": "tsx src/scripts/media-versions-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
