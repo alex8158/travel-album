@@ -38,3 +38,26 @@ export interface JobInsertData {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+/**
+ * Read projection of a `processing_jobs` row, returned by the
+ * repository to the executor (P3.T2). Mirrors every column in
+ * server/migrations/004_create_processing_jobs.sql exactly so the
+ * executor and handlers can branch on whatever they need without an
+ * extra DB round-trip.
+ */
+export interface ProcessingJob {
+  readonly id: string;
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly status: JobStatus;
+  readonly progress: number;
+  readonly errorMessage: string | null;
+  readonly retryCount: number;
+  readonly payload: string | null;
+  readonly nextRunAt: string | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
