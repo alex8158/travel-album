@@ -82,19 +82,19 @@
 
 > requirements §7.2 / §7.3 / §14 阶段 2。
 
-- [ ] **P2.T1 [MUST]** 迁移：`media_items` 表（含 `status`、`user_decision`、软删除）
-- [ ] **P2.T2 [MUST]** 迁移：`processing_jobs` 表（先建表，状态机逻辑放阶段 4）
-- [ ] **P2.T3 [MUST]** `File_Classifier` 模块
+- [x] **P2.T1 [MUST]** 迁移：`media_items` 表（含 `status`、`user_decision`、软删除）
+- [x] **P2.T2 [MUST]** 迁移：`processing_jobs` 表（先建表，状态机逻辑放阶段 4）
+- [x] **P2.T3 [MUST]** `File_Classifier` 模块
   - MIME + 扩展名 + magic number 三层判定，返回 `image | video | unknown` + reason。
-- [ ] **P2.T4 [MUST]** `Upload_Manager` + `POST /api/trips/:tripId/media/upload`
+- [x] **P2.T4 [MUST]** `Upload_Manager` + `POST /api/trips/:tripId/media/upload`
   - multipart 流式落盘、写 `media_items`、为图片建 `image_thumbnail` 任务、为视频建 `video_metadata` 任务（任务执行能力还没接，先入库 `pending`）。
   - 单文件失败不影响其他文件，结果数组返回。
-- [ ] **P2.T5 [MUST]** `GET /api/trips/:tripId/media`、`GET /api/media/:id`
+- [x] **P2.T5 [MUST]** `GET /api/trips/:tripId/media`、`GET /api/media/:id`
   - 分页（默认 50）。
-- [ ] **P2.T6 [MUST]** 前端上传页：拖拽 + 多选 + 单文件进度 + 失败提示
-- [ ] **P2.T7 [MUST]** 前端 Gallery 网格基础版
+- [x] **P2.T6 [MUST]** 前端上传页：拖拽 + 多选 + 单文件进度 + 失败提示
+- [x] **P2.T7 [MUST]** 前端 Gallery 网格基础版
   - 占位卡片显示文件名 / 状态徽章（`uploaded` / `processing` / ...），轮询刷新。
-- [ ] **P2.T8 [MUST]** 阶段验收
+- [x] **P2.T8 [MUST]** 阶段验收
   - 手动验证 §7.2、§7.3 验收标准；伪造扩展名文件被识别为 unknown 不进入处理流。
 
 ---
