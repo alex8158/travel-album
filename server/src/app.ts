@@ -26,6 +26,7 @@ import { makeRequestLogger } from "./middleware/requestLogger.js";
 import type { MediaService } from "./media/index.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeMediaRouter } from "./routes/media.js";
+import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
@@ -79,6 +80,11 @@ export function createApp(opts: CreateAppOptions): Express {
   // router can own paths like /trips/:tripId/media/upload and
   // /media/:id without colliding with the Trip CRUD router above.
   app.use("/api", makeMediaRouter({ uploadService, mediaService }));
+
+  // Storage static-file route (P3.T1). Mounted at /storage (NOT under
+  // /api) so the URL space cleanly separates JSON API from file
+  // delivery. Read-only; validation lives in the router.
+  app.use("/storage", makeStorageRouter({ storage }));
 
   if (debugRoutes) {
     // Demonstrates the AppError path: chosen status, code, message, details.
