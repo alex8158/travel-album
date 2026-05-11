@@ -8,10 +8,13 @@ import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
+import { JobRepository } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
+import { MediaRepository } from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
+import { UploadService } from "./upload/index.js";
 
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
 
@@ -135,8 +138,25 @@ async function main(): Promise<void> {
   }
 
   // 7) Domain services. The TripService is stateless beyond the DB
-  // handle; future services (media, jobs) follow the same pattern.
+  // handle; UploadService composes media + job repositories and the
+  // storage / classifier dependencies. Future services follow the
+  // same pattern.
   const tripService = new TripService(new TripRepository(dbHandle.db));
+  const mediaRepo = new MediaRepository(dbHandle.db);
+  const jobRepo = new JobRepository(dbHandle.db);
+  const uploadService = new UploadService({
+    db: dbHandle.db,
+    storage,
+    tripService,
+    mediaRepo,
+    jobRepo,
+    classifyOptions: {
+      imageExtensions: config.upload.allowedImageExt,
+      videoExtensions: config.upload.allowedVideoExt,
+    },
+    maxFileSize: config.upload.maxFileSize,
+    logger,
+  });
 
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
 
@@ -146,6 +166,7 @@ async function main(): Promise<void> {
     capabilities,
     storage,
     tripService,
+    uploadService,
     debugRoutes: config.nodeEnv !== "production",
   });
 

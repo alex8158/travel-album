@@ -18,10 +18,12 @@
     "format:check": "prettier --check .",
     "smoke:storage": "tsx src/scripts/storage-smoke.ts",
     "smoke:trips": "tsx src/scripts/trips-smoke.ts",
-    "smoke:classify": "tsx src/scripts/classify-smoke.ts"
+    "smoke:classify": "tsx src/scripts/classify-smoke.ts",
+    "smoke:upload": "tsx src/scripts/upload-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
+    "busboy": "^1.6.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "pino": "^9.5.0",
@@ -30,6 +32,7 @@
   "devDependencies": {
     "@eslint/js": "^9.15.0",
     "@types/better-sqlite3": "^7.6.12",
+    "@types/busboy": "^1.5.4",
     "@types/express": "^4.17.21",
     "@types/node": "^22.9.0",
     "eslint": "^9.15.0",
