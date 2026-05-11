@@ -12,11 +12,11 @@ import {
   ImageChannelExecutor,
   JobHandlerRegistry,
   JobRepository,
+  makeImageThumbnailHandler,
   makeStubImageMetadataHandler,
-  makeStubImageThumbnailHandler,
 } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
-import { MediaRepository, MediaService } from "./media/index.js";
+import { MediaRepository, MediaService, MediaVersionsRepository } from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
@@ -149,6 +149,7 @@ async function main(): Promise<void> {
   // same pattern.
   const tripService = new TripService(new TripRepository(dbHandle.db));
   const mediaRepo = new MediaRepository(dbHandle.db);
+  const mediaVersionsRepo = new MediaVersionsRepository(dbHandle.db);
   const jobRepo = new JobRepository(dbHandle.db);
   const uploadService = new UploadService({
     db: dbHandle.db,
@@ -165,12 +166,20 @@ async function main(): Promise<void> {
   });
   const mediaService = new MediaService(mediaRepo, tripService);
 
-  // P3.T2: image-channel job executor + handler registry. This is the
-  // R-36 stub: single concurrency, no retry / zombie / channels — just
-  // enough plumbing for P3.T4 / P3.T5 thumbnail / metadata handlers
-  // to land on. The registry contract stays stable for P4.T1.
+  // P3.T2: image-channel job executor + handler registry. Stub for
+  // P4.T1 — single concurrency, no retry / zombie / channels.
+  // P3.T4 swapped the `image_thumbnail` stub for the real
+  // sharp-driven handler; `image_metadata` remains a stub until P3.T5.
   const handlerRegistry = new JobHandlerRegistry();
-  handlerRegistry.register("image_thumbnail", makeStubImageThumbnailHandler(logger));
+  handlerRegistry.register(
+    "image_thumbnail",
+    makeImageThumbnailHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      logger,
+    }),
+  );
   handlerRegistry.register("image_metadata", makeStubImageMetadataHandler(logger));
   const imageExecutor = new ImageChannelExecutor({
     jobRepo,

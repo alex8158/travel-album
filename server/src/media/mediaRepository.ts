@@ -2,8 +2,12 @@
 //
 // Scope:
 //   * P2.T4 added `insert` for Upload_Manager.
-//   * P2.T5 adds `findById` + `list(tripId, options)` to back the
+//   * P2.T5 added `findById` + `list(tripId, options)` to back the
 //     read endpoints (`GET /api/media/:id`, `GET /api/trips/:tripId/media`).
+//   * P3.T4 adds `updateImageDerivedPaths` so the thumbnail worker can
+//     cache the derived image's display dimensions + preview / thumb
+//     paths on the media_items row (so the Gallery can read them
+//     without joining media_versions).
 //   * No state-machine helpers (e.g. markProcessing / markFailed),
 //     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
@@ -80,6 +84,7 @@ export class MediaRepository {
   private readonly findByIdAnyStmt;
   private readonly listByTripActiveStmt;
   private readonly listByTripAllStmt;
+  private readonly updateImageDerivedPathsStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -125,6 +130,21 @@ export class MediaRepository {
       WHERE trip_id = ?
       ORDER BY created_at DESC, id DESC
       LIMIT ? OFFSET ?
+    `);
+
+    // Cache the display dimensions + derived paths on the media row
+    // itself (P3.T4 ImageWorker.thumbnail). Limited to active rows
+    // (`deleted_at IS NULL`) — a soft-deleted media should not absorb
+    // further write traffic. The handler logs a warning if changes=0
+    // so the soft-delete-race case is observable.
+    this.updateImageDerivedPathsStmt = db.prepare(`
+      UPDATE media_items
+      SET width = @width,
+          height = @height,
+          preview_path = @previewPath,
+          thumbnail_path = @thumbnailPath,
+          updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
     `);
   }
 
@@ -179,6 +199,35 @@ export class MediaRepository {
     const stmt = options.includeDeleted ? this.listByTripAllStmt : this.listByTripActiveStmt;
     const rows = stmt.all(tripId, limit, offset) as MediaRow[];
     return rows.map(rowToItem);
+  }
+
+  /**
+   * Cache the rotated/displayed image dimensions and the derived
+   * thumbnail / preview paths on the media row. Called by
+   * ImageWorker.thumbnail (P3.T4) after sharp finishes.
+   *
+   * Returns the number of rows touched. 0 means the row was missing
+   * or already soft-deleted between the worker's `findById` and this
+   * UPDATE — the caller logs that case and proceeds (the
+   * media_versions write still landed if it ran earlier).
+   */
+  updateImageDerivedPaths(args: {
+    readonly mediaId: string;
+    readonly width: number;
+    readonly height: number;
+    readonly previewPath: string;
+    readonly thumbnailPath: string;
+    readonly updatedAt: string;
+  }): number {
+    const info = this.updateImageDerivedPathsStmt.run({
+      mediaId: args.mediaId,
+      width: args.width,
+      height: args.height,
+      previewPath: args.previewPath,
+      thumbnailPath: args.thumbnailPath,
+      updatedAt: args.updatedAt,
+    });
+    return info.changes;
   }
 }
 

@@ -1,13 +1,14 @@
-// Public surface for the media domain (P2.T4 write + P2.T5 read).
+// Public surface for the media domain (P2.T4 write + P2.T5 read +
+// P3.T4 derived versions).
 //
 // Importers should pull from "../media" rather than reaching into
-// individual files. The write side (Upload_Manager) and the read
-// side (Gallery / detail) share the same Repository for now; future
-// state-machine / soft-delete helpers will go through the same
-// barrel as they land in P4 / P7.
+// individual files. The write side (Upload_Manager), the read side
+// (Gallery / detail), and the derived-versions side (thumbnail /
+// preview / enhanced / ai_refined writes) all live here.
 
 export { MediaRepository } from "./mediaRepository.js";
 export { MediaService } from "./mediaService.js";
+export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 
 export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";
 
