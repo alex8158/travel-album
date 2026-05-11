@@ -1,14 +1,18 @@
-// Media API client (P2.T6 scope: upload only).
+// Media API client (P2.T6 upload + P2.T7 list read).
 //
-// Mirrors the server's per-file result shape from
-// server/src/upload/types.ts. Currently kept in sync by hand; an
+// Mirrors the server's per-file upload result (server/src/upload/types.ts)
+// and the read projection from MediaService.list (server/src/media/
+// mediaTypes.ts → MediaItem). Currently kept in sync by hand; an
 // auto-generated client (e.g. via openapi-typescript) is a later
 // concern (R-14 in P1 risks).
 //
-// The endpoint is POST /api/trips/:tripId/media/upload — the route
-// landed in P2.T4. Frontend reads (Gallery / detail) come in P2.T7+
-// and will add the corresponding fetch helpers; this file deliberately
-// holds only the upload helper for P2.T6.
+// Endpoints used:
+//   * POST /api/trips/:tripId/media/upload     (P2.T4 / P2.T6)
+//   * GET  /api/trips/:tripId/media            (P2.T5 / P2.T7)
+//
+// `GET /api/media/:id` is intentionally NOT wired in this file — the
+// gallery needs only the list endpoint for now, and a single-media
+// detail page is later phase work (P3.T4 onwards).
 
 /**
  * Three discrete per-file outcomes from the upload endpoint:
@@ -127,4 +131,100 @@ async function readErrorMessage(res: Response): Promise<string> {
     // Non-JSON error body; fall through.
   }
   return `HTTP ${res.status}`;
+}
+
+// ---------------------------------------------------------------------------
+// Read side (P2.T7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed set of values returned in `MediaItem.type`. Same vocabulary as
+ * the server's `media_items_type_enum` CHECK.
+ */
+export type MediaType = "image" | "video" | "unknown";
+
+/**
+ * Lifecycle states from media_items_status_enum (CLAUDE.md §4.1).
+ */
+export type MediaStatus =
+  | "uploaded"
+  | "processing"
+  | "processed"
+  | "failed"
+  | "archived"
+  | "deleted";
+
+export type MediaUserDecision = "keep" | "remove" | "undecided";
+
+/**
+ * Read projection returned by GET /api/trips/:tripId/media (and the
+ * single-row GET /api/media/:id, when that's wired later). Mirrors
+ * `MediaItem` in server/src/media/mediaTypes.ts. Hash columns are
+ * intentionally absent on the server side and therefore here too.
+ */
+export interface MediaItem {
+  readonly id: string;
+  readonly tripId: string;
+  readonly type: MediaType;
+  readonly originalPath: string | null;
+  readonly previewPath: string | null;
+  readonly thumbnailPath: string | null;
+  readonly fileSize: number | null;
+  readonly mimeType: string | null;
+  readonly extension: string | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly duration: number | null;
+  readonly status: MediaStatus;
+  readonly userDecision: MediaUserDecision;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly deletedAt: string | null;
+}
+
+interface ListMediaResponse {
+  media: MediaItem[];
+}
+
+/**
+ * Pagination knobs accepted by the list endpoint. Both are optional;
+ * the server defaults to `limit=50 / offset=0`. The route layer caps
+ * limit at 100. The gallery uses these only minimally (no in-UI
+ * pagination yet — P2.T7 is the basic grid).
+ */
+export interface FetchTripMediaOptions {
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/**
+ * Fetch the active media list for a trip.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid tripId / pagination
+ *   * 404 — trip missing or soft-deleted
+ *
+ * The thrown `Error.message` is lifted from the unified error
+ * envelope's `error.message` when present.
+ */
+export async function fetchTripMedia(
+  tripId: string,
+  options: FetchTripMediaOptions = {},
+  signal?: AbortSignal,
+): Promise<MediaItem[]> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  const query = params.toString();
+  const url = `/api/trips/${encodeURIComponent(tripId)}/media${query ? `?${query}` : ""}`;
+
+  const init: RequestInit = { headers: { Accept: "application/json" } };
+  if (signal) init.signal = signal;
+
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as ListMediaResponse;
+  return body.media;
 }

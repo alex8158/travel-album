@@ -1,21 +1,33 @@
-// Trip detail page skeleton (P1.T6 + P1.T7 delete confirmation).
+// Trip detail page skeleton (P1.T6 + P1.T7 + P2.T6 + P2.T7).
 //
 // Mounted at /trips/:id. Shows the single trip and acts as the IA
 // anchor that the rest of the system grows from:
 //
 //   - Edit affordance     (P1.T5 form, already wired)
-//   - Upload entry point  (P2.T6 will land /trips/:id/upload)
+//   - Upload entry point  (P2.T6 → /trips/:id/upload)
 //   - Delete affordance   (P1.T7 — modal confirmation, soft delete)
-//   - Counts strip        (hard-coded 0 today; populates once the
-//                          media tables exist starting at P2.T1)
-//   - Gallery placeholder (P2.T7 will render the real media grid)
+//   - Counts strip        (P2.T7 wires photos / videos to the real
+//                          media list; duplicate / cleanup counts
+//                          stay at 0 until P5 / P6 land)
+//   - Gallery grid        (P2.T7 — renders MediaCards from
+//                          GET /api/trips/:tripId/media, with manual
+//                          refresh and empty / loading / error
+//                          states. Inline images / video tags are
+//                          deliberately omitted because no static
+//                          file route exists yet; each card surfaces
+//                          metadata + storage path for now.)
 //
-// Three render states:
+// Three render states for the trip itself:
 //   1. loading      — initial fetch in flight
 //   2. error        — fetch failed (404 for missing/soft-deleted ids
 //                     surfaces here as "Failed to load trip: …")
 //   3. trip loaded  — full skeleton renders, with the inline delete
 //                     dialog rendered conditionally on top.
+//
+// The gallery has its own loading / error / empty / loaded branches
+// inside the trip-loaded state — they are local to the Gallery
+// section so a media fetch failure does not blank the rest of the
+// page.
 //
 // Delete flow (P1.T7):
 //   - User clicks the danger Delete button in the header.
@@ -30,20 +42,35 @@
 
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import type { MediaItem } from "../api/media";
 import { deleteTrip } from "../api/trips";
 import { useTrip } from "../hooks/useTrip";
+import { useTripMedia } from "../hooks/useTripMedia";
 
 export default function TripDetailPage() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const { trip, loading, error, refetch } = useTrip(id);
+  // P2.T7: pull media for this trip. The hook short-circuits when id
+  // is undefined and refetches when id changes (e.g. via Back/Forward).
+  // The same `id` is used for both fetches so a 404 on the trip
+  // generally implies a 404 on its media too; we render based on the
+  // trip's lifecycle state first so the media error never reaches the
+  // user in that case.
+  const {
+    media,
+    loading: mediaLoading,
+    error: mediaError,
+    refetch: refetchMedia,
+  } = useTripMedia(id);
 
   // Pull fresh data whenever the user navigates back here — for
-  // example after saving an edit at /trips/:id/edit. In the current
-  // routing setup the page also remounts on each navigation (so
-  // useTrip's mount effect is enough), but watching location.key keeps
-  // the contract correct for flows that mutate the trip without
+  // example after saving an edit at /trips/:id/edit or returning from
+  // the upload page where new media may have landed. In the current
+  // routing setup the page also remounts on each navigation (so the
+  // hook mount effects are enough), but watching location.key keeps
+  // the contract correct for flows that mutate state without
   // unmounting (e.g. the delete confirmation below). Skipping the very
   // first render avoids a duplicate fetch on the initial mount.
   const lastSeenKeyRef = useRef<string | null>(null);
@@ -55,8 +82,9 @@ export default function TripDetailPage() {
     if (lastSeenKeyRef.current !== location.key) {
       lastSeenKeyRef.current = location.key;
       refetch();
+      refetchMedia();
     }
-  }, [location.key, refetch]);
+  }, [location.key, refetch, refetchMedia]);
 
   // ---- Delete confirmation state (P1.T7) ----------------------------------
 
@@ -139,6 +167,13 @@ export default function TripDetailPage() {
   }
 
   const dateRange = formatDateRange(trip.startDate, trip.endDate);
+  // Counts come straight from the loaded media list. Anything not yet
+  // fetched / errored shows 0 — that's accurate for the UI ("we have
+  // 0 confirmed photos") and matches the empty-state copy below. P5 /
+  // P6 will fill in duplicate / cleanup counts once those workers
+  // land.
+  const photoCount = media.filter((m) => m.type === "image").length;
+  const videoCount = media.filter((m) => m.type === "video").length;
 
   return (
     <main>
@@ -181,25 +216,57 @@ export default function TripDetailPage() {
       <section className="trip-detail-section">
         <h2>Overview</h2>
         <dl className="counts-grid">
-          <CountCard label="Photos" value={0} />
-          <CountCard label="Videos" value={0} />
+          <CountCard label="Photos" value={photoCount} />
+          <CountCard label="Videos" value={videoCount} />
           <CountCard label="Duplicate groups" value={0} />
           <CountCard label="Cleanup candidates" value={0} />
         </dl>
         <p className="status-text">
-          Counts will populate once media tables and analyses land starting at P2.T1.
+          Duplicate / cleanup counts will populate once dedup (P5) and quality (P6) workers land.
         </p>
       </section>
 
       <section className="trip-detail-section">
-        <h2>Gallery</h2>
-        <div className="gallery-placeholder">
-          <p>No media uploaded yet.</p>
-          <p>The gallery (P2.T7) will render the photo grid and video cards here.</p>
-          <Link to={`/trips/${trip.id}/upload`} className="btn-primary">
-            Upload your first media
-          </Link>
+        <div className="trip-detail-section-header">
+          <h2>Gallery</h2>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={refetchMedia}
+            disabled={mediaLoading}
+          >
+            {mediaLoading ? "Refreshing…" : "Refresh"}
+          </button>
         </div>
+
+        {mediaLoading && media.length === 0 ? (
+          <p className="status-text">Loading media…</p>
+        ) : mediaError !== null ? (
+          <p className="status-text status-error" role="alert">
+            Failed to load media: {mediaError}
+          </p>
+        ) : media.length === 0 ? (
+          <div className="gallery-placeholder">
+            <p>No media uploaded yet.</p>
+            <p>Upload images or videos to populate this gallery.</p>
+            <Link to={`/trips/${trip.id}/upload`} className="btn-primary">
+              Upload your first media
+            </Link>
+          </div>
+        ) : (
+          <>
+            <ul className="media-grid">
+              {media.map((item) => (
+                <MediaCard key={item.id} item={item} />
+              ))}
+            </ul>
+            {media.length >= 100 && (
+              <p className="status-text">
+                Showing the most recent 100 items. Pagination UI is out of scope for P2.T7.
+              </p>
+            )}
+          </>
+        )}
       </section>
 
       {deleteOpen && (
@@ -265,4 +332,83 @@ function formatDateRange(start: string | null, end: string | null): string | nul
   if (start) return `from ${start}`;
   if (end) return `until ${end}`;
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Gallery card (P2.T7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single media card. Inline image / video preview is intentionally
+ * omitted — there is no static-file route yet, so an `<img src={...}>`
+ * would 404. We surface metadata + the storage path so the user can
+ * see what was uploaded; full previews land alongside the static
+ * route in a later task (out of scope for P2.T7).
+ */
+function MediaCard({ item }: { item: MediaItem }): JSX.Element {
+  const filename = filenameFromPath(item.originalPath);
+  const typeLabel = item.type === "image" ? "Image" : item.type === "video" ? "Video" : "Unknown";
+  return (
+    <li className="media-card" data-type={item.type} data-status={item.status}>
+      <div className="media-card-thumb" aria-hidden="true">
+        {item.type === "image" ? "🖼️" : item.type === "video" ? "🎞️" : "📄"}
+      </div>
+      <div className="media-card-body">
+        <div className="media-card-title">
+          <span className="media-card-type">{typeLabel}</span>
+          <span className="media-card-status" data-status={item.status}>
+            {item.status}
+          </span>
+        </div>
+        <dl className="media-card-meta">
+          <div>
+            <dt>File</dt>
+            <dd className="media-card-mono" title={item.originalPath ?? ""}>
+              {filename ?? "—"}
+            </dd>
+          </div>
+          <div>
+            <dt>MIME</dt>
+            <dd>{item.mimeType ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Size</dt>
+            <dd>{item.fileSize !== null ? formatBytes(item.fileSize) : "—"}</dd>
+          </div>
+          <div>
+            <dt>Uploaded</dt>
+            <dd>{formatTimestamp(item.createdAt)}</dd>
+          </div>
+        </dl>
+      </div>
+    </li>
+  );
+}
+
+function filenameFromPath(p: string | null): string | null {
+  if (p === null || p.length === 0) return null;
+  const idx = p.lastIndexOf("/");
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatTimestamp(iso: string): string {
+  // Best-effort: trim trailing fractional seconds + Z for readability.
+  // Falls back to the raw value if parsing fails.
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d
+      .toISOString()
+      .replace(/\.\d{3}Z$/, "Z")
+      .replace("T", " ");
+  } catch {
+    return iso;
+  }
 }

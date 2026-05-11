@@ -524,3 +524,148 @@ a {
   font-size: 0.85rem;
   color: #1f2328;
 }
+
+/* ---- Gallery grid (P2.T7) ---------------------------------------- */
+
+.trip-detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.trip-detail-section-header h2 {
+  margin: 0;
+}
+
+.media-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.media-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.media-card[data-type="unknown"] {
+  background: #fafbfc;
+  border-color: #d0d7de;
+}
+
+.media-card-thumb {
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+  background: #f6f8fa;
+  color: #57606a;
+  border-bottom: 1px solid #eaeef2;
+}
+
+.media-card[data-type="image"] .media-card-thumb {
+  background: #ddf4e3;
+}
+
+.media-card[data-type="video"] .media-card-thumb {
+  background: #dceeff;
+}
+
+.media-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+}
+
+.media-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.media-card-type {
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.media-card-status {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: #eaeef2;
+  color: #1f2328;
+  text-transform: lowercase;
+}
+
+.media-card-status[data-status="uploaded"] {
+  background: #ddf4e3;
+  color: #1f883d;
+}
+
+.media-card-status[data-status="processing"] {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
+.media-card-status[data-status="processed"] {
+  background: #c5d9f1;
+  color: #0a3069;
+}
+
+.media-card-status[data-status="failed"] {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.media-card-status[data-status="archived"],
+.media-card-status[data-status="deleted"] {
+  background: #eaeef2;
+  color: #57606a;
+}
+
+.media-card-meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.media-card-meta > div {
+  display: contents;
+}
+
+.media-card-meta dt {
+  color: #57606a;
+  font-weight: 500;
+}
+
+.media-card-meta dd {
+  margin: 0;
+  color: #1f2328;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-card-mono {
+  font-family:
+    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 0.8rem;
+}
