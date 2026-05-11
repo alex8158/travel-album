@@ -10,7 +10,7 @@ import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { JobRepository } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
-import { MediaRepository } from "./media/index.js";
+import { MediaRepository, MediaService } from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
@@ -157,6 +157,7 @@ async function main(): Promise<void> {
     maxFileSize: config.upload.maxFileSize,
     logger,
   });
+  const mediaService = new MediaService(mediaRepo, tripService);
 
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
 
@@ -167,6 +168,7 @@ async function main(): Promise<void> {
     storage,
     tripService,
     uploadService,
+    mediaService,
     debugRoutes: config.nodeEnv !== "production",
   });
 

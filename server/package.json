@@ -19,7 +19,8 @@
     "smoke:storage": "tsx src/scripts/storage-smoke.ts",
     "smoke:trips": "tsx src/scripts/trips-smoke.ts",
     "smoke:classify": "tsx src/scripts/classify-smoke.ts",
-    "smoke:upload": "tsx src/scripts/upload-smoke.ts"
+    "smoke:upload": "tsx src/scripts/upload-smoke.ts",
+    "smoke:media": "tsx src/scripts/media-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

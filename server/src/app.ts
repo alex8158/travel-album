@@ -23,6 +23,7 @@ import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
+import type { MediaService } from "./media/index.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeMediaRouter } from "./routes/media.js";
 import { makeTripsRouter } from "./routes/trips.js";
@@ -41,6 +42,8 @@ export interface CreateAppOptions {
   readonly tripService: TripService;
   /** Upload_Manager powering POST /api/trips/:tripId/media/upload (P2.T4). */
   readonly uploadService: UploadService;
+  /** Media read service powering GET /api/(trips/:tripId/)?media[/:id] (P2.T5). */
+  readonly mediaService: MediaService;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -49,7 +52,8 @@ export interface CreateAppOptions {
 }
 
 export function createApp(opts: CreateAppOptions): Express {
-  const { logger, capabilities, storage, tripService, uploadService, debugRoutes } = opts;
+  const { logger, capabilities, storage, tripService, uploadService, mediaService, debugRoutes } =
+    opts;
 
   const app = express();
   app.disable("x-powered-by");
@@ -71,10 +75,10 @@ export function createApp(opts: CreateAppOptions): Express {
   // Trip CRUD (P1.T3).
   app.use("/api/trips", makeTripsRouter({ service: tripService }));
 
-  // Media upload (P2.T4). Mounted at /api so this router can own paths
-  // like /trips/:tripId/media/upload without colliding with the Trip
-  // CRUD router above.
-  app.use("/api", makeMediaRouter({ uploadService }));
+  // Media routes (P2.T4 upload + P2.T5 read). Mounted at /api so this
+  // router can own paths like /trips/:tripId/media/upload and
+  // /media/:id without colliding with the Trip CRUD router above.
+  app.use("/api", makeMediaRouter({ uploadService, mediaService }));
 
   if (debugRoutes) {
     // Demonstrates the AppError path: chosen status, code, message, details.

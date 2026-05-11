@@ -1,30 +1,85 @@
-// MediaRepository — write-only surface for P2.T4 Upload_Manager.
+// MediaRepository — data-access layer for media_items.
 //
-// Scope (per docs/tasks.md P2.T4 + this turn's user confirmation):
-//   * The Upload_Manager INSERTs media_items rows. That's it.
-//   * Read operations (findById / list with pagination / filters) and
-//     the corresponding HTTP layer land in P2.T5. Until then this
-//     repository deliberately exposes a single `insert` method to
-//     keep the surface honest about the current capability.
-//   * No state-machine helpers (e.g. markProcessing / markFailed) —
-//     those belong to P4 once the Worker pool lands.
+// Scope:
+//   * P2.T4 added `insert` for Upload_Manager.
+//   * P2.T5 adds `findById` + `list(tripId, options)` to back the
+//     read endpoints (`GET /api/media/:id`, `GET /api/trips/:tripId/media`).
+//   * No state-machine helpers (e.g. markProcessing / markFailed),
+//     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
-// The class follows TripRepository's prepared-statement pattern so the
-// later P2.T5 additions can layer on without restructuring.
+// All read paths default to `WHERE deleted_at IS NULL` to match the
+// project-wide soft-delete convention (design.md §4.4). An optional
+// `includeDeleted` toggle exists for future restore / admin callers
+// but is NOT exposed at the route layer.
 //
-// `insert` is synchronous (better-sqlite3 API). It does not wrap itself
-// in a transaction — callers that need atomic media + job insertion
-// (UploadService) compose `db.transaction(() => { ... })` around both
-// repositories.
+// All statements are prepared once at construction time, mirroring
+// TripRepository's pattern. The repository never throws AppError —
+// missing rows surface as `null` / empty arrays so the Service decides
+// how to translate them.
 
 import type { SqliteDatabase } from "../db/connection.js";
-import type { MediaInsertData } from "./mediaTypes.js";
+import type { ListMediaOptions, MediaItem, MediaStatus, MediaUserDecision } from "./mediaTypes.js";
+import type { MediaInsertData, MediaType } from "./mediaTypes.js";
 
 const DEFAULT_STATUS = "uploaded";
 const DEFAULT_USER_DECISION = "undecided";
 
+const DEFAULT_LIMIT = 50;
+
+/**
+ * Internal row shape returned by `SELECT ... FROM media_items`.
+ * Snake_case columns map to camelCase on the way out via `rowToItem`.
+ */
+interface MediaRow {
+  id: string;
+  trip_id: string;
+  type: MediaType;
+  original_path: string | null;
+  preview_path: string | null;
+  thumbnail_path: string | null;
+  file_size: number | null;
+  mime_type: string | null;
+  extension: string | null;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+  status: MediaStatus;
+  user_decision: MediaUserDecision;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/**
+ * Read projection. file_hash / perceptual_hash are NOT included — they
+ * are dedup internals (P5) and not useful to the frontend.
+ */
+const SELECT_COLUMNS = `
+  id,
+  trip_id,
+  type,
+  original_path,
+  preview_path,
+  thumbnail_path,
+  file_size,
+  mime_type,
+  extension,
+  width,
+  height,
+  duration,
+  status,
+  user_decision,
+  created_at,
+  updated_at,
+  deleted_at
+`;
+
 export class MediaRepository {
   private readonly insertStmt;
+  private readonly findByIdActiveStmt;
+  private readonly findByIdAnyStmt;
+  private readonly listByTripActiveStmt;
+  private readonly listByTripAllStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -39,6 +94,37 @@ export class MediaRepository {
         @status, @userDecision,
         @createdAt, @updatedAt
       )
+    `);
+
+    this.findByIdActiveStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM media_items
+      WHERE id = ? AND deleted_at IS NULL
+    `);
+
+    this.findByIdAnyStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM media_items
+      WHERE id = ?
+    `);
+
+    // Newest-first ordering mirrors TripRepository: the Gallery (P2.T7)
+    // wants most recent uploads at the top. Tie-break on id keeps the
+    // page boundaries deterministic across paginated requests.
+    this.listByTripActiveStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM media_items
+      WHERE trip_id = ? AND deleted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    this.listByTripAllStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM media_items
+      WHERE trip_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
     `);
   }
 
@@ -66,4 +152,54 @@ export class MediaRepository {
       updatedAt: data.updatedAt,
     });
   }
+
+  /**
+   * Fetch a single media row by id. Active rows only (deleted_at IS
+   * NULL); pass `includeDeleted: true` to also surface soft-deleted
+   * rows (reserved for P7 restore).
+   */
+  findById(id: string, options: { includeDeleted?: boolean } = {}): MediaItem | null {
+    const stmt = options.includeDeleted ? this.findByIdAnyStmt : this.findByIdActiveStmt;
+    const row = stmt.get(id) as MediaRow | undefined;
+    return row ? rowToItem(row) : null;
+  }
+
+  /**
+   * Page through the media items of a single trip. Always orders
+   * newest-first. Active rows only by default.
+   *
+   * Note: this method does NOT verify the tripId exists — it returns
+   * an empty array for missing / soft-deleted trips. The Service layer
+   * is responsible for translating "trip missing" into a 404 before
+   * calling here.
+   */
+  list(tripId: string, options: ListMediaOptions = {}): MediaItem[] {
+    const limit = options.limit ?? DEFAULT_LIMIT;
+    const offset = options.offset ?? 0;
+    const stmt = options.includeDeleted ? this.listByTripAllStmt : this.listByTripActiveStmt;
+    const rows = stmt.all(tripId, limit, offset) as MediaRow[];
+    return rows.map(rowToItem);
+  }
+}
+
+function rowToItem(row: MediaRow): MediaItem {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    type: row.type,
+    originalPath: row.original_path,
+    previewPath: row.preview_path,
+    thumbnailPath: row.thumbnail_path,
+    fileSize: row.file_size,
+    mimeType: row.mime_type,
+    extension: row.extension,
+    width: row.width,
+    height: row.height,
+    duration: row.duration,
+    status: row.status,
+    userDecision: row.user_decision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  };
 }
