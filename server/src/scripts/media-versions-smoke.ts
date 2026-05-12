@@ -137,16 +137,24 @@ async function main(): Promise<void> {
         result.appliedNow.includes("005_create_media_versions.sql"),
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
+      // Check the migration chain 000..005 is present, but use an
+      // "includes" subset check rather than an exact-length match so
+      // later phases (P3.T5 added 006, future phases will add more)
+      // do not retroactively break this assertion.
+      const required = [
+        "000_init.sql",
+        "001_create_trips.sql",
+        "002_create_media_items.sql",
+        "003_add_trips_cover_media_id_fk.sql",
+        "004_create_processing_jobs.sql",
+        "005_create_media_versions.sql",
+      ];
       record(
-        "fresh DB: all five expected migrations applied",
-        result.appliedNow.length === 6 &&
-          result.appliedNow.includes("000_init.sql") &&
-          result.appliedNow.includes("001_create_trips.sql") &&
-          result.appliedNow.includes("002_create_media_items.sql") &&
-          result.appliedNow.includes("003_add_trips_cover_media_id_fk.sql") &&
-          result.appliedNow.includes("004_create_processing_jobs.sql") &&
-          result.appliedNow.includes("005_create_media_versions.sql"),
-        `count=${result.appliedNow.length}`,
+        "fresh DB: migrations 000..005 chain present in appliedNow",
+        required.every((m) => result.appliedNow.includes(m)),
+        `count=${result.appliedNow.length} missing=${JSON.stringify(
+          required.filter((m) => !result.appliedNow.includes(m)),
+        )}`,
       );
     }
 
@@ -526,13 +534,17 @@ async function main(): Promise<void> {
       closeDatabase(stageOne);
     }
 
-    // Stage 2: re-open + runMigrations — only 005 should land.
+    // Stage 2: re-open + runMigrations — 005 should land (and any
+    // newer migrations the project has accumulated since). The point
+    // of this smoke is "005 landed AND existing data survives"; the
+    // "exactly one migration" assertion was retired in P3.T5 when
+    // 006 joined the chain.
     const stageTwo = openDatabase(upgradeDbPath);
     try {
       const result = runMigrations(stageTwo.db);
       record(
-        "upgrade scenario: only 005 in appliedNow",
-        result.appliedNow.length === 1 && result.appliedNow[0] === "005_create_media_versions.sql",
+        "upgrade scenario: 005_create_media_versions in appliedNow",
+        result.appliedNow.includes("005_create_media_versions.sql"),
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
       const tripCount = (

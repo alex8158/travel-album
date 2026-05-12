@@ -24,12 +24,15 @@
     "smoke:storage-route": "tsx src/scripts/storage-route-smoke.ts",
     "smoke:image-channel-executor": "tsx src/scripts/image-channel-executor-smoke.ts",
     "smoke:media-versions": "tsx src/scripts/media-versions-smoke.ts",
-    "smoke:image-thumbnail": "tsx src/scripts/image-thumbnail-smoke.ts"
+    "smoke:image-thumbnail": "tsx src/scripts/image-thumbnail-smoke.ts",
+    "smoke:migration-006": "tsx src/scripts/migration-006-smoke.ts",
+    "smoke:image-metadata": "tsx src/scripts/image-metadata-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
     "busboy": "^1.6.0",
     "dotenv": "^16.4.5",
+    "exifr": "^7.1.3",
     "express": "^4.21.1",
     "pino": "^9.5.0",
     "sharp": "^0.33.5",

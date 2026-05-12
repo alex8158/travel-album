@@ -12,8 +12,8 @@ import {
   ImageChannelExecutor,
   JobHandlerRegistry,
   JobRepository,
+  makeImageMetadataHandler,
   makeImageThumbnailHandler,
-  makeStubImageMetadataHandler,
 } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import { MediaRepository, MediaService, MediaVersionsRepository } from "./media/index.js";
@@ -168,8 +168,7 @@ async function main(): Promise<void> {
 
   // P3.T2: image-channel job executor + handler registry. Stub for
   // P4.T1 — single concurrency, no retry / zombie / channels.
-  // P3.T4 swapped the `image_thumbnail` stub for the real
-  // sharp-driven handler; `image_metadata` remains a stub until P3.T5.
+  // P3.T4 / P3.T5 wired both real handlers; no stubs remain.
   const handlerRegistry = new JobHandlerRegistry();
   handlerRegistry.register(
     "image_thumbnail",
@@ -180,7 +179,15 @@ async function main(): Promise<void> {
       logger,
     }),
   );
-  handlerRegistry.register("image_metadata", makeStubImageMetadataHandler(logger));
+  handlerRegistry.register(
+    "image_metadata",
+    makeImageMetadataHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      logger,
+    }),
+  );
   const imageExecutor = new ImageChannelExecutor({
     jobRepo,
     registry: handlerRegistry,
