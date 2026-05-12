@@ -22,12 +22,19 @@ import { parseOrThrow } from "../util/zodParse.js";
 
 import { MediaRepository } from "./mediaRepository.js";
 import { listMediaOptionsSchema } from "./mediaSchemas.js";
-import type { MediaItem } from "./mediaTypes.js";
+import { MediaVersionsRepository } from "./mediaVersionsRepository.js";
+import type { MediaDetail, MediaItem } from "./mediaTypes.js";
 
 export class MediaService {
   constructor(
     private readonly repo: MediaRepository,
     private readonly tripService: TripService,
+    /**
+     * Optional so older call sites (smokes, unit tests that don't
+     * exercise the detail bundle) can construct a service without
+     * the versions repo. `getMediaDetailById` throws if it's missing.
+     */
+    private readonly versionsRepo?: MediaVersionsRepository,
   ) {}
 
   /**
@@ -42,6 +49,25 @@ export class MediaService {
       throw new NotFoundError(`Media not found: ${safeId}`, { id: safeId });
     }
     return media;
+  }
+
+  /**
+   * Bundle the media row with every `media_versions` row attached
+   * to it. Backing `GET /api/media/:id` for the detail page (P3.T6).
+   * Versions are empty `[]` when none exist yet (e.g. media just
+   * uploaded, workers not yet run).
+   *
+   * Throws NotFoundError when the media row itself is missing or
+   * soft-deleted (same semantics as `getMediaById`).
+   */
+  getMediaDetailById(id: unknown): MediaDetail {
+    if (this.versionsRepo === undefined) {
+      // Programmer error — the route can't be wired without this.
+      throw new Error("MediaService: versionsRepo not configured; cannot serve detail bundle");
+    }
+    const media = this.getMediaById(id);
+    const versions = this.versionsRepo.listByMediaId(media.id);
+    return { media, versions };
   }
 
   /**

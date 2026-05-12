@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     maxFileSize: config.upload.maxFileSize,
     logger,
   });
-  const mediaService = new MediaService(mediaRepo, tripService);
+  const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo);
 
   // P3.T2: image-channel job executor + handler registry. Stub for
   // P4.T1 — single concurrency, no retry / zombie / channels.

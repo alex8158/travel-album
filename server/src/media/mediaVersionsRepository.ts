@@ -1,24 +1,21 @@
-// MediaVersionsRepository — write surface for media_versions (P3.T4).
+// MediaVersionsRepository — data-access layer for media_versions.
 //
-// Scope (per docs/tasks.md P3.T4):
-//   * `upsert` — INSERT a (media_id, version_type) row, or UPDATE the
-//     existing one. The UNIQUE constraint added in 005 migration is
-//     the conflict target. Used by the image-thumbnail worker today
-//     and by P3.T5 metadata / P8 enhance / P10 ai_refine when they
-//     land.
-//   * No reads — Gallery (P2.T7) consumes the `media_items.preview_path`
-//     / `thumbnail_path` columns directly. A read API on media_versions
-//     comes when version switching lands (P8.T4 / P10.T5).
-//
-// Idempotency: re-running the same job (e.g. a retry, or manual
-// re-thumbnail) repeats the upsert and overwrites the cached metrics
-// without growing the table. The handler also calls
-// `storage.putDerived(..., overwrite: true)` so the on-disk artefact
-// is regenerated to match.
+// Scope:
+//   * P3.T4 added `upsert` — INSERT a (media_id, version_type) row,
+//     or UPDATE the existing one. The UNIQUE constraint from 005 is
+//     the conflict target. Used by image-thumbnail / image-metadata
+//     workers today, by P8 enhance / P10 ai_refine when they land.
+//   * P3.T6 adds `listByMediaId` — return all versions for one media,
+//     ordered by `version_type` for stable rendering on the detail
+//     page (`GET /api/media/:id`).
+//   * No deletes / state-machine helpers — soft-delete cascades come
+//     for free via the FK in 005; explicit per-version delete is a
+//     P8.T4 / P10.T5 concern.
 
 import { randomUUID } from "node:crypto";
 
 import type { SqliteDatabase } from "../db/connection.js";
+import type { MediaVersion } from "./mediaTypes.js";
 
 export interface MediaVersionUpsertData {
   readonly mediaId: string;
@@ -35,8 +32,41 @@ export interface MediaVersionUpsertData {
   readonly now: string;
 }
 
+interface MediaVersionRow {
+  id: string;
+  media_id: string;
+  version_type: string;
+  file_path: string;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  file_size: number | null;
+  model_name: string | null;
+  params: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const SELECT_COLUMNS = `
+  id,
+  media_id,
+  version_type,
+  file_path,
+  mime_type,
+  width,
+  height,
+  file_size,
+  model_name,
+  params,
+  status,
+  created_at,
+  updated_at
+`;
+
 export class MediaVersionsRepository {
   private readonly upsertStmt;
+  private readonly listByMediaIdStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     // SQLite UPSERT (3.24+). Conflict target is the UNIQUE index
@@ -68,6 +98,16 @@ export class MediaVersionsRepository {
         status     = 'ready',
         updated_at = excluded.updated_at
     `);
+
+    // List all versions for one media, ordered by version_type for
+    // a stable, deterministic detail-page render (the UNIQUE index
+    // on (media_id, version_type) makes this lookup cheap).
+    this.listByMediaIdStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM media_versions
+      WHERE media_id = ?
+      ORDER BY version_type ASC
+    `);
   }
 
   upsert(data: MediaVersionUpsertData): void {
@@ -85,4 +125,33 @@ export class MediaVersionsRepository {
       now: data.now,
     });
   }
+
+  /**
+   * Return every version row for one media, ordered by version_type.
+   * Empty array when no versions exist (e.g. uploaded but not yet
+   * processed). Used by the `GET /api/media/:id` detail endpoint
+   * (P3.T6) to bundle thumbnail / preview / metadata together.
+   */
+  listByMediaId(mediaId: string): MediaVersion[] {
+    const rows = this.listByMediaIdStmt.all(mediaId) as MediaVersionRow[];
+    return rows.map(rowToVersion);
+  }
+}
+
+function rowToVersion(row: MediaVersionRow): MediaVersion {
+  return {
+    id: row.id,
+    mediaId: row.media_id,
+    versionType: row.version_type,
+    filePath: row.file_path,
+    mimeType: row.mime_type,
+    width: row.width,
+    height: row.height,
+    fileSize: row.file_size,
+    modelName: row.model_name,
+    params: row.params,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }

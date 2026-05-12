@@ -339,48 +339,60 @@ function formatDateRange(start: string | null, end: string | null): string | nul
 // ---------------------------------------------------------------------------
 
 /**
- * Single media card. Inline image / video preview is intentionally
- * omitted — there is no static-file route yet, so an `<img src={...}>`
- * would 404. We surface metadata + the storage path so the user can
- * see what was uploaded; full previews land alongside the static
- * route in a later task (out of scope for P2.T7).
+ * Single media card. P2.T7 introduced the card as metadata-only
+ * (no inline image because the static route hadn't landed yet).
+ * P3.T6 wraps the card in a `<Link>` to `/media/:id` so the whole
+ * tile is clickable — matches the TripCard pattern from P1.T4. The
+ * P3.T4 thumbnail is now also usable as the card visual when
+ * present; falls back to the typed emoji placeholder otherwise.
  */
 function MediaCard({ item }: { item: MediaItem }): JSX.Element {
   const filename = filenameFromPath(item.originalPath);
   const typeLabel = item.type === "image" ? "Image" : item.type === "video" ? "Video" : "Unknown";
+  const thumbSrc = item.thumbnailPath !== null ? `/storage/${item.thumbnailPath}` : null;
   return (
     <li className="media-card" data-type={item.type} data-status={item.status}>
-      <div className="media-card-thumb" aria-hidden="true">
-        {item.type === "image" ? "🖼️" : item.type === "video" ? "🎞️" : "📄"}
-      </div>
-      <div className="media-card-body">
-        <div className="media-card-title">
-          <span className="media-card-type">{typeLabel}</span>
-          <span className="media-card-status" data-status={item.status}>
-            {item.status}
-          </span>
+      <Link to={`/media/${item.id}`} className="media-card-link">
+        <div className="media-card-thumb" aria-hidden="true">
+          {thumbSrc !== null ? (
+            <img className="media-card-thumb-img" src={thumbSrc} alt="" loading="lazy" />
+          ) : item.type === "image" ? (
+            "🖼️"
+          ) : item.type === "video" ? (
+            "🎞️"
+          ) : (
+            "📄"
+          )}
         </div>
-        <dl className="media-card-meta">
-          <div>
-            <dt>File</dt>
-            <dd className="media-card-mono" title={item.originalPath ?? ""}>
-              {filename ?? "—"}
-            </dd>
+        <div className="media-card-body">
+          <div className="media-card-title">
+            <span className="media-card-type">{typeLabel}</span>
+            <span className="media-card-status" data-status={item.status}>
+              {item.status}
+            </span>
           </div>
-          <div>
-            <dt>MIME</dt>
-            <dd>{item.mimeType ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Size</dt>
-            <dd>{item.fileSize !== null ? formatBytes(item.fileSize) : "—"}</dd>
-          </div>
-          <div>
-            <dt>Uploaded</dt>
-            <dd>{formatTimestamp(item.createdAt)}</dd>
-          </div>
-        </dl>
-      </div>
+          <dl className="media-card-meta">
+            <div>
+              <dt>File</dt>
+              <dd className="media-card-mono" title={item.originalPath ?? ""}>
+                {filename ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>MIME</dt>
+              <dd>{item.mimeType ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Size</dt>
+              <dd>{item.fileSize !== null ? formatBytes(item.fileSize) : "—"}</dd>
+            </div>
+            <div>
+              <dt>Uploaded</dt>
+              <dd>{formatTimestamp(item.createdAt)}</dd>
+            </div>
+          </dl>
+        </div>
+      </Link>
     </li>
   );
 }

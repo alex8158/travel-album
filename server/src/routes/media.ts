@@ -85,17 +85,23 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     }),
   );
 
-  // GET /api/media/:id — fetch a single media item by id (P2.T5).
+  // GET /api/media/:id — fetch a single media item by id (P2.T5 + P3.T6).
   // 404 for missing / soft-deleted rows. Does NOT cross-check the
   // owning trip's deletion state — direct fetches by id should still
   // work even if the trip was later soft-deleted (the media row
   // itself is the source of truth here).
+  //
+  // P3.T6 bundles the media_versions rows alongside the media row
+  // under `versions`. Top-level shape `{ media, versions }` keeps
+  // `MediaItem` type-clean and matches the response type
+  // `MediaDetail`. The list endpoint above intentionally does NOT
+  // carry versions (keeps Gallery payload small).
   router.get(
     "/media/:id",
     asyncHandler((req, res) => {
       const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
-      const media = deps.mediaService.getMediaById(id);
-      res.json({ media });
+      const detail = deps.mediaService.getMediaDetailById(id);
+      res.json(detail);
     }),
   );
 

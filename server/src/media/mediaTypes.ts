@@ -111,3 +111,39 @@ export interface ListMediaOptions {
   readonly offset?: number | undefined;
   readonly includeDeleted?: boolean | undefined;
 }
+
+/**
+ * Read projection of a `media_versions` row, returned by the detail
+ * endpoint (P3.T6). Mirrors every column the table holds; consumers
+ * pick whatever they need. `params` is the raw JSON string from
+ * media_versions.params — the frontend parses it on demand (e.g.
+ * for the EXIF table on the metadata version).
+ */
+export interface MediaVersion {
+  readonly id: string;
+  readonly mediaId: string;
+  readonly versionType: string;
+  readonly filePath: string;
+  readonly mimeType: string | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly fileSize: number | null;
+  readonly modelName: string | null;
+  readonly params: string | null;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * `GET /api/media/:id` response payload (P3.T6).
+ *
+ * Top-level `{ media, versions }` keeps `MediaItem` type-clean and
+ * the list endpoint (`GET /api/trips/:tripId/media`) untouched —
+ * list intentionally does NOT carry per-row versions to keep the
+ * Gallery payload small.
+ */
+export interface MediaDetail {
+  readonly media: MediaItem;
+  readonly versions: readonly MediaVersion[];
+}

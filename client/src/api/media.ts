@@ -1,18 +1,16 @@
-// Media API client (P2.T6 upload + P2.T7 list read).
+// Media API client (P2.T6 upload + P2.T7 list read + P3.T6 detail).
 //
 // Mirrors the server's per-file upload result (server/src/upload/types.ts)
-// and the read projection from MediaService.list (server/src/media/
-// mediaTypes.ts → MediaItem). Currently kept in sync by hand; an
-// auto-generated client (e.g. via openapi-typescript) is a later
-// concern (R-14 in P1 risks).
+// and the read projection from MediaService (server/src/media/
+// mediaTypes.ts → MediaItem / MediaVersion / MediaDetail).
+// Kept in sync by hand; an auto-generated client (e.g. via
+// openapi-typescript) is a later concern (R-14 in P1 risks).
 //
 // Endpoints used:
 //   * POST /api/trips/:tripId/media/upload     (P2.T4 / P2.T6)
 //   * GET  /api/trips/:tripId/media            (P2.T5 / P2.T7)
-//
-// `GET /api/media/:id` is intentionally NOT wired in this file — the
-// gallery needs only the list endpoint for now, and a single-media
-// detail page is later phase work (P3.T4 onwards).
+//   * GET  /api/media/:id                      (P2.T5 + P3.T6 — now
+//                                               returns {media, versions})
 
 /**
  * Three discrete per-file outcomes from the upload endpoint:
@@ -227,4 +225,54 @@ export async function fetchTripMedia(
   }
   const body = (await res.json()) as ListMediaResponse;
   return body.media;
+}
+
+/**
+ * One row of `media_versions`. Mirrors the server-side `MediaVersion`
+ * read projection. `params` is the raw JSON string the worker wrote;
+ * consumers parse it on demand (the detail page parses the metadata
+ * version's params to render an EXIF table).
+ */
+export interface MediaVersion {
+  readonly id: string;
+  readonly mediaId: string;
+  readonly versionType: string;
+  readonly filePath: string;
+  readonly mimeType: string | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly fileSize: number | null;
+  readonly modelName: string | null;
+  readonly params: string | null;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Full detail bundle returned by `GET /api/media/:id`. Top-level
+ * shape is `{ media, versions }` — list endpoints stay slim,
+ * detail endpoint carries the related versions for one-shot render.
+ */
+export interface MediaDetail {
+  readonly media: MediaItem;
+  readonly versions: readonly MediaVersion[];
+}
+
+/**
+ * Fetch the full detail bundle for one media id.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid id format
+ *   * 404 — media missing or soft-deleted
+ */
+export async function fetchMediaDetail(id: string, signal?: AbortSignal): Promise<MediaDetail> {
+  const init: RequestInit = { headers: { Accept: "application/json" } };
+  if (signal) init.signal = signal;
+
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}`, init);
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as MediaDetail;
 }

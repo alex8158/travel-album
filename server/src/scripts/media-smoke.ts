@@ -22,7 +22,7 @@ import path from "node:path";
 import { closeDatabase, openDatabase, type SqliteDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { NotFoundError, ValidationError } from "../errors/AppError.js";
-import { MediaRepository, MediaService } from "../media/index.js";
+import { MediaRepository, MediaService, MediaVersionsRepository } from "../media/index.js";
 import type { MediaInsertData } from "../media/index.js";
 import { TripRepository, TripService } from "../trips/index.js";
 
@@ -111,7 +111,8 @@ async function main(): Promise<void> {
     const tripRepo = new TripRepository(dbHandle.db);
     const tripService = new TripService(tripRepo);
     const mediaRepo = new MediaRepository(dbHandle.db);
-    const mediaService = new MediaService(mediaRepo, tripService);
+    const mediaVersionsRepo = new MediaVersionsRepository(dbHandle.db);
+    const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo);
 
     // Two trips: one populated, one empty. Plus a soft-deleted trip to
     // verify that path 404s.
@@ -417,6 +418,86 @@ async function main(): Promise<void> {
         "Repository.findById includeDeleted=true surfaces soft-deleted m3",
         row !== null && row.id === m3 && row.deletedAt !== null,
         `row=${row ? `id=${row.id} deletedAt=${row.deletedAt}` : "null"}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // P3.T6: getMediaDetailById — bundles MediaItem with media_versions
+    // ---------------------------------------------------------------------
+    {
+      // No versions seeded yet — detail should still return cleanly
+      // with an empty versions[].
+      const detailEmpty = mediaService.getMediaDetailById(m1);
+      record(
+        "getMediaDetailById on media with no versions → empty versions[]",
+        detailEmpty.media.id === m1 && detailEmpty.versions.length === 0,
+        `id=${detailEmpty.media.id} versions=${detailEmpty.versions.length}`,
+      );
+
+      // Seed two version rows directly on the DB so we can verify
+      // the bundle pulls them out in `version_type` order.
+      const now = new Date().toISOString();
+      mediaVersionsRepo.upsert({
+        mediaId: m1,
+        versionType: "thumbnail",
+        filePath: `trips/${tripA.id}/derived/${m1}/thumb.webp`,
+        mimeType: "image/webp",
+        width: 320,
+        height: 240,
+        fileSize: 4096,
+        now,
+      });
+      mediaVersionsRepo.upsert({
+        mediaId: m1,
+        versionType: "metadata",
+        filePath: `trips/${tripA.id}/originals/${m1}.jpg`,
+        mimeType: "application/json",
+        params: '{"Make":"TestCam"}',
+        now,
+      });
+
+      const detailWith = mediaService.getMediaDetailById(m1);
+      const types = detailWith.versions.map((v) => v.versionType);
+      record(
+        "getMediaDetailById bundles seeded versions (sorted by version_type)",
+        detailWith.versions.length === 2 && types[0] === "metadata" && types[1] === "thumbnail",
+        `types=${JSON.stringify(types)}`,
+      );
+      record(
+        "getMediaDetailById version rows expose params + dimensions",
+        detailWith.versions.some(
+          (v) => v.versionType === "metadata" && v.params === '{"Make":"TestCam"}',
+        ) &&
+          detailWith.versions.some(
+            (v) => v.versionType === "thumbnail" && v.width === 320 && v.height === 240,
+          ),
+        "metadata params + thumbnail dims",
+      );
+
+      // Soft-deleted media (m3) still 404s through the detail path.
+      let threw: unknown;
+      try {
+        mediaService.getMediaDetailById(m3);
+      } catch (err) {
+        threw = err;
+      }
+      record(
+        "getMediaDetailById on soft-deleted media → NotFoundError",
+        threw instanceof NotFoundError,
+        describeError(threw),
+      );
+
+      // Malformed id still ValidationError.
+      let threw2: unknown;
+      try {
+        mediaService.getMediaDetailById("not a valid id!!!");
+      } catch (err) {
+        threw2 = err;
+      }
+      record(
+        "getMediaDetailById on malformed id → ValidationError",
+        threw2 instanceof ValidationError,
+        describeError(threw2),
       );
     }
   } finally {

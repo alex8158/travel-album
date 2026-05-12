@@ -556,11 +556,39 @@ a {
   border-radius: 8px;
   background: #ffffff;
   overflow: hidden;
+  transition: box-shadow 120ms ease-out;
+}
+
+.media-card:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
 .media-card[data-type="unknown"] {
   background: #fafbfc;
   border-color: #d0d7de;
+}
+
+/* P3.T6: whole card is a single Link to /media/:id. The Link is
+   the child of the .media-card <li> so list semantics stay intact. */
+.media-card-link {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  text-decoration: none;
+  color: inherit;
+}
+
+.media-card-link:hover,
+.media-card-link:focus {
+  text-decoration: none;
+  color: inherit;
+}
+
+.media-card-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .media-card-thumb {
@@ -668,4 +696,115 @@ a {
     ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
   font-size: 0.8rem;
+}
+
+/* ---- MediaDetailPage (P3.T6) ------------------------------------- */
+
+.media-detail-hero {
+  margin: 0 0 1.5rem;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 960px;
+}
+
+.media-detail-hero[data-type="unknown"] {
+  background: #fafbfc;
+}
+
+.media-detail-hero-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
+  background: #1f2328;
+}
+
+.media-detail-hero-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+  color: #57606a;
+  text-align: center;
+}
+
+.media-detail-hero-placeholder p {
+  margin: 0;
+  max-width: 520px;
+}
+
+.media-detail-hero-emoji {
+  font-size: 4rem;
+  line-height: 1;
+}
+
+.media-detail-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  max-width: 960px;
+}
+
+.media-detail-info > .media-detail-field {
+  display: contents;
+}
+
+.media-detail-field dt {
+  color: #57606a;
+  font-weight: 500;
+  font-size: 0.9rem;
+  align-self: baseline;
+}
+
+.media-detail-field dd {
+  margin: 0;
+  color: #1f2328;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.mono {
+  font-family:
+    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 0.85rem;
+}
+
+.media-detail-versions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+  max-width: 960px;
+}
+
+.media-detail-version {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.media-detail-version-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.media-detail-version-type {
+  font-weight: 600;
+  color: #1f2328;
+  text-transform: lowercase;
 }

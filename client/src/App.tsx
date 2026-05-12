@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import MediaDetailPage from "./pages/MediaDetailPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import TripDetailPage from "./pages/TripDetailPage";
 import TripFormPage from "./pages/TripFormPage";
@@ -12,11 +13,12 @@ import UploadPage from "./pages/UploadPage";
 //   /trips/new                  -> P1.T5 (TripFormPage create)     ✓ wired
 //   /trips/:id/edit             -> P1.T5 (TripFormPage edit)       ✓ wired
 //   /trips/:id                  -> P1.T6 (TripDetailPage skeleton) ✓ wired
-//                                  P2.T7 will fill the gallery section
+//                                  P2.T7 filled the gallery section
 //   /trips/:id/upload           -> P2.T6 (UploadPage)              ✓ wired
 //   /trips/:id/duplicates       -> P5.T6 (DuplicateGroupListPage)
 //   /duplicate-groups/:id       -> P5.T6 (DuplicateGroupDetailPage)
-//   /media/:id                  -> P3.T4 / P6 / P8 / P10 (MediaDetailPage)
+//   /media/:id                  -> P3.T6 (MediaDetailPage v1)      ✓ wired
+//                                  P6 / P8 / P10 add features
 //   /videos/:id/segments        -> P9.T9 (VideoSegmentsPage)
 //   /jobs                       -> P4.T6 (JobsPage)
 //
@@ -34,6 +36,7 @@ export default function App() {
         <Route path="/trips/:id/edit" element={<TripFormPage mode="edit" />} />
         <Route path="/trips/:id/upload" element={<UploadPage />} />
         <Route path="/trips/:id" element={<TripDetailPage />} />
+        <Route path="/media/:id" element={<MediaDetailPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>

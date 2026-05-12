@@ -14,9 +14,11 @@ export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";
 
 export type {
   ListMediaOptions,
+  MediaDetail,
   MediaInsertData,
   MediaItem,
   MediaStatus,
   MediaType,
   MediaUserDecision,
+  MediaVersion,
 } from "./mediaTypes.js";
