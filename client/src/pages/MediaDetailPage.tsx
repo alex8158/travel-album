@@ -30,14 +30,45 @@
 //     resolution it would be wasteful to load just for visual
 //     identification, and the preview already serves that purpose.
 
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import type { MediaItem, MediaVersion } from "../api/media";
+import {
+  reprocessMedia,
+  type MediaItem,
+  type MediaVersion,
+  type ReprocessResult,
+} from "../api/media";
 import { useMediaDetail } from "../hooks/useMediaDetail";
 
 export default function MediaDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const { detail, loading, error } = useMediaDetail(id);
+  const { detail, loading, error, refetch } = useMediaDetail(id);
+
+  // P3.T7 reprocess state — local to the page, never persisted.
+  // `feedback` carries the last call's outcome and is rendered as
+  // an aria-live region under the header until the user takes
+  // another action.
+  const [reprocessing, setReprocessing] = useState(false);
+  const [feedback, setFeedback] = useState<ReprocessFeedback | null>(null);
+
+  async function handleReprocess(): Promise<void> {
+    if (id === undefined || reprocessing) return;
+    setReprocessing(true);
+    setFeedback(null);
+    try {
+      const result = await reprocessMedia(id);
+      setFeedback({ kind: "success", result });
+      // Pull a fresh detail bundle so the user sees the updated
+      // job status (e.g. resets show up as `pending` in DB).
+      refetch();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setFeedback({ kind: "error", message });
+    } finally {
+      setReprocessing(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -84,7 +115,26 @@ export default function MediaDetailPage(): JSX.Element {
             <span className="trip-detail-meta-label">Status:</span> {media.status}
           </p>
         </div>
+        <div className="page-header-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              void handleReprocess();
+            }}
+            disabled={reprocessing || media.type !== "image"}
+            title={
+              media.type !== "image"
+                ? "Reprocess is only supported for image media in P3.T7"
+                : undefined
+            }
+          >
+            {reprocessing ? "Reprocessing…" : "Reprocess"}
+          </button>
+        </div>
       </header>
+
+      {feedback !== null && <FeedbackBanner feedback={feedback} />}
 
       <section className="media-detail-hero" data-type={media.type}>
         {heroSrc !== null ? (
@@ -228,6 +278,33 @@ function Field({ label, value }: { label: string; value: React.ReactNode }): JSX
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reprocess feedback (P3.T7)
+// ---------------------------------------------------------------------------
+
+type ReprocessFeedback =
+  | { readonly kind: "success"; readonly result: ReprocessResult }
+  | { readonly kind: "error"; readonly message: string };
+
+function FeedbackBanner({ feedback }: { feedback: ReprocessFeedback }): JSX.Element {
+  if (feedback.kind === "error") {
+    return (
+      <p className="form-error" role="alert">
+        Reprocess failed: {feedback.message}
+      </p>
+    );
+  }
+  const summary = feedback.result.results
+    .map((r) => `${r.jobType}=${r.outcome}${r.reason !== undefined ? ` (${r.reason})` : ""}`)
+    .join(" · ");
+  return (
+    <p className="status-text" aria-live="polite">
+      Reprocess queued — {summary}. The image-channel worker picks them up on its next tick; refresh
+      the page after a moment to see updated statuses.
+    </p>
   );
 }
 

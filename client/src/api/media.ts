@@ -276,3 +276,41 @@ export async function fetchMediaDetail(id: string, signal?: AbortSignal): Promis
   }
   return (await res.json()) as MediaDetail;
 }
+
+/**
+ * Outcome of one job-type slot from `POST /api/media/:id/reprocess`.
+ * Mirrors `ReprocessOutcome` on the server side.
+ */
+export type ReprocessOutcome = "created" | "reset" | "skipped";
+
+export interface ReprocessJobResult {
+  readonly jobType: string;
+  readonly outcome: ReprocessOutcome;
+  readonly jobId: string;
+  readonly reason?: string;
+}
+
+export interface ReprocessResult {
+  readonly mediaId: string;
+  readonly results: readonly ReprocessJobResult[];
+}
+
+/**
+ * Re-queue the image-channel jobs for one media (P3.T7). Each of
+ * `image_thumbnail` / `image_metadata` independently resolves to
+ * `created` / `reset` / `skipped`.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid id format / media not an image
+ *   * 404 — media missing or soft-deleted
+ */
+export async function reprocessMedia(id: string): Promise<ReprocessResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/reprocess`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as ReprocessResult;
+}

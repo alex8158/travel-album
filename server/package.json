@@ -26,7 +26,8 @@
     "smoke:media-versions": "tsx src/scripts/media-versions-smoke.ts",
     "smoke:image-thumbnail": "tsx src/scripts/image-thumbnail-smoke.ts",
     "smoke:migration-006": "tsx src/scripts/migration-006-smoke.ts",
-    "smoke:image-metadata": "tsx src/scripts/image-metadata-smoke.ts"
+    "smoke:image-metadata": "tsx src/scripts/image-metadata-smoke.ts",
+    "smoke:media-reprocess": "tsx src/scripts/media-reprocess-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

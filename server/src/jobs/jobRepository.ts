@@ -67,10 +67,12 @@ export interface JobClaimResult {
 export class JobRepository {
   private readonly insertStmt;
   private readonly findByIdStmt;
+  private readonly findLatestByMediaAndTypeStmt;
   private readonly selectNextPendingImageStmt;
   private readonly claimStmt;
   private readonly markSuccessStmt;
   private readonly markFailedStmt;
+  private readonly resetToPendingStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -87,6 +89,18 @@ export class JobRepository {
       SELECT ${SELECT_COLUMNS}
       FROM processing_jobs
       WHERE id = ?
+    `);
+
+    // Pick the most-recently-created job row for a given media + type
+    // pair (used by reprocess in P3.T7 to decide whether to skip /
+    // reset / create). UNIQUE doesn't apply here (multiple historical
+    // rows for the same media+type are legal); we want the freshest.
+    this.findLatestByMediaAndTypeStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM processing_jobs
+      WHERE media_id = ? AND job_type = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
     `);
 
     // Pick the oldest pending image-channel job. `LIKE 'image_%'`
@@ -125,6 +139,30 @@ export class JobRepository {
       UPDATE processing_jobs
       SET status = 'failed', error_message = ?, finished_at = ?, updated_at = ?
       WHERE id = ? AND status = 'running'
+    `);
+
+    // P3.T7 reprocess support: reset a terminal-ish row back to
+    // `pending` so the executor picks it up next tick.
+    //
+    // The WHERE clause is the entire "non-active" closed set
+    // (failed / success / retrying / cancelled). pending / running
+    // rows are intentionally NOT matched — reprocess at the Service
+    // layer already branches them to "skipped" before getting here.
+    //
+    // NOTE on the state-machine: CLAUDE.md §4.3 reserves the proper
+    // `failed → retrying → running` path. This `→ pending` direct
+    // flip is a deliberate P3.T7 stub; P4.T2 will replace it with
+    // the full retry / backoff state machine. The behaviour is
+    // user-spec'd for the stub.
+    this.resetToPendingStmt = db.prepare(`
+      UPDATE processing_jobs
+      SET status = 'pending',
+          error_message = NULL,
+          started_at = NULL,
+          finished_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND status IN ('failed', 'success', 'retrying', 'cancelled')
     `);
   }
 
@@ -193,6 +231,31 @@ export class JobRepository {
    */
   markFailed(jobId: string, errorMessage: string, finishedAt: string = nowIso()): number {
     const info = this.markFailedStmt.run(errorMessage, finishedAt, finishedAt, jobId);
+    return info.changes;
+  }
+
+  /**
+   * Find the most-recently-created job row for a given
+   * (media_id, job_type) pair. Returns `null` when no row exists.
+   * Used by reprocess (P3.T7) to decide create / reset / skip.
+   */
+  findLatestByMediaIdAndType(mediaId: string, jobType: string): ProcessingJob | null {
+    const row = this.findLatestByMediaAndTypeStmt.get(mediaId, jobType) as JobRow | undefined;
+    return row ? rowToJob(row) : null;
+  }
+
+  /**
+   * P3.T7 reprocess: flip a terminal row back to `pending` so the
+   * executor (P3.T2) re-picks it up. The SQL guard restricts the
+   * source statuses to {failed, success, retrying, cancelled} —
+   * pending / running rows are deliberately not matched (the Service
+   * layer takes the "already active, skip" branch before reaching
+   * this call). Returns the number of rows touched (0 when nothing
+   * was eligible, e.g. lost race with the executor flipping to
+   * running concurrently).
+   */
+  resetToPending(jobId: string, now: string = nowIso()): number {
+    const info = this.resetToPendingStmt.run(now, jobId);
     return info.changes;
   }
 }

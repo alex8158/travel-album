@@ -7,7 +7,12 @@
 // preview / enhanced / ai_refined writes) all live here.
 
 export { MediaRepository } from "./mediaRepository.js";
-export { MediaService } from "./mediaService.js";
+export {
+  MediaService,
+  type ReprocessJobResult,
+  type ReprocessOutcome,
+  type ReprocessResult,
+} from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 
 export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";

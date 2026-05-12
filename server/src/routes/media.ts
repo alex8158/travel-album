@@ -105,6 +105,32 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     }),
   );
 
+  // POST /api/media/:id/reprocess (P3.T7).
+  //
+  // Re-queue the image-channel jobs (`image_thumbnail`, `image_metadata`)
+  // for one media. Each slot independently resolves to:
+  //   * "created" — no prior job existed; one was inserted as pending
+  //   * "reset"   — prior failed / success / retrying / cancelled row
+  //                 was flipped back to pending
+  //   * "skipped" — prior pending / running row left alone
+  //                 (or lost a write race; see `reason`)
+  //
+  // Always returns 200 with `{ mediaId, results: [...] }`.
+  // 404 when the media is missing / soft-deleted.
+  // 400 when the media is not an image (video reprocess lives in P9).
+  //
+  // Synchronous from the API's perspective: the actual work is left
+  // for the P3.T2 executor to drain on its next tick — this endpoint
+  // only manipulates the queue.
+  router.post(
+    "/media/:id/reprocess",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.reprocess(id);
+      res.status(200).json(result);
+    }),
+  );
+
   return router;
 }
 
