@@ -672,12 +672,14 @@ npm run format:check
 
 ## 阶段 P4：任务队列与处理状态
 
-- 状态：**进行中**
-- 任务范围：P4.T1 – P4.T7（参见 [docs/tasks.md](tasks.md) §阶段 4）
+- 状态：**已完成**
+- 任务范围：P4.T1 – P4.T7（7 / 7）
+- 提交范围：`23a5fc4` … `ce70057`（P4.T7 验收无业务代码改动，仅本文件 + tasks.md）
+- 完成日期：2026-05-17
 
 ### P4.T1 JobQueue 实现结果
 
-- Commit：待入库 — `feat(server): add job queue scheduler (P4.T1)`
+- Commit：`23a5fc4` — `feat(server): add job queue scheduler (P4.T1)`
 - 主要成果：
   - 新增 `server/src/jobs/jobQueue.ts`：多通道 polling 调度器，三个 channel（`image` / `video` / `ai`）独立维护 concurrency cap / poll loop / inflight Set / handler Map；channel 内并发 N 个 handler 真并行；handler 错误隔离不影响 channel 拉取后续 job
   - 状态机：`pending → running → success / failed`（claim 时 `WHERE status='pending'` race-safe；markSuccess / markFailed 仍带 `WHERE status='running'` guard）—— **未实现** retry / backoff（保留 P4.T2）、僵尸恢复（P4.T3）、Job API（P4.T4）、Media 状态联动（P4.T5）
@@ -701,7 +703,7 @@ npm run format:check
 
 ### P4.T2 失败重试 + 指数退避 实现结果
 
-- Commit：待入库 — `feat(server): add failure retry with exponential backoff (P4.T2)`
+- Commit：`b732c47` — `feat(server): add failure retry with exponential backoff (P4.T2)`
 - 主要成果：
   - `server/src/jobs/jobQueue.ts` 在 `runHandler` catch 路径接入重试预算判定：`job.retryCount < maxRetries` → `markRetrying`（`running → retrying`，`retry_count++`，`next_run_at = now + min(baseDelayMs * 2^retryCount, maxDelayMs)`，error_message 落库）；否则继续走原 `markFailed`（`running → failed`，retry_count 不再 ++）。新增 `JobQueueRetryConfig` 接口（`maxRetries / baseDelayMs / maxDelayMs`），构造期校验非法配置（负数 / base=0 而 max>0 / maxDelayMs<baseDelayMs）抛错
   - `DEFAULT_RETRY_CONFIG = { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0 }` —— 缺省即"无重试"，保持 P4.T1 行为不变；只有显式传 `retryConfig` 的调用方才进入新分支（生产 `server/src/index.ts` 显式接入；旧 smoke 仍走原路径）
@@ -727,7 +729,7 @@ npm run format:check
 
 ### P4.T3 僵尸任务恢复 实现结果
 
-- Commit：待入库 — `feat(server): recover zombie jobs (P4.T3)`
+- Commit：`89bb211` — `feat(server): recover zombie jobs (P4.T3)`
 - 主要成果：
   - `server/src/jobs/jobRepository.ts` 新增 `findZombieRunningJobsStmt` + `findZombieRunningJobs(startedBefore)`：SELECT `status='running' AND (started_at IS NULL OR started_at <= ?)`，按 `started_at ASC, id ASC` 排序返回。`started_at IS NULL` 的 running 行视为远古僵尸一并回收（防御性处理；正常 claim 路径会写入 started_at）
   - `server/src/jobs/jobQueue.ts` 新增 `JobQueueDeps.zombieTimeoutMs`（默认 30 min；`0` 显式禁用；负数 / NaN 构造期抛错），私有字段 `zombieTimeoutMs`，公共 `recoverZombies(now?)`，自省 `getZombieTimeoutMs()`，结果类型 `ZombieRecoveryResult { scanned, recovered, failed, skipped }`
@@ -751,7 +753,7 @@ npm run format:check
 
 ### P4.T4 Job API 实现结果
 
-- Commit：待入库 — `feat(server): add job management api (P4.T4)`
+- Commit：`3194243` — `feat(server): add job management api (P4.T4)`
 - 主要成果：
   - 新增 `server/src/routes/jobs.ts`：在 `/api/jobs` 暴露 4 个端点：
     - `GET /api/jobs?status=&jobType=&mediaId=&tripId=&limit=&offset=` 过滤 + 分页列表（`created_at DESC, id DESC`，limit 1..100 默认 50）
@@ -784,7 +786,7 @@ npm run format:check
 
 ### P4.T5 Media 状态联动 实现结果
 
-- Commit：待入库 — `feat(server): sync media status with jobs (P4.T5)`
+- Commit：`13be49e` — `feat(server): sync media status with jobs (P4.T5)`
 - 主要成果：
   - `server/src/jobs/jobRepository.ts` 新增 **私有** `syncMediaStatusByMediaId(mediaId, now)` —— 聚合该 media 下所有 jobs 的 status 分布，按下列优先级判定 `media_items.status` 目标值：
     1. 任一 job ∈ {`pending`, `retrying`, `running`} → **`processing`**
@@ -814,7 +816,7 @@ npm run format:check
 
 ### P4.T6 前端任务状态页 实现结果
 
-- Commit：待入库 — `feat(client): add jobs page (P4.T6)`
+- Commit：`ce70057` — `feat(client): add jobs page (P4.T6)`
 - 主要成果：
   - 新增 `client/src/api/jobs.ts` —— 与 P4.T4 Job API 完全对齐的客户端：`JobStatus` 字面量联合（与服务端 enum 同字）、`JobView` 接口（与服务端 `JobView` 一致，含 `tripId | null`、`payload`、`progress`、`retryCount`、`nextRunAt`、`startedAt`、`finishedAt`、`errorMessage`）、`fetchJobs(opts, signal)` / `getJobById(id)` / `retryJob(id)` / `cancelJob(id)`。错误通过 `error.message` envelope 解码为 `Error.message`，沿用既有 trips/media 客户端风格
   - 新增 `client/src/hooks/useJobs.ts` —— 与 `useTrips` 同模式的三态 hook（`{jobs, loading, error, refetch}`），传入 `FetchJobsOptions` 过滤器；通过稳定序列化的 `filterKey` 触发重 fetch；`AbortController` 取消未完成请求，避免 strict-mode double-mount 竞态
@@ -840,22 +842,125 @@ npm run format:check
   - 状态以 API 为唯一真源；前端不维护并行状态机，retry/cancel 后 refetch
   - 不直接调用 handler，只通过 `/api/jobs/:id/retry` 与 `/api/jobs/:id/cancel`
 
+### P4 阶段完成内容
+
+| Task | Commit | 主要交付 |
+|---|---|---|
+| **P4.T1** | `23a5fc4` | 多通道 `JobQueue` —— image / video / ai 三通道独立 polling + handler 注册 + 并发上限 + start/stop 生命周期 + handler 错误隔离；`JobRepository.claimNextPendingByJobTypes` 取代硬编码 `LIKE`；boot 切换到 JobQueue（ImageChannelExecutor 留作 P3 smoke harness）；smoke:job-queue 27/27 |
+| **P4.T2** | `b732c47` | 失败重试 + 指数退避 —— `handleFailure` 按 `retry_count < maxRetries` 路由 `markRetrying`（base × 2^retryCount 退避）vs `markFailed`；claim SELECT 扩展为同时匹配 retrying-due 行；`resetToRetrying` 取代 `resetToPending` 走规范路径（消化 R-40）；`JobQueueRetryConfig` + env `JOB_RETRY_BASE_DELAY_MS` / `JOB_RETRY_MAX_DELAY_MS`；smoke:job-queue 42/42 + smoke:media-reprocess 21/21 |
+| **P4.T3** | `89bb211` | 启动期 zombie 恢复 —— `JobQueue.start()` 调 `recoverZombies()`，扫描 `started_at` 超 `zombieTimeoutMs` 的 `running` 行，按 retry 预算路由 `markRetrying` / `markFailed`；`zombieTimeoutMs=0` 显式禁用；构造期校验负数/NaN；兜底 P4.T2 markRetrying 自身失败的小窗口（消化 R-42）；smoke:job-queue 55/55 |
+| **P4.T4** | `3194243` | Job API —— `/api/jobs` 4 个端点：list (status/jobType/mediaId/tripId/limit/offset 过滤 + LEFT JOIN trip_id) / single / retry (failed/success/cancelled/retrying → retrying) / cancel (pending/retrying/running → cancelled)；`JobService` 状态机校验 → 400 `INVALID_STATE_TRANSITION`；retry 不直接调 handler，由 JobQueue 下次 tick 拾起；cancel running 行不杀进程；smoke:jobs-api 28/28 |
+| **P4.T5** | `13be49e` | Media 状态联动 —— JobRepository 7 个状态翻转方法（claim / markSuccess / markFailed / markRetrying / cancelJob / resetToRetrying / claimNextPendingImageJob）在 `changes>0` 时调 `syncMediaStatusByMediaId`，按 job 聚合衍生 `media_items.status`（active → processing / failed → failed / success-with-cancelled → processed / cancelled-only → failed / no jobs → 不动）；UPDATE 守卫 soft-deleted + archived；smoke:media-status-sync 18/18 |
+| **P4.T6** | `ce70057` | 前端 Jobs 页 —— `/jobs` 路由 + filter chip + 表格（id/type/status badge/retries/next_run_at/media+trip 链接/created+updated/error/actions）+ 行内 retry+cancel 按钮（镜像服务端规则）+ aria-live 反馈；状态以 API 为单一真源，操作后 refetch；首页 header 加 Jobs 入口；新增 `api/jobs.ts` + `useJobs` hook + JobsPage |
+| **P4.T7** | （本任务）| 阶段验收 + 文档收口（仅 progress.md + tasks.md，零业务代码改动）|
+
+### P4.T7 验收结果
+
+| 验收项 | 结果 |
+|---|---|
+| [requirements §7.17 验收 1](requirements.md) 任务可从 pending / retrying 被 claim、running 可 success / failed / retrying | **PASS** — JobRepository claim SELECT 同时匹配 `pending` 与 `retrying`-due（P4.T2）；`markSuccess` / `markFailed` / `markRetrying` 都带 `WHERE status='running'` guard；smoke:job-queue CASE 13 "retry: after attempt 1/2/3" + smoke:image-channel-executor 实证完整 4 态迁移 |
+| §7.17 验收 2 `retry_count` / `next_run_at` 生效 | **PASS** — `markRetrying` 接受 `newRetryCount` + `nextRunAt` 参数，写入 row；smoke:job-queue CASE 13 "retry_count=1/2"、CASE 14 "retry-then-succeed retry_count==2"、CASE 15 "backoff gating tick before next_run_at → claimed=0"、CASE 16 "backoff doubling ratio=2.00" 全部实证 |
+| §7.17 验收 3 超时 `running` 任务可识别恢复 | **PASS** — `JobQueue.start()` 自动 `recoverZombies()`；smoke:job-queue CASE 18 "zombie + retry budget → retrying"、CASE 19 "zombie + budget exhausted → failed"、CASE 22 "null started_at recovered"、CASE 23 "start() auto-runs scan" 全 PASS |
+| §7.17 验收 4 Job API list / detail / retry / cancel 可用 | **PASS** — `GET /api/jobs` + `GET /api/jobs/:id` + `POST /api/jobs/:id/retry` + `POST /api/jobs/:id/cancel`；smoke:jobs-api 28/28 覆盖列表 / 4 种过滤 / 分页 / 单条 / 404 / retry 4 种合法源态 / retry 不触发 handler / cancel 3 种合法源态 / cancel 后不再被 claim / 校验失败 400 |
+| §7.17 验收 5 media 状态随 job 状态同步 | **PASS** — JobRepository.sync 私有 helper 在每次 mutating 后聚合 job 状态衍生 `media_items.status`；smoke:media-status-sync 18/18 覆盖 active → processing / success → processed / failed → failed / cancel → failed / retry → processing / 软删除 + archived 行保护 / no-op 写不 bump updated_at |
+| §7.17 验收 6 前端任务状态页可查看 / retry / cancel | **PASS** — `/jobs` 页面（P4.T6 commit `ce70057`）：filter chip / 表格 / retry+cancel 行内按钮 / aria-live 反馈 / 错误展示；状态以服务端 API 为单一真源（不在前端硬编码模拟）；按钮可用性镜像服务端 `JobService` 允许-源态集合 |
+| §7.17 验收 7 单文件失败不影响其他 | **PASS** — JobQueue handler error 隔离（P4.T1）：catch 内只动一行 + 队列继续 polling；smoke:job-queue CASE 4 "handler throws: queue continued + sibling job success" 实证 |
+| **P4.T7 额外**：P3 链路不回归（thumbnail / metadata / reprocess / cover_url / storage 路由）| **PASS** — smoke:image-channel-executor 26/26 + smoke:image-thumbnail 22/22 + smoke:image-metadata 23/23 + smoke:media-reprocess 21/21 + smoke:trip-cover-url 13/13 + smoke:storage-route 14/14 全绿 |
+| **P4.T7 额外**：状态机迁移路径符合 CLAUDE.md §4.3 规范 | **PASS** — R-40（reprocess 绕过 retrying）+ R-42（zombie 卡 running）均已消化；所有写入走 JobRepository 的 `WHERE status=…` guard 方法，无直接 `UPDATE status` 旁路 |
+| **P4.T7 额外**：retry / cancel API 不直接执行 handler | **PASS** — JobService.retryJob 调 `resetToRetrying`（DB 翻转）；JobService.cancelJob 调 `cancelJob` SQL；smoke:jobs-api "retry does not directly execute handler" + "after cancel: JobQueue tick does NOT claim the cancelled row" 实证 |
+
+### 阶段 P4 验证命令
+
+后端（`server/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+npm run smoke:storage                 # 19/19
+npm run smoke:trips                   # 22/22
+npm run smoke:classify                # 37/37
+npm run smoke:upload                  # 30/30
+npm run smoke:media                   # 26/26
+npm run smoke:storage-route           # 14/14
+npm run smoke:image-channel-executor  # 26/26
+npm run smoke:media-versions          # 24/24
+npm run smoke:image-thumbnail         # 22/22
+npm run smoke:migration-006           # 18/18
+npm run smoke:image-metadata          # 23/23
+npm run smoke:media-reprocess         # 21/21
+npm run smoke:trip-cover-url          # 13/13
+npm run smoke:job-queue               # 55/55（P4.T1 27 + P4.T2 15 + P4.T3 13）
+npm run smoke:jobs-api                # 28/28（P4.T4）
+npm run smoke:media-status-sync       # 18/18（P4.T5）
+```
+
+后端 smoke 总计 **396 / 396**（既有 295 + 阶段 P4 新增 101），零回归。
+
+前端（`client/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+```
+
+均一次过。Vite gzip JS 61.80 KB / CSS 3.04 KB。
+
+新增依赖：无（P4 全程零新增 npm 依赖，仅复用既有 React + react-router-dom + zod + better-sqlite3 + express + pino 等）。
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| 心跳 / live-zombie 检测（运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖绝大多数实际场景 |
-| FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 |
-| 任务列表分页 UI（前端按钮 / 加载更多）| P4 后续 polish；当前页面单页拉取 50 条，足够 V1 |
-| Job 详情子页 `/jobs/:id` | P4 后续 polish；当前列表页已展示全字段 |
+| 心跳 / live-zombie 检测（handler 运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖崩溃 / kill -9 / OOM 等绝大多数实际场景。在线检测需要 handler 周期性写 progress / heartbeat，留给真实视频 worker 落地时（P9）评估 |
+| FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 + 空 handler Map |
+| 任务列表分页 UI（前端按钮 / 加载更多）| P4 后续 polish；当前 `/jobs` 页面单页拉取 50 条，足够 V1。后端 API 已支持 limit / offset |
+| Job 详情子页 `/jobs/:id` | P4 后续 polish；当前列表页已展示全字段 + 行内操作，详情页非必要 |
+| `image_metadata` job upload 阶段自动入队（R-41）| 仍由 P3.T7 reprocess 或手动 INSERT 触发；可在 thumbnail handler 中链式入队，或 upload service 一次入两个 job —— 留给下个阶段评估 |
+| Media 表 `error_message` 列 | 故意不加（schema 红线）；错误细节由 `processing_jobs.error_message` + `GET /api/jobs?mediaId=...` 暴露，前端 Jobs 页已用此路径展示 |
+
+### 阶段 P4 PARTIAL 已消化
+
+| 编号 | 描述 | 消化点 |
+|---|---|---|
+| R-40 | `reprocess` 绕过 `failed → retrying → running` 规范迁移 | P4.T2 `resetToRetrying`（retry_count=0、next_run_at=now、走 §4.3 路径）|
+| R-42 | `markSuccess` 后进程 crash 让 "running" 行卡死 | P4.T3 启动期 `recoverZombies` 按 retry 预算路由回 `retrying` / `failed`；附带兜底 P4.T2 markRetrying 自身失败小窗口 |
+
+### 阶段 P4 剩余风险
+
+承自前期：R-01 ~ R-12（P0）、R-14 / R-15 / R-16 / R-17 / R-18 / R-19 / R-20 / R-23 / R-24（P1）、R-29 / R-30 / R-31 / R-35 / R-36 / R-37 / R-38 / R-39（P2）、R-41 / R-43 / R-44（P3）继续延续。
+
+**P4 新增**：
+
+| 编号 | 风险 | 何时跟进 |
+|---|---|---|
+| R-45 | 多实例部署时 JobQueue 并发 claim 可能产生 SQL 级竞态（虽有 `WHERE status='pending'` race-safe，但缺少分布式锁 / advisory lock） | 单实例部署不阻断；分布式部署时引入 Postgres + advisory lock 或 Redis 锁 |
+| R-46 | 取消 `running` 行不杀进程；handler 完成后仅 mark* 为 no-op，但 sharp / exifr 资源已实际消耗 | 真实视频处理（P9）时考虑 AbortSignal 透传给 handler；图片处理通常足够快，可忽略 |
+| R-47 | `ZOMBIE_TIMEOUT_MS=1800000`（30 min）默认对图片偏宽；快速恢复需要更低值或者 heartbeat 机制 | 单实例 / 图片为主场景非阻断；视频 worker 上线后按通道差异化设置 |
+
+### P5 前置条件
+
+- P4.T1 ~ P4.T7 全部完成 ✅
+- P4 验收通过（10 项全部 PASS）✅
+- 工作区干净 ✅
+- P4 阶段文档已收口 ✅（本节）
+- JobQueue / Job API / Media 状态联动接口稳定，P5 dedup 任务可以作为新 job_type 注册（`image_hash` 等）走相同调度路径
+- 无 schema / migration 改动（仍是 000 ~ 006）
+- Trip / Media / Upload / Storage 契约不变
+- 前端 Trip CRUD / Media 详情 / Gallery / Upload / Jobs 页面契约不变
 
 ---
 
 ## 下一阶段入口
 
-进入阶段 4 的下一项任务：
+进入阶段 5（图片去重）的第一项任务：
 
-- **P4.T7 [MUST]**：阶段验收 —— 跑通 P4 全链路（上传 → JobQueue 调度 → retry / 退避 / 僵尸恢复 → Job API / Jobs page → media 状态联动），更新 `docs/progress.md` 总结性章节、关闭 P4 阶段、确认下一阶段（P5 图片去重）的前置条件。
+- **P5.T1 [MUST]**：迁移 `duplicate_groups`、`duplicate_group_items` —— 建表 + CHECK + 索引；为 P5.T2 ~ P5.T7 的去重链路（`image_hash` job → exact / similar dedup → 推荐与用户确认 → 重复组 API → 前端）打基础。需要新 migration（`007_…`），打破 P4 阶段的"无 schema 改动"区间，请仔细评估 PRAGMA / FK 约束。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
