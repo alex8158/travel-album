@@ -173,7 +173,7 @@
 
 > requirements §7.5 / §14 阶段 5。
 
-- [ ] **P5.T1 [MUST]** 迁移：`duplicate_groups`、`duplicate_group_items`
+- [x] **P5.T1 [MUST]** 迁移：`duplicate_groups`、`duplicate_group_items`
 - [ ] **P5.T2 [MUST]** `image_hash` 任务：SHA256 + pHash + dHash
 - [ ] **P5.T3 [MUST]** `Dedup_Engine.exact`：file_hash 相等聚合
 - [ ] **P5.T4 [MUST]** `Dedup_Engine.similar`：pHash 海明距离 ≤ 阈值聚合（同 Trip 内）

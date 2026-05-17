@@ -956,11 +956,58 @@ npm run format:check
 
 ---
 
+## 阶段 P5：图片去重
+
+- 状态：**进行中**
+- 任务范围：P5.T1 – P5.T8（参见 [docs/tasks.md](tasks.md) §阶段 5）
+
+### P5.T1 `duplicate_groups` / `duplicate_group_items` 迁移 实现结果
+
+- Commit：待入库 — `feat(server): add duplicate groups migration (P5.T1)`
+- 主要成果：
+  - 新增 `server/migrations/007_create_duplicate_groups.sql` —— 一次性建两张 STRICT 表
+    - **`duplicate_groups`** 9 列（per requirements §8.4）：`id` / `trip_id` / `group_type` / `recommended_media_id` / `confidence` / `similarity_score` / `user_confirmed` / `created_at` / `updated_at`
+      - CHECK：`group_type ∈ ('exact', 'similar', 'candidate')`、`confidence` 0..1 nullable、`similarity_score` 0..1 nullable、`user_confirmed ∈ (0, 1)`
+      - FK：`trip_id → trips(id) ON DELETE RESTRICT`（与 `media_items.trip_fk` 一致）；`recommended_media_id → media_items(id) ON DELETE SET NULL`（per design.md §4.2 R-row，业务层应在 delete 前重置，但 SET NULL 是 schema 兜底网）
+      - Index：`trip_id` / `group_type` / `recommended_media_id` / `user_confirmed` —— 覆盖"按 trip 列重复组"、"按类型全局聚合"、"反查推荐的 media"、"找未确认组"四种典型查询
+    - **`duplicate_group_items`** 10 列（per requirements §8.5）：`id` / `group_id` / `media_id` / `similarity_score` / `quality_score` / `recommendation` / `reason` / `user_decision` / `created_at` / `updated_at`
+      - CHECK：`similarity_score` / `quality_score` 0..1 nullable、`recommendation ∈ ('keep', 'remove', 'undecided')`、`user_decision` 同枚举
+      - FK：`group_id → duplicate_groups(id) ON DELETE CASCADE`、`media_id → media_items(id) ON DELETE CASCADE`（与 `processing_jobs` / `media_versions` 风格一致）
+      - Index：`UNIQUE (group_id, media_id)`（design §4.2 explicit，左前缀同时充当"组内成员列表"查找）；单独 `media_id` 反向索引（P7 软删除路径要用）
+    - `reason` 字段保留 nullable，对应 CLAUDE.md §3.8 "推荐结果必须可解释"，但允许 dedup 算法尚未跑过时留空
+  - 新增 `server/src/scripts/migration-007-smoke.ts` + npm 脚本 `smoke:migration-007` —— **37/37 PASS**：fresh DB 全量应用 + 列序 + 索引完整性 + 所有 CHECK / FK 行为（含 SET NULL / CASCADE / RESTRICT 三种策略实测）/ UNIQUE 阻止重复成员 / upgrade 场景（停在 006 → 升 007 → 旧行保留 + 新表可写）/ idempotency（再跑一次 0 应用）
+  - 微调 `server/src/scripts/migration-006-smoke.ts` —— 两处对 `appliedNow.length === 7` / `length === 1` 的硬编码改为只检查 "006 在 appliedNow 中" / "006 是首个 appliedNow 条目"，让 006 smoke 对后续 migration（007+）保持兼容；测试意图不变（验 006 自身行为）
+- 验证：
+  - `npm run smoke:migration-007` 37/37 PASS
+  - 既有 16 smoke 不回归：storage 19/19, trips 22/22, classify 37/37, upload 30/30, media 26/26, storage-route 14/14, image-channel-executor 26/26, media-versions 24/24, image-thumbnail 22/22, **migration-006 18/18**（含上面的兼容性微调）, image-metadata 23/23, media-reprocess 21/21, trip-cover-url 13/13, job-queue 55/55, jobs-api 28/28, media-status-sync 18/18 —— 后端 smoke 总计 **433/433**
+  - `npm run typecheck` / `npm run lint` / `npm run build` / `npm run format:check` 一次过
+- 边界遵守：
+  - 仅 schema/migration + smoke + docs；未实现 Repository / Service / API / 任何 dedup 算法（hash / pHash / dHash / CLIP / DINOv2 全部留待 P5.T2+）
+  - 未改 upload 流程 / JobQueue / 前端 / thumbnail / metadata handler / trip cover / 视频
+  - 未引入新 npm 依赖
+  - 既有删除流程（trip / media）通过 ON DELETE RESTRICT / SET NULL / CASCADE 三种策略保证 schema 层兜底；P7 软删除业务逻辑（重置 `recommended_media_id`、把 `user_decision` 切到 `'remove'`）会接续完成
+
+### 阶段 P5 待办 / 后续依赖
+
+| 项 | 何时完成 |
+|---|---|
+| `image_hash` 任务（SHA256 + pHash + dHash 计算）| P5.T2 |
+| `Dedup_Engine.exact`（file_hash 相等聚合）| P5.T3 |
+| `Dedup_Engine.similar`（pHash 海明距离 ≤ 阈值聚合，同 Trip 内）| P5.T4 |
+| Duplicate Group API（requirements §9.4 全部端点）| P5.T5 |
+| 前端重复组列表 + 详情（requirements §10.5）| P5.T6 |
+| 用户切换推荐图（写 `user_confirmed`，自动流程不再覆盖）| P5.T7 |
+| P5 阶段验收（§7.5 验收 7 条）| P5.T8 |
+| P7 软删除 / 恢复 联动 `duplicate_groups` + `_items` | P7.T1 / P7.T2 |
+| P6 `Quality_Selector` 写 `quality_score` + `recommended_media_id` | P6.T5 |
+
+---
+
 ## 下一阶段入口
 
-进入阶段 5（图片去重）的第一项任务：
+进入阶段 5 的下一项任务：
 
-- **P5.T1 [MUST]**：迁移 `duplicate_groups`、`duplicate_group_items` —— 建表 + CHECK + 索引；为 P5.T2 ~ P5.T7 的去重链路（`image_hash` job → exact / similar dedup → 推荐与用户确认 → 重复组 API → 前端）打基础。需要新 migration（`007_…`），打破 P4 阶段的"无 schema 改动"区间，请仔细评估 PRAGMA / FK 约束。
+- **P5.T2 [MUST]**：`image_hash` 任务 —— 计算 SHA256（文件指纹）+ pHash（感知 hash）+ dHash（梯度 hash）写入 `media_items.file_hash` / `perceptual_hash`（pHash + dHash 拼接或选其一）。作为新 job_type 注册到 JobQueue image 通道；为 P5.T3 / P5.T4 的 exact / similar 聚合提供基础数据。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

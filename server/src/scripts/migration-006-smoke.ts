@@ -108,10 +108,12 @@ async function main(): Promise<void> {
     const dbHandle = openDatabase(dbPath);
     try {
       const result = runMigrations(dbHandle.db);
+      // We check 006 is included rather than a hard-coded length so
+      // the assertion stays correct as later migrations land on top
+      // of 006 (e.g. P5.T1 added 007).
       record(
-        "fresh: 001..006 all in appliedNow",
-        result.appliedNow.length === 7 &&
-          result.appliedNow.includes("006_extend_media_versions_version_type.sql"),
+        "fresh: 001..006 all in appliedNow (includes 006)",
+        result.appliedNow.includes("006_extend_media_versions_version_type.sql"),
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
 
@@ -242,14 +244,17 @@ async function main(): Promise<void> {
       closeDatabase(stage1);
     }
 
-    // ---- Stage 2: re-open, run migrations → only 006 should apply ----
+    // ---- Stage 2: re-open, run migrations → 006 (and anything
+    // newer than 006) should apply. We check 006 is FIRST in
+    // appliedNow rather than the sole entry so the smoke stays
+    // correct as later migrations land on top of 006 (e.g. P5.T1
+    // added 007).
     const stage2 = openDatabase(dbPath);
     try {
       const result = runMigrations(stage2.db);
       record(
-        "upgrade: appliedNow contains exactly [006]",
-        result.appliedNow.length === 1 &&
-          result.appliedNow[0] === "006_extend_media_versions_version_type.sql",
+        "upgrade: appliedNow starts with 006 (006 is the first pending migration)",
+        result.appliedNow[0] === "006_extend_media_versions_version_type.sql",
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
 
