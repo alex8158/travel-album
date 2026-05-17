@@ -19,12 +19,14 @@
 import express, { type Express } from "express";
 import { AppError } from "./errors/AppError.js";
 import { ERROR_CODES } from "./errors/errorCodes.js";
+import type { JobService } from "./jobs/index.js";
 import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
 import type { MediaRepository, MediaService } from "./media/index.js";
 import { makeHealthRouter } from "./routes/health.js";
+import { makeJobsRouter } from "./routes/jobs.js";
 import { makeMediaRouter } from "./routes/media.js";
 import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
@@ -47,6 +49,8 @@ export interface CreateAppOptions {
   readonly mediaService: MediaService;
   /** Media repository (read-only) — needed by the trips route for P3.T8 cover_url derivation. */
   readonly mediaRepo: MediaRepository;
+  /** Job domain service powering /api/jobs (P4.T4). */
+  readonly jobService: JobService;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -63,6 +67,7 @@ export function createApp(opts: CreateAppOptions): Express {
     uploadService,
     mediaService,
     mediaRepo,
+    jobService,
     debugRoutes,
   } = opts;
 
@@ -90,6 +95,11 @@ export function createApp(opts: CreateAppOptions): Express {
   // router can own paths like /trips/:tripId/media/upload and
   // /media/:id without colliding with the Trip CRUD router above.
   app.use("/api", makeMediaRouter({ uploadService, mediaService }));
+
+  // Job API (P4.T4). Mounted at /api/jobs — list / single / retry /
+  // cancel. Retry / cancel are pure DB mutations; the JobQueue
+  // picks up retrying rows on its next tick.
+  app.use("/api/jobs", makeJobsRouter({ service: jobService }));
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file

@@ -20,7 +20,11 @@
 //       - `findZombieRunningJobs`: returns `running` rows whose
 //         `started_at` is older than the caller-supplied cutoff
 //         (used by JobQueue.recoverZombies at start() time).
-//   * Everything else — cancel, the public Job API — stays for P4.T4+.
+//   * P4.T4 adds the read / cancel surface backing the public
+//     Job API (`GET /api/jobs[/:id]`, `POST /api/jobs/:id/cancel`):
+//       - `findJobView`: `findById` + LEFT JOIN media_items.trip_id,
+//       - `listJobs`: filtered + paginated list with the same JOIN,
+//       - `cancelJob`: pending / retrying / running → cancelled.
 //
 // Transitions are guarded by `WHERE status='<expected>'` predicates so
 // a bug that called `markSuccess` on a non-running row simply returns
@@ -28,7 +32,7 @@
 // graph. The executor logs and continues on `changes=0`.
 
 import type { SqliteDatabase } from "../db/connection.js";
-import type { JobInsertData, JobStatus, ProcessingJob } from "./jobTypes.js";
+import type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";
 
 const DEFAULT_STATUS = "pending";
 
@@ -68,6 +72,25 @@ const SELECT_COLUMNS = `
   updated_at
 `;
 
+// P4.T4: same columns prefixed with `j.` so they coexist with a
+// JOIN'd `media_items` (aliased `m`) without column-name collisions
+// on `id` / `media_id` / `created_at` / etc.
+const SELECT_COLUMNS_PREFIXED = `
+  j.id,
+  j.media_id,
+  j.job_type,
+  j.status,
+  j.progress,
+  j.error_message,
+  j.retry_count,
+  j.payload,
+  j.next_run_at,
+  j.started_at,
+  j.finished_at,
+  j.created_at,
+  j.updated_at
+`;
+
 /**
  * Outcome of `claimNextPendingImageJob`. The executor branches on this
  * to distinguish "nothing to do" from "claimed but lost the race"
@@ -76,6 +99,32 @@ const SELECT_COLUMNS = `
  */
 export interface JobClaimResult {
   readonly job: ProcessingJob | null;
+}
+
+/**
+ * P4.T4: filter shape for `JobRepository.listJobs`. All keys are
+ * optional. The Service layer is responsible for HTTP-level
+ * validation (caps, enum membership) before passing this in. The
+ * repository simply translates each present key into a single
+ * `AND col = ?` predicate.
+ */
+export interface JobListFilter {
+  readonly status?: JobStatus;
+  readonly jobType?: string;
+  readonly mediaId?: string;
+  readonly tripId?: string;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/**
+ * Raw row shape of a `processing_jobs` row JOIN'd with
+ * `media_items.trip_id`. `trip_id` is `null` only when the media row
+ * is missing (LEFT JOIN — defensive; ON DELETE CASCADE means a
+ * surviving job row should always have a corresponding media).
+ */
+interface JobViewRow extends JobRow {
+  trip_id: string | null;
 }
 
 export class JobRepository {
@@ -89,6 +138,8 @@ export class JobRepository {
   private readonly markRetryingStmt;
   private readonly resetToRetryingStmt;
   private readonly findZombieRunningJobsStmt;
+  private readonly findJobViewByIdStmt;
+  private readonly cancelJobStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -232,6 +283,33 @@ export class JobRepository {
       WHERE status = 'running'
         AND (started_at IS NULL OR started_at <= ?)
       ORDER BY started_at ASC, id ASC
+    `);
+
+    // P4.T4 single job + trip_id projection for the public Job API.
+    // LEFT JOIN so a job whose media row was hard-deleted (would
+    // require disabling FK / direct SQL) still returns; trip_id ends
+    // up NULL in that pathological case.
+    this.findJobViewByIdStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS_PREFIXED},
+             m.trip_id AS trip_id
+      FROM processing_jobs j
+      LEFT JOIN media_items m ON m.id = j.media_id
+      WHERE j.id = ?
+    `);
+
+    // P4.T4 cancel: pending / retrying / running → cancelled. The
+    // `running` branch deliberately does NOT kill the in-flight
+    // handler — when the handler later tries markSuccess /
+    // markFailed / markRetrying, those guards (`WHERE status =
+    // 'running'`) fail and the cancellation persists. `finished_at`
+    // is set so the lifecycle has a definitive endpoint.
+    this.cancelJobStmt = db.prepare(`
+      UPDATE processing_jobs
+      SET status = 'cancelled',
+          finished_at = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND status IN ('pending', 'retrying', 'running')
     `);
   }
 
@@ -423,6 +501,76 @@ export class JobRepository {
   }
 
   /**
+   * P4.T4: fetch a job by id with its owning `trip_id` resolved via
+   * LEFT JOIN. Returns null when the job row does not exist. Used
+   * by `GET /api/jobs/:id` and by retry / cancel responses so the
+   * client always sees the post-mutation row.
+   */
+  findJobView(id: string): JobView | null {
+    const row = this.findJobViewByIdStmt.get(id) as JobViewRow | undefined;
+    return row ? rowToJobView(row) : null;
+  }
+
+  /**
+   * P4.T4: filtered + paginated list backing `GET /api/jobs`. SQL is
+   * built per call because the predicate set depends on which
+   * filter keys the caller supplied (SQLite has no opt-in WHERE
+   * placeholder). All filters are AND-combined; nothing supports
+   * IN-lists for the V1 surface.
+   *
+   * Ordering is `created_at DESC, id DESC` — newest first, stable
+   * tiebreak by id. The route layer caps `limit` at 100; we do not
+   * re-cap here so internal callers can request more if they ever
+   * need to (e.g. a hypothetical maintenance CLI).
+   */
+  listJobs(filter: JobListFilter): JobView[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.status !== undefined) {
+      where.push("j.status = ?");
+      params.push(filter.status);
+    }
+    if (filter.jobType !== undefined) {
+      where.push("j.job_type = ?");
+      params.push(filter.jobType);
+    }
+    if (filter.mediaId !== undefined) {
+      where.push("j.media_id = ?");
+      params.push(filter.mediaId);
+    }
+    if (filter.tripId !== undefined) {
+      where.push("m.trip_id = ?");
+      params.push(filter.tripId);
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const sql = `
+      SELECT ${SELECT_COLUMNS_PREFIXED},
+             m.trip_id AS trip_id
+      FROM processing_jobs j
+      LEFT JOIN media_items m ON m.id = j.media_id
+      ${whereClause}
+      ORDER BY j.created_at DESC, j.id DESC
+      LIMIT ? OFFSET ?
+    `;
+    params.push(filter.limit, filter.offset);
+    const rows = this.db.prepare(sql).all(...params) as JobViewRow[];
+    return rows.map(rowToJobView);
+  }
+
+  /**
+   * P4.T4 cancel: flip pending / retrying / running → cancelled.
+   * Service layer guards on the current status to surface a
+   * domain-shaped 400 ("cannot cancel job in status X") before
+   * touching SQL; this method's WHERE clause is the final race-safe
+   * guard. Returns the rowcount (0 means the row's status moved
+   * mid-request — caller retries-by-refresh or returns 409).
+   */
+  cancelJob(jobId: string, now: string = nowIso()): number {
+    const info = this.cancelJobStmt.run(now, now, jobId);
+    return info.changes;
+  }
+
+  /**
    * P4.T3 zombie recovery: return every `running` job whose
    * `started_at` is at or before `startedBefore`. Rows are returned
    * oldest-first (NULL started_at treated as ancient → first).
@@ -458,6 +606,13 @@ function rowToJob(row: JobRow): ProcessingJob {
     finishedAt: row.finished_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function rowToJobView(row: JobViewRow): JobView {
+  return {
+    ...rowToJob(row),
+    tripId: row.trip_id,
   };
 }
 

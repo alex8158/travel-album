@@ -61,3 +61,20 @@ export interface ProcessingJob {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
+/**
+ * P4.T4 API projection: a `ProcessingJob` enriched with `tripId`
+ * resolved via LEFT JOIN media_items. `tripId` is `null` when the
+ * media row itself is missing (impossible under the FK + ON DELETE
+ * CASCADE invariant in production, but the type is nullable so
+ * smokes that delete media rows directly don't blow up).
+ *
+ * Used as the on-the-wire shape returned by the Jobs API
+ * (`GET /api/jobs`, `GET /api/jobs/:id`, retry / cancel responses).
+ * The executor / scheduler paths intentionally keep using
+ * `ProcessingJob` so the tighter type carries no JOIN cost on the
+ * hot claim path.
+ */
+export interface JobView extends ProcessingJob {
+  readonly tripId: string | null;
+}

@@ -161,7 +161,7 @@
   - 视频任务出队执行前先检查 `ffmpegAvailable`，不可用直接以 `FFMPEG_NOT_AVAILABLE` 标记失败，不占用并发槽。
 - [x] **P4.T2 [MUST]** 失败重试与退避（max 3 次，指数退避，可配置）
 - [x] **P4.T3 [MUST]** 僵尸任务恢复（启动扫描 + 心跳超时阈值）
-- [ ] **P4.T4 [MUST]** Job API：`GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`、`POST /api/jobs/:id/cancel`
+- [x] **P4.T4 [MUST]** Job API：`GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`、`POST /api/jobs/:id/cancel`
 - [ ] **P4.T5 [MUST]** Media 状态联动：根据关键任务结果更新 `media_items.status`
 - [ ] **P4.T6 [MUST]** 前端任务状态页（§10.8）
 - [ ] **P4.T7 [MUST]** 阶段验收

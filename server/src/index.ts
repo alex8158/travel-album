@@ -11,6 +11,7 @@ import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import {
   JobQueue,
   JobRepository,
+  JobService,
   makeImageMetadataHandler,
   makeImageThumbnailHandler,
   type JobHandler,
@@ -166,6 +167,7 @@ async function main(): Promise<void> {
     logger,
   });
   const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo);
+  const jobService = new JobService(jobRepo);
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel
@@ -228,6 +230,7 @@ async function main(): Promise<void> {
     uploadService,
     mediaService,
     mediaRepo,
+    jobService,
     debugRoutes: config.nodeEnv !== "production",
   });
 

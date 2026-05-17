@@ -749,11 +749,43 @@ npm run format:check
   - 未实现 priority queue / dead-letter queue / 分布式锁
   - 未引入新依赖
 
+### P4.T4 Job API 实现结果
+
+- Commit：待入库 — `feat(server): add job management api (P4.T4)`
+- 主要成果：
+  - 新增 `server/src/routes/jobs.ts`：在 `/api/jobs` 暴露 4 个端点：
+    - `GET /api/jobs?status=&jobType=&mediaId=&tripId=&limit=&offset=` 过滤 + 分页列表（`created_at DESC, id DESC`，limit 1..100 默认 50）
+    - `GET /api/jobs/:id` 单条
+    - `POST /api/jobs/:id/retry` 手动 retry
+    - `POST /api/jobs/:id/cancel` 手动 cancel
+  - 新增 `server/src/jobs/jobService.ts`：领域层校验 + 状态机判定 + 复用既有 repo 写入路径
+    - `retryJob`：允许从 `failed / success / cancelled / retrying`；`pending / running` 抛 `INVALID_STATE_TRANSITION` 400；底层复用 P4.T2 `resetToRetrying`（`retry_count=0`、`next_run_at=now`、清空 `error/started/finished`）
+    - `cancelJob`：允许从 `pending / retrying / running`；`success / failed / cancelled` 抛 `INVALID_STATE_TRANSITION` 400；`running` 行只翻状态不杀进程，handler 的 `markSuccess/markFailed/markRetrying` 的 `WHERE status='running'` guard 自然把后续写入吞掉
+  - 新增 `server/src/jobs/jobSchemas.ts`：`jobStatusSchema` + `listJobsQuerySchema`（status / jobType / mediaId / tripId / limit / offset 校验，jobType 用 `^[A-Za-z0-9_:.-]+$` 防注入）
+  - `server/src/jobs/jobRepository.ts` 新增三个方法 + 两条 SQL：
+    - `findJobView(id)`：`findById` + LEFT JOIN `media_items.trip_id` 返回 `JobView`（含 `tripId`）
+    - `listJobs(filter)`：filter keys 动态 AND 拼接 + LEFT JOIN；offset/limit 分页
+    - `cancelJob(id)`：UPDATE WHERE `status IN ('pending', 'retrying', 'running')` → `cancelled`（设 `finished_at`）
+  - 新增 `JobView` 类型（`server/src/jobs/jobTypes.ts`）：`ProcessingJob` + `tripId: string | null`
+  - `server/src/app.ts`：注入 `jobService` 依赖，挂载 `/api/jobs` 路由
+  - `server/src/index.ts` boot 实例化 `JobService(jobRepo)` 并传入 `createApp`
+  - `server/src/jobs/index.ts` 导出 `JobService` / `JobView` / `JobListFilter` / `jobStatusSchema` / `listJobsQuerySchema` / `ListJobsQuery`
+- 验证：
+  - 新增 `npm run smoke:jobs-api` —— **28/28 PASS**：覆盖列表 / 4 种过滤 / 分页 / 校验失败 / 单条查询 / 404 / retry 四种合法源态 / retry pending+running 400 / retry 不触发 handler（无 JobQueue 运行 → row 留在 `retrying` 且 `started_at=NULL`）/ cancel 三种合法源态 / cancel 后 JobQueue.tickChannel 不再拾起该行 / cancel 三种非法源态 / 路径参数校验 / 上限校验
+  - 既有 14 smoke 全部不回归（classify 37 / trips 22 / storage 19 / upload 30 / media 26 / storage-route 14 / image-channel-executor 26 / media-versions 24 / image-thumbnail 22 / migration-006 18 / image-metadata 23 / media-reprocess 21 / trip-cover-url 13 / job-queue 55）—— 后端 smoke 总计 **378 / 378**
+  - `npm run typecheck` / `npm run lint` / `npm run build` / `npm run format:check` 一次过
+- 边界遵守：
+  - 未改 schema / 未新增 migration
+  - 未实现 Media 状态联动（保留 P4.T5）
+  - 未改前端 / 未改 thumbnail / metadata handler / 未改视频核心 / 未改 trip cover
+  - 未实现 priority queue / dead-letter queue / 分布式锁
+  - 未引入新依赖
+  - 未直接调用 handler — retry / cancel 均纯 DB 写入，由 JobQueue 在下次 tick 拾起 retrying 行
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| Job API (`GET /api/jobs` / retry / cancel) | P4.T4 |
 | Media 状态联动 (`uploaded → processing → processed`) | P4.T5 |
 | 前端任务状态页 | P4.T6 |
 | 心跳 / live-zombie 检测（运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖绝大多数实际场景 |
@@ -765,7 +797,7 @@ npm run format:check
 
 进入阶段 4 的下一项任务：
 
-- **P4.T4 [MUST]**：Job API —— `GET /api/jobs`（按 trip / media / status / job_type 过滤的分页列表）、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`（人工触发 retrying，复用 P4.T2 路径）、`POST /api/jobs/:id/cancel`（pending / retrying → cancelled，running 不直接干预）
+- **P4.T5 [MUST]**：Media 状态联动 —— 根据关键任务（thumbnail / metadata）结果更新 `media_items.status`：`uploaded → processing`（首个关键任务进入 running）/ `processing → processed`（全部关键任务到 success）/ `processing → failed`（任一关键任务最终 failed）。需考虑 retry / cancel 的回滚或保持。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
