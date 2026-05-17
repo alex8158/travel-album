@@ -1,4 +1,4 @@
-// Manual smoke test for media reprocess (P3.T7).
+// Manual smoke test for media reprocess (P3.T7 + P4.T2 R-40 fix).
 //
 // Usage: npm run smoke:media-reprocess
 //
@@ -8,9 +8,10 @@
 // Coverage:
 //   * Fresh media with no jobs → both slots "created" + actual
 //     pending rows in DB.
-//   * Failed job → "reset" + status flipped to pending + error_message
-//     / started_at / finished_at cleared.
-//   * Success job → "reset".
+//   * Failed job → "reset" + status flipped to 'retrying' (P4.T2
+//     R-40: was 'pending') + retry_count=0 + next_run_at set +
+//     error_message / started_at / finished_at cleared.
+//   * Success job → "reset" → status='retrying'.
 //   * Pending job → "skipped" (`reason: "already pending"`).
 //   * Running job → "skipped" (`reason: "already running"`).
 //   * Mixed slots (thumbnail pending + metadata failed) → one
@@ -20,8 +21,9 @@
 //   * Missing media → NotFoundError.
 //   * Soft-deleted media → NotFoundError.
 //   * Non-image media (unknown) → BadRequestError.
-//   * Sanity: the reset rows are claimable by the executor on the
-//     next tick (pulls them as pending and runs to success).
+//   * Sanity: the reset rows (now in 'retrying' with next_run_at=now)
+//     are still claimable by the executor on the next tick — the
+//     P4.T2 claim SELECT accepts both pending and due-retrying rows.
 
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -199,13 +201,21 @@ async function main(): Promise<void> {
         JSON.stringify(thumbResult),
       );
       const row = readJob(dbHandle.db, oldJobId);
+      // P4.T2 R-40: reprocess now lands the row in `retrying` (the
+      // §4.3-canonical re-entry point), not `pending`. retry_count
+      // resets to 0 (user-driven "start over"); next_run_at is
+      // populated so the JobQueue / ImageChannelExecutor SELECT
+      // sees the row as immediately due.
       record(
-        "failed → reset: row.status=pending and error/started/finished cleared",
-        row?.status === "pending" &&
+        "failed → reset: row.status=retrying + retry_count=0 + next_run_at set + error/started/finished cleared",
+        row?.status === "retrying" &&
+          row?.retry_count === 0 &&
+          typeof row?.next_run_at === "string" &&
+          (row?.next_run_at as string).length > 0 &&
           row?.error_message === null &&
           row?.started_at === null &&
           row?.finished_at === null,
-        `status=${String(row?.status)} err=${String(row?.error_message)}`,
+        `status=${String(row?.status)} retry_count=${String(row?.retry_count)} next_run_at=${String(row?.next_run_at)} err=${String(row?.error_message)}`,
       );
       record(
         "failed → reset: metadata slot has no prior job → created",
@@ -231,9 +241,9 @@ async function main(): Promise<void> {
       );
       const row = readJob(dbHandle.db, oldJobId);
       record(
-        "success → reset: row back to pending",
-        row?.status === "pending",
-        `status=${String(row?.status)}`,
+        "success → reset: row flipped to retrying (P4.T2 R-40)",
+        row?.status === "retrying" && row?.retry_count === 0,
+        `status=${String(row?.status)} retry_count=${String(row?.retry_count)}`,
       );
     }
 

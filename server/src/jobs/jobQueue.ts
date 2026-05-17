@@ -1,4 +1,4 @@
-// JobQueue scheduler (P4.T1).
+// JobQueue scheduler (P4.T1 + P4.T2).
 //
 // Multi-channel polling scheduler that supersedes the P3.T2
 // `ImageChannelExecutor` stub in production. Each channel
@@ -9,19 +9,24 @@
 //   * its own inflight Set<Promise>
 //
 // The channels run independently — saturation in one channel does
-// NOT block the others. handler errors are caught, marked as
-// `failed` in the DB, and the channel keeps draining.
+// NOT block the others. Handler errors trigger the P4.T2 retry
+// path: `running → retrying` with exponential backoff in
+// `next_run_at`, finally `running → failed` only after the retry
+// budget is exhausted. The §4.3-canonical transition graph is
+// strictly observed.
 //
-// What this task IS (P4.T1):
+// What this module covers as of P4.T2:
 //   * Stable JobQueue abstraction with start / stop lifecycle.
-//   * Per-channel concurrency limit (basic).
-//   * State machine: pending → running → success / failed.
+//   * Per-channel concurrency limit.
+//   * State machine: pending → running → success / retrying
+//                    retrying → running → success / failed
+//   * Failure retry with exponential backoff (cap'd) configured
+//     via JobQueueRetryConfig.
 //   * Handler contract unchanged: `(job) => Promise<void>`.
 //   * Structural placeholder for video / ai channels (no handlers
 //     registered today — they exist as channels but never claim).
 //
-// What this task is NOT (deferred):
-//   * Retry / backoff (P4.T2).
+// What this module does NOT cover (deferred):
 //   * Zombie-job recovery (P4.T3).
 //   * Job API: GET / retry / cancel HTTP routes (P4.T4).
 //   * Media-status linkage uploaded → processing → processed (P4.T5).
@@ -66,10 +71,41 @@ export interface JobQueueChannelConfig {
   readonly pollIntervalMs?: number | undefined;
 }
 
+/**
+ * Failure-retry policy (P4.T2). Backoff is
+ *   `delay = min(baseDelayMs * 2^retry_count, maxDelayMs)`
+ * where `retry_count` is the count BEFORE this retry is scheduled
+ * (so the 1st retry fires after `baseDelayMs`, the 2nd after
+ * `2*baseDelayMs`, etc.). `maxRetries` is the maximum number of
+ * retries scheduled before a final `failed`. With maxRetries=3,
+ * total attempts = 4.
+ *
+ * `maxRetries=0` disables retry — the catch path falls through to
+ * `markFailed` directly (preserves the P4.T1 behaviour for smokes
+ * that never opted into retry config).
+ */
+export interface JobQueueRetryConfig {
+  readonly maxRetries: number;
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+}
+
+const DEFAULT_RETRY_CONFIG: JobQueueRetryConfig = {
+  maxRetries: 0,
+  baseDelayMs: 0,
+  maxDelayMs: 0,
+};
+
 export interface JobQueueDeps {
   readonly jobRepo: JobRepository;
   readonly logger: Logger;
   readonly channels: readonly JobQueueChannelConfig[];
+  /**
+   * Optional. When omitted (or `maxRetries=0`), handler failures
+   * go straight to `failed` — same as P4.T1. Production boot in
+   * `server/src/index.ts` opts in with values from config.
+   */
+  readonly retryConfig?: JobQueueRetryConfig;
 }
 
 /**
@@ -105,6 +141,7 @@ export interface TickChannelResult {
 export class JobQueue {
   private state: JobQueueState = "idle";
   private readonly channels: Map<JobQueueChannelName, ChannelRuntime>;
+  private readonly retryConfig: JobQueueRetryConfig;
 
   constructor(private readonly deps: JobQueueDeps) {
     this.channels = new Map();
@@ -123,6 +160,21 @@ export class JobQueue {
         intervalHandle: null,
       });
     }
+    const cfg = deps.retryConfig ?? DEFAULT_RETRY_CONFIG;
+    if (cfg.maxRetries < 0) {
+      throw new Error(`JobQueue: retryConfig.maxRetries < 0 (${cfg.maxRetries})`);
+    }
+    if (cfg.maxRetries > 0) {
+      if (cfg.baseDelayMs <= 0) {
+        throw new Error(`JobQueue: retryConfig.baseDelayMs must be > 0 when maxRetries > 0`);
+      }
+      if (cfg.maxDelayMs < cfg.baseDelayMs) {
+        throw new Error(
+          `JobQueue: retryConfig.maxDelayMs (${cfg.maxDelayMs}) < baseDelayMs (${cfg.baseDelayMs})`,
+        );
+      }
+    }
+    this.retryConfig = cfg;
   }
 
   /**
@@ -316,8 +368,69 @@ export class JobQueue {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      this.handleFailure(job, message, correlation);
+    }
+  }
+
+  /**
+   * P4.T2 retry-budget decision: if the job has retries left, schedule
+   * a `retrying` transition with exponential backoff; otherwise this is
+   * the final attempt and we transition straight to `failed`.
+   *
+   * The "retries left" check uses the CURRENT `retry_count` on the job
+   * row (read once at claim time and snapshotted into `job`). Backoff
+   * delay is computed from that same pre-increment value — so the
+   * first retry fires after `baseDelayMs`, the second after
+   * `2*baseDelayMs`, etc. The post-increment value (retryCount + 1)
+   * is what gets persisted on the row.
+   */
+  private handleFailure(
+    job: ProcessingJob,
+    message: string,
+    correlation: Record<string, unknown>,
+  ): void {
+    const { maxRetries, baseDelayMs, maxDelayMs } = this.retryConfig;
+    if (job.retryCount >= maxRetries) {
+      // Retry budget exhausted (covers both maxRetries=0 "no retry"
+      // and "we already retried N times"). Final fail.
       this.markFailedSafely(job.id, message, correlation);
-      this.deps.logger.warn({ ...correlation, error: message }, "JobQueue: handler failed");
+      this.deps.logger.warn(
+        { ...correlation, error: message, retryCount: job.retryCount },
+        "JobQueue: handler failed (no retries remaining)",
+      );
+      return;
+    }
+    const delayMs = Math.min(baseDelayMs * Math.pow(2, job.retryCount), maxDelayMs);
+    const nextRunAt = new Date(Date.now() + delayMs).toISOString();
+    const newRetryCount = job.retryCount + 1;
+    try {
+      const changes = this.deps.jobRepo.markRetrying(job.id, message, nextRunAt, newRetryCount);
+      if (changes === 0) {
+        // Row not in `running` anymore — fall back to final fail
+        // logging; we deliberately don't try a second UPDATE since
+        // we'd be guessing at the actual current status.
+        this.deps.logger.warn(
+          { ...correlation, error: message, retryCount: job.retryCount },
+          "JobQueue: markRetrying affected 0 rows (job no longer running)",
+        );
+        return;
+      }
+      this.deps.logger.warn(
+        {
+          ...correlation,
+          error: message,
+          retryCount: newRetryCount,
+          maxRetries,
+          delayMs,
+          nextRunAt,
+        },
+        "JobQueue: handler failed, scheduled retry",
+      );
+    } catch (err) {
+      this.deps.logger.error(
+        { ...correlation, err: serializeErr(err) },
+        "JobQueue: markRetrying itself failed (job may appear stuck in 'running')",
+      );
     }
   }
 

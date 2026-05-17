@@ -173,8 +173,13 @@ async function main(): Promise<void> {
   // are registered with empty handler maps as structural placeholders
   // — they exist so a future video / AI worker can be slotted in
   // without changing the boot shape, but they never claim today.
-  // P4.T2 / T3 / T4 will add retry / zombie recovery / Job API on
-  // top of this same JobQueue.
+  //
+  // P4.T2: opt into the failure-retry policy (`maxRetries` /
+  // `baseDelayMs` / `maxDelayMs` from config.workers). Handler
+  // failures route through `running → retrying → running → ...`
+  // with exponential backoff, finally `→ failed` only after the
+  // budget is exhausted. The defaults are 3 retries / 1 s base /
+  // 60 s cap, all overridable via env.
   const imageHandlers = new Map<string, JobHandler>();
   imageHandlers.set(
     "image_thumbnail",
@@ -189,7 +194,16 @@ async function main(): Promise<void> {
     { name: "video", concurrency: config.workers.videoConcurrency, handlers: new Map() },
     { name: "ai", concurrency: config.workers.aiConcurrency, handlers: new Map() },
   ];
-  const jobQueue = new JobQueue({ jobRepo, logger, channels });
+  const jobQueue = new JobQueue({
+    jobRepo,
+    logger,
+    channels,
+    retryConfig: {
+      maxRetries: config.workers.jobRetryMax,
+      baseDelayMs: config.workers.jobRetryBaseDelayMs,
+      maxDelayMs: config.workers.jobRetryMaxDelayMs,
+    },
+  });
 
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
 

@@ -159,7 +159,7 @@
   - 三类独立通道（实现层各自维护并发计数）：图片通道默认并发 `IMAGE_WORKER_CONCURRENCY=2`、视频通道默认 `VIDEO_WORKER_CONCURRENCY=1`、AI 通道默认 `AI_WORKER_CONCURRENCY=1`。
   - 严禁出现“所有任务共用一个并发上限”的实现；FFmpeg 子进程总数不得超过视频通道并发上限。
   - 视频任务出队执行前先检查 `ffmpegAvailable`，不可用直接以 `FFMPEG_NOT_AVAILABLE` 标记失败，不占用并发槽。
-- [ ] **P4.T2 [MUST]** 失败重试与退避（max 3 次，指数退避，可配置）
+- [x] **P4.T2 [MUST]** 失败重试与退避（max 3 次，指数退避，可配置）
 - [ ] **P4.T3 [MUST]** 僵尸任务恢复（启动扫描 + 心跳超时阈值）
 - [ ] **P4.T4 [MUST]** Job API：`GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`、`POST /api/jobs/:id/cancel`
 - [ ] **P4.T5 [MUST]** Media 状态联动：根据关键任务结果更新 `media_items.status`

@@ -93,6 +93,9 @@ const schema = z
     VIDEO_WORKER_CONCURRENCY: intPositive(1),
     AI_WORKER_CONCURRENCY: intPositive(1),
     JOB_RETRY_MAX: intNonNeg(3),
+    // P4.T2 retry backoff: delay = min(base * 2^retry_count, max).
+    JOB_RETRY_BASE_DELAY_MS: intPositive(1000),
+    JOB_RETRY_MAX_DELAY_MS: intPositive(60_000),
     ZOMBIE_TIMEOUT_MS: intPositive(1_800_000),
 
     // External binaries (design §8.4) — optional; fall back to PATH lookup.
@@ -183,6 +186,8 @@ export interface Config {
     videoConcurrency: number;
     aiConcurrency: number;
     jobRetryMax: number;
+    jobRetryBaseDelayMs: number;
+    jobRetryMaxDelayMs: number;
     zombieTimeoutMs: number;
   };
   ffmpeg: {
@@ -244,6 +249,8 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
       videoConcurrency: raw.VIDEO_WORKER_CONCURRENCY,
       aiConcurrency: raw.AI_WORKER_CONCURRENCY,
       jobRetryMax: raw.JOB_RETRY_MAX,
+      jobRetryBaseDelayMs: raw.JOB_RETRY_BASE_DELAY_MS,
+      jobRetryMaxDelayMs: raw.JOB_RETRY_MAX_DELAY_MS,
       zombieTimeoutMs: raw.ZOMBIE_TIMEOUT_MS,
     },
     ffmpeg: {

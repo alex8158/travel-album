@@ -652,7 +652,7 @@ npm run format:check
 
 | 编号 | 风险 | 何时跟进 |
 |---|---|---|
-| R-40 | P3.T7 `reprocess` 走 `failed/success → pending` 直接 reset，绕过 CLAUDE.md §4.3 的 `failed → retrying → running` 规范迁移 | P4.T2 失败重试 / 退避落地时改为规范路径 |
+| ~~R-40~~ | ~~P3.T7 `reprocess` 走 `failed/success → pending` 直接 reset，绕过 CLAUDE.md §4.3 的 `failed → retrying → running` 规范迁移~~ | ✅ P4.T2 消化：`resetToRetrying` 走规范路径，retry_count=0、next_run_at=now |
 | R-41 | `image_metadata` job 当前没有自动触发路径（upload 只入 `image_thumbnail`） | P4 调度框架或 P3.T4 worker 链式入队（任选）|
 | R-42 | P3.T2 executor 在 `markSuccess` 后若进程 crash，可能让"running"行卡死 | P4.T3 僵尸恢复（启动扫描 + 心跳）|
 | R-43 | 详情页 EXIF 表无字段过滤 / 分类 / 单位格式化 —— 直接渲染 exifr 原始 key/value | UX polish；非阻断 |
@@ -699,11 +699,36 @@ npm run format:check
   - 未引入 FFmpeg 实际处理流程
   - 未新增第三方依赖
 
+### P4.T2 失败重试 + 指数退避 实现结果
+
+- Commit：待入库 — `feat(server): add failure retry with exponential backoff (P4.T2)`
+- 主要成果：
+  - `server/src/jobs/jobQueue.ts` 在 `runHandler` catch 路径接入重试预算判定：`job.retryCount < maxRetries` → `markRetrying`（`running → retrying`，`retry_count++`，`next_run_at = now + min(baseDelayMs * 2^retryCount, maxDelayMs)`，error_message 落库）；否则继续走原 `markFailed`（`running → failed`，retry_count 不再 ++）。新增 `JobQueueRetryConfig` 接口（`maxRetries / baseDelayMs / maxDelayMs`），构造期校验非法配置（负数 / base=0 而 max>0 / maxDelayMs<baseDelayMs）抛错
+  - `DEFAULT_RETRY_CONFIG = { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0 }` —— 缺省即"无重试"，保持 P4.T1 行为不变；只有显式传 `retryConfig` 的调用方才进入新分支（生产 `server/src/index.ts` 显式接入；旧 smoke 仍走原路径）
+  - `server/src/jobs/jobRepository.ts` 新增 `markRetrying(jobId, errorMessage, nextRunAt, newRetryCount, now)` —— `WHERE id=? AND status='running'` 保持竞态安全；清空 `started_at / finished_at` 让下次尝试在 Job API 里看起来"全新"
+  - claim SELECT 扩展：原本只匹配 `status = 'pending'`，现在同时匹配 `(status = 'retrying' AND (next_run_at IS NULL OR next_run_at <= now))`，`claimNextPendingImageJob` / `claimNextPendingByJobTypes` 都已升级；claim UPDATE 的 `WHERE status IN ('pending', 'retrying')` 配合，并在 claim 时清空 `next_run_at` 防止退避值悬留
+  - **R-40 消化**：`JobRepository.resetToPending` → `resetToRetrying`（`MediaService.reprocess` 同步切换）。reprocess 不再 `failed/success → pending` 直跳，而是走 `failed/success/retrying/cancelled → retrying`（CLAUDE.md §4.3 规范路径），并把 `retry_count=0` / `next_run_at=now`，让 executor 下一 tick 立即可拾起。outcome label 仍叫 `"reset"`（语义未变：把行从终态拽回可运行队列）
+  - 配置层（`server/src/config/index.ts`、`.env.example`）补 `JOB_RETRY_BASE_DELAY_MS`（默认 `1000`）与 `JOB_RETRY_MAX_DELAY_MS`（默认 `60000`）；连同既有 `JOB_RETRY_MAX`（默认 `3`）一起通过 `config.workers.jobRetryMax / jobRetryBaseDelayMs / jobRetryMaxDelayMs` 透到 `JobQueue` 构造
+  - `server/src/index.ts` boot 显式传 `retryConfig: { maxRetries, baseDelayMs, maxDelayMs }` 接入生产；P4.T1 的 13 个 smoke 全部不改，因为它们没传 retryConfig，缺省 maxRetries=0 保留原行为
+- 验证：
+  - `npm run smoke:job-queue` —— **42/42 PASS**（P4.T1 27 case + P4.T2 新增 15 case，覆盖：始终失败用尽预算 / 失败两次第三次成功 / next_run_at 未到不被拾取 / next_run_at 到了被拾取 / 指数退避 ~2× 倍增 / 非法 retryConfig 构造抛错）
+  - `npm run smoke:media-reprocess` —— **21/21 PASS**（断言已更新：failed/success → reset 后行 `status='retrying'`、`retry_count=0`、`next_run_at` 非空；ImageChannelExecutor 在 P4.T2 SELECT 扩展后仍能拾起退避到期的 retrying 行，sanity case 验证最终 status='success'）
+  - 既有 13 smoke 不回归：classify 37 / trips 22 / storage 19 / upload 30 / media 26 / storage-route 14 / image-channel-executor 26 / media-versions 24 / image-thumbnail 22 / migration-006 18 / image-metadata 23 / media-reprocess 21 / trip-cover-url 13 / **job-queue 42** —— 后端 smoke 总计 **337 / 337**
+  - `npm run typecheck` / `npm run lint` / `npm run build` / `npm run format` 一次过
+- 边界遵守：
+  - 未改 schema / 未新增 migration（`retry_count` / `next_run_at` 字段在 P2.T2 `004_create_processing_jobs.sql` 已具备，CHECK `retry_count >= 0` 也已存在）
+  - 未改前端
+  - 未改 P3 thumbnail / metadata handler 业务逻辑
+  - 未改 Job API（GET / retry HTTP 路由，留给 P4.T4）
+  - 未改 Media 状态联动（`uploaded → processing → processed`，留给 P4.T5）
+  - 未改 ImageChannelExecutor 接口与现有 P3 smoke 的执行路径
+  - 未改视频 / AI 通道
+  - 未引入新依赖
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| 失败重试 + 退避策略 | P4.T2 |
 | 僵尸任务恢复 | P4.T3 |
 | Job API (`GET /api/jobs` / retry / cancel) | P4.T4 |
 | Media 状态联动 (`uploaded → processing → processed`) | P4.T5 |
@@ -716,7 +741,7 @@ npm run format:check
 
 进入阶段 4 的下一项任务：
 
-- **P4.T2 [MUST]**：失败重试与退避（max 3 次，指数退避，可配置）—— 在 JobQueue handler 失败路径接入 `failed → retrying` 迁移、记录 `retry_count` / `next_run_at`、规范化 P3.T7 reprocess 的状态迁移路径（R-40）
+- **P4.T3 [MUST]**：僵尸任务恢复（启动扫描 `running` 行 + 超时阈值 `ZOMBIE_TIMEOUT_MS` + 选择"恢复 running / 失败 / 重置 retrying"策略）—— 消化 R-42
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

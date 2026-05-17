@@ -180,7 +180,15 @@ export class MediaService {
     }
 
     // Terminal-ish (failed / success / retrying / cancelled) → reset.
-    const changes = jobRepo.resetToPending(latest.id, now);
+    //
+    // P4.T2 R-40 fix: route through `retrying`, the §4.3-canonical
+    // re-entry point, instead of the old direct → `pending` flip.
+    // The JobQueue SELECT (P4.T2) accepts both `pending` and
+    // `retrying` rows, so the executor still picks it up next tick;
+    // the state-machine no longer skips the documented step.
+    // retry_count is reset to 0 — reprocess is "start over", not
+    // "continue the existing retry budget".
+    const changes = jobRepo.resetToRetrying(latest.id, now);
     if (changes === 0) {
       // SQL guard refused — only possible if a parallel writer
       // flipped this row to pending/running between our SELECT and

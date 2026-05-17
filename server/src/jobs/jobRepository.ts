@@ -2,11 +2,22 @@
 //
 // Scope:
 //   * P2.T4 added `insert` for Upload_Manager.
-//   * P3.T2 adds the minimum read / state-transition surface the
+//   * P3.T2 added the minimum read / state-transition surface the
 //     image-channel executor (R-36 stub) needs: claim one pending
 //     `image_*` job, mark it `success` or `failed`.
-//   * Everything else — retry, cancel, zombie recovery, channel
-//     splitting, the Job API — stays for P4.T1+.
+//   * P3.T7 added `resetToPending` (since replaced by
+//     `resetToRetrying` in P4.T2) and findLatestByMediaIdAndType.
+//   * P4.T1 added `claimNextPendingByJobTypes` for the multi-channel
+//     JobQueue scheduler.
+//   * P4.T2 adds the failure-retry surface:
+//       - `markRetrying`: running → retrying with retry_count bump
+//         + next_run_at backoff target,
+//       - `resetToRetrying`: terminal → retrying (R-40 fix — the
+//         §4.3-canonical reprocess entry point),
+//       - claim SELECTs now also pick up retrying rows whose
+//         `next_run_at` has elapsed.
+//   * Everything else — cancel, zombie recovery, the public Job
+//     API — stays for P4.T3+.
 //
 // Transitions are guarded by `WHERE status='<expected>'` predicates so
 // a bug that called `markSuccess` on a non-running row simply returns
@@ -72,7 +83,8 @@ export class JobRepository {
   private readonly claimStmt;
   private readonly markSuccessStmt;
   private readonly markFailedStmt;
-  private readonly resetToPendingStmt;
+  private readonly markRetryingStmt;
+  private readonly resetToRetryingStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -103,27 +115,38 @@ export class JobRepository {
       LIMIT 1
     `);
 
-    // Pick the oldest pending image-channel job. `LIKE 'image_%'`
-    // intentionally matches both `image_thumbnail` (P3.T4) and
-    // `image_metadata` (P3.T5), and any future image_* type, without
-    // hard-coding the closed set. Video / AI / generic channels stay
-    // unclaimed — those are P4 / future work.
+    // Pick the oldest claimable image-channel job. P4.T2 expanded
+    // the SELECT to include retrying rows whose `next_run_at` is due:
+    //   * status = 'pending'  (untried or freshly enqueued / reset)
+    //   * OR status = 'retrying' AND next_run_at IS NULL OR <= now
+    //                         (back-off elapsed; ready for re-claim)
+    // Time comparison uses ISO-8601 strings, which sort
+    // lexicographically the same as chronologically.
     this.selectNextPendingImageStmt = db.prepare(`
       SELECT ${SELECT_COLUMNS}
       FROM processing_jobs
-      WHERE status = 'pending' AND job_type LIKE 'image\\_%' ESCAPE '\\'
+      WHERE job_type LIKE 'image\\_%' ESCAPE '\\'
+        AND (
+          status = 'pending'
+          OR (status = 'retrying' AND (next_run_at IS NULL OR next_run_at <= ?))
+        )
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
 
-    // pending → running. The `AND status = 'pending'` predicate makes
-    // the transition idempotent under concurrent claimers: if someone
-    // beat us to the row, our UPDATE finds 0 rows and the executor
-    // moves on.
+    // Flip pending OR retrying → running. The `status IN (...)`
+    // predicate keeps the transition race-safe: if a parallel
+    // claimer already grabbed the row, our UPDATE sees `changes=0`
+    // and the caller treats that as "nothing claimed". `next_run_at`
+    // is cleared on claim so a stale value doesn't linger past a
+    // successful retry.
     this.claimStmt = db.prepare(`
       UPDATE processing_jobs
-      SET status = 'running', started_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'pending'
+      SET status = 'running',
+          started_at = ?,
+          updated_at = ?,
+          next_run_at = NULL
+      WHERE id = ? AND status IN ('pending', 'retrying')
     `);
 
     // running → success. Guarded so a stray call from outside the
@@ -141,23 +164,47 @@ export class JobRepository {
       WHERE id = ? AND status = 'running'
     `);
 
-    // P3.T7 reprocess support: reset a terminal-ish row back to
-    // `pending` so the executor picks it up next tick.
-    //
-    // The WHERE clause is the entire "non-active" closed set
-    // (failed / success / retrying / cancelled). pending / running
-    // rows are intentionally NOT matched — reprocess at the Service
-    // layer already branches them to "skipped" before getting here.
-    //
-    // NOTE on the state-machine: CLAUDE.md §4.3 reserves the proper
-    // `failed → retrying → running` path. This `→ pending` direct
-    // flip is a deliberate P3.T7 stub; P4.T2 will replace it with
-    // the full retry / backoff state machine. The behaviour is
-    // user-spec'd for the stub.
-    this.resetToPendingStmt = db.prepare(`
+    // P4.T2: running → retrying. The catch path in JobQueue calls
+    // this when the handler threw and the retry budget is not
+    // exhausted. We:
+    //   * record the human-readable error_message,
+    //   * bump retry_count to the caller-supplied "new count",
+    //   * stash the backoff target in next_run_at (the SELECT branch
+    //     above gates re-claim on it),
+    //   * clear started_at / finished_at so the next attempt looks
+    //     pristine in the Job API.
+    // Guard `status = 'running'` keeps the transition race-safe:
+    // a stray markRetrying on a non-running row sees `changes=0`
+    // and the caller logs / continues.
+    this.markRetryingStmt = db.prepare(`
       UPDATE processing_jobs
-      SET status = 'pending',
+      SET status = 'retrying',
+          error_message = ?,
+          retry_count = ?,
+          next_run_at = ?,
+          started_at = NULL,
+          finished_at = NULL,
+          updated_at = ?
+      WHERE id = ? AND status = 'running'
+    `);
+
+    // P4.T2 R-40 fix: reprocess now routes terminal rows through
+    // `retrying` (the §4.3-canonical re-entry point) rather than
+    // direct → `pending`. retry_count is reset to 0 (user-driven
+    // reprocess is "start over", not "continue the existing retry
+    // budget"); next_run_at is the caller-supplied wall-clock time
+    // (typically now-ish — the executor will pick it up next tick).
+    //
+    // WHERE clause matches the same closed set as the old
+    // resetToPendingStmt: failed / success / retrying / cancelled.
+    // pending / running rows are deliberately not matched — the
+    // Service layer already branches them to "skipped" or "active".
+    this.resetToRetryingStmt = db.prepare(`
+      UPDATE processing_jobs
+      SET status = 'retrying',
           error_message = NULL,
+          retry_count = 0,
+          next_run_at = ?,
           started_at = NULL,
           finished_at = NULL,
           updated_at = ?
@@ -209,7 +256,11 @@ export class JobRepository {
    * channel's handler set.
    */
   claimNextPendingImageJob(now: string = nowIso()): ProcessingJob | null {
-    const candidate = this.selectNextPendingImageStmt.get() as JobRow | undefined;
+    // P4.T2: SELECT now also matches `retrying` rows whose
+    // `next_run_at` has elapsed. `now` is bound twice — once for
+    // the next_run_at <= ? comparison in the SELECT, once for
+    // started_at / updated_at in the UPDATE.
+    const candidate = this.selectNextPendingImageStmt.get(now) as JobRow | undefined;
     if (!candidate) return null;
     const info = this.claimStmt.run(now, now, candidate.id);
     if (info.changes === 0) {
@@ -243,14 +294,23 @@ export class JobRepository {
   ): ProcessingJob | null {
     if (jobTypes.length === 0) return null;
     const placeholders = jobTypes.map(() => "?").join(", ");
+    // P4.T2: the channel-aware SELECT mirrors selectNextPendingImageStmt:
+    //   * pending rows are always claimable,
+    //   * retrying rows are claimable iff next_run_at has elapsed
+    //     (or is NULL, which means "no backoff was scheduled").
+    // ISO-8601 lexicographic compare = chronological compare.
     const selectStmt = this.db.prepare(`
       SELECT ${SELECT_COLUMNS}
       FROM processing_jobs
-      WHERE status = 'pending' AND job_type IN (${placeholders})
+      WHERE job_type IN (${placeholders})
+        AND (
+          status = 'pending'
+          OR (status = 'retrying' AND (next_run_at IS NULL OR next_run_at <= ?))
+        )
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
-    const candidate = selectStmt.get(...jobTypes) as JobRow | undefined;
+    const candidate = selectStmt.get(...jobTypes, now) as JobRow | undefined;
     if (!candidate) return null;
     const info = this.claimStmt.run(now, now, candidate.id);
     if (info.changes === 0) return null;
@@ -289,17 +349,54 @@ export class JobRepository {
   }
 
   /**
-   * P3.T7 reprocess: flip a terminal row back to `pending` so the
-   * executor (P3.T2) re-picks it up. The SQL guard restricts the
-   * source statuses to {failed, success, retrying, cancelled} —
-   * pending / running rows are deliberately not matched (the Service
-   * layer takes the "already active, skip" branch before reaching
-   * this call). Returns the number of rows touched (0 when nothing
-   * was eligible, e.g. lost race with the executor flipping to
-   * running concurrently).
+   * P4.T2: `running → retrying`. Called by JobQueue's catch path
+   * when the handler threw and the retry budget still has slack.
+   *
+   * Parameters:
+   *   * `errorMessage` — human-readable error from the throw site,
+   *     persisted to `error_message` (overwrites any previous value).
+   *   * `nextRunAt` — ISO-8601 wall-clock time before which the
+   *     row is NOT eligible for re-claim. The caller computes this
+   *     from the exponential-backoff formula.
+   *   * `newRetryCount` — the post-increment value (caller passes
+   *     `job.retryCount + 1`). The repository doesn't compute it
+   *     to keep this layer dumb / transparent.
+   *
+   * Returns the number of rows touched. 0 means the row was not in
+   * `running` at the moment of UPDATE (rare — implies someone
+   * already transitioned it). Caller logs and continues.
    */
-  resetToPending(jobId: string, now: string = nowIso()): number {
-    const info = this.resetToPendingStmt.run(now, jobId);
+  markRetrying(
+    jobId: string,
+    errorMessage: string,
+    nextRunAt: string,
+    newRetryCount: number,
+    now: string = nowIso(),
+  ): number {
+    const info = this.markRetryingStmt.run(errorMessage, newRetryCount, nextRunAt, now, jobId);
+    return info.changes;
+  }
+
+  /**
+   * P3.T7 reprocess support, P4.T2 R-40 fix: flip a terminal row
+   * (failed / success / retrying / cancelled) back into the
+   * runnable queue via the §4.3-canonical `retrying` state.
+   *
+   * Differences vs. the (now-removed) `resetToPending`:
+   *   * Target status is `retrying`, not `pending`. The claim
+   *     SELECT (P4.T2) accepts both, so the executor still picks
+   *     it up next tick.
+   *   * retry_count is reset to 0 — user-driven reprocess is
+   *     "start over", not "continue the existing retry budget".
+   *   * next_run_at is set to the caller-supplied `now` so the
+   *     "due-iff `next_run_at <= now`" predicate fires immediately.
+   *
+   * WHERE clause still restricts source statuses to the closed
+   * non-active set; pending / running rows are filtered upstream
+   * by the Service layer ("skipped" / "already active" branches).
+   */
+  resetToRetrying(jobId: string, now: string = nowIso()): number {
+    const info = this.resetToRetryingStmt.run(now, now, jobId);
     return info.changes;
   }
 }

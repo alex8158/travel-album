@@ -1,4 +1,4 @@
-// Manual smoke test for the JobQueue (P4.T1).
+// Manual smoke test for the JobQueue (P4.T1 + P4.T2).
 //
 // Usage: npm run smoke:job-queue
 //
@@ -8,13 +8,13 @@
 // the worker bodies. The "real" handler logic is already covered by
 // smoke:image-thumbnail / smoke:image-metadata.
 //
-// Coverage:
+// Coverage (P4.T1):
 //   * Empty queue → tick claims nothing
 //   * Single pending image_thumbnail → tick → success
 //   * Concurrency=2 with 3 pending → first tick claims 2, both run
 //     in parallel, after await both success; second tick claims 1
-//   * Handler error → job marked 'failed', error_message present,
-//     queue keeps draining the rest
+//   * Handler error (no retry config) → job marked 'failed',
+//     error_message present, queue keeps draining the rest
 //   * Video channel with no handlers — pending video_metadata
 //     row stays untouched even with an `image_thumbnail` claim active
 //   * Channel saturation: tickChannel returns saturatedBefore=true
@@ -24,6 +24,19 @@
 //   * stop is idempotent; tick after stop returns no claims
 //   * Unknown channel name → throws
 //   * Invalid concurrency in config → throws at construction
+//
+// Coverage (P4.T2 — retry / backoff):
+//   * Always-failing handler with budget exhaustion → goes
+//     pending → retrying → retrying → failed; retry_count == max;
+//     handler invoked maxRetries+1 times.
+//   * Handler fails twice, succeeds on third → ends 'success',
+//     retry_count==2 carried on the row.
+//   * Backoff gating: a row whose next_run_at is in the future is
+//     NOT claimed; after the deadline elapses it IS claimed.
+//   * Backoff doubling: 1st retry delay ≈ baseDelayMs, 2nd retry
+//     delay ≈ 2*baseDelayMs (caps at maxDelayMs).
+//   * Invalid retryConfig (negative max / base 0 with retries) →
+//     throws at construction.
 
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,6 +50,7 @@ import {
   JobRepository,
   type JobHandler,
   type JobQueueChannelConfig,
+  type JobQueueRetryConfig,
 } from "../jobs/index.js";
 import { createLogger } from "../logger.js";
 import { MediaRepository } from "../media/index.js";
@@ -113,9 +127,18 @@ interface QueueRig {
   readonly queue: JobQueue;
 }
 
-function makeQueue(jobRepo: JobRepository, channels: JobQueueChannelConfig[]): QueueRig {
+function makeQueue(
+  jobRepo: JobRepository,
+  channels: JobQueueChannelConfig[],
+  retryConfig?: JobQueueRetryConfig,
+): QueueRig {
   const logger = createLogger({ nodeEnv: "test" });
-  return { queue: new JobQueue({ jobRepo, logger, channels }) };
+  // exactOptionalPropertyTypes: omit the key entirely when no config
+  // was passed in instead of passing `undefined` explicitly.
+  const deps = retryConfig
+    ? { jobRepo, logger, channels, retryConfig }
+    : { jobRepo, logger, channels };
+  return { queue: new JobQueue(deps) };
 }
 
 function imageChannel(handlers: Map<string, JobHandler>, concurrency = 1): JobQueueChannelConfig {
@@ -251,7 +274,11 @@ async function main(): Promise<void> {
     }
 
     // ---------------------------------------------------------------------
-    // CASE 4: handler throws → job 'failed' + queue keeps draining
+    // CASE 4: handler throws (no retry config) → job 'failed' + queue
+    //          keeps draining. With the P4.T2 default `maxRetries=0`,
+    //          a single throw goes straight to `failed` — matching the
+    //          original P4.T1 behaviour. (Retry path is exercised by
+    //          CASE 13+ below with an explicit retryConfig.)
     // ---------------------------------------------------------------------
     {
       const seeded = seedImageMedia(tripService, mediaRepo);
@@ -264,6 +291,7 @@ async function main(): Promise<void> {
         if (job.id === failId) throw new Error("simulated handler failure");
         // okId path succeeds
       });
+      // No `retryConfig` argument — defaults to `maxRetries=0`.
       const { queue } = makeQueue(jobRepo, [imageChannel(handlers)]);
       await queue.tickChannel("image");
       await queue.awaitInflight("image");
@@ -536,6 +564,315 @@ async function main(): Promise<void> {
         "fresh queue getState() === 'idle'",
         queue.getState() === "idle",
         `state=${queue.getState()}`,
+      );
+    }
+
+    // =====================================================================
+    // P4.T2 retry cases. Each constructs an isolated media + a fresh
+    // queue with `retryConfig` set so the new branch in `runHandler`
+    // is exercised end-to-end. We use small delays (10ms base, 50ms
+    // max) so the smoke stays fast yet observable.
+    //
+    // Each retry case uses a UNIQUE job_type (e.g. "image_retry_t13").
+    // JobQueue's `claimNextPendingByJobTypes` only matches rows whose
+    // job_type is in the channel's registered handler set, so the
+    // retry cases are isolated from any stale `image_thumbnail` rows
+    // left behind by earlier P4.T1 cases. The job_type still starts
+    // with `image_` so other code paths (smoke-only ImageChannelExecutor)
+    // would also treat them as image-channel jobs if they ever ran.
+    // =====================================================================
+
+    // ---------------------------------------------------------------------
+    // CASE 13: always-failing handler → exhausts budget → 'failed'
+    //
+    // maxRetries=2 ⇒ total attempts = 3 (1 initial + 2 retries).
+    // After each attempt that throws but has budget left, the row
+    // flips to 'retrying' with retry_count++ and next_run_at = now+delay.
+    // After budget exhausted, the next attempt's catch hits the
+    // "no retries remaining" branch and writes 'failed'.
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_retry_t13";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const jobId = insertJob(dbHandle.db, seeded.mediaId, jobType);
+      const handlers = new Map<string, JobHandler>();
+      let calls = 0;
+      handlers.set(jobType, async () => {
+        calls += 1;
+        throw new Error(`boom #${calls}`);
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 2,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig);
+
+      // Attempt 1
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const afterAttempt1 = readJob(dbHandle.db, jobId);
+      record(
+        "retry: after attempt 1 → status='retrying' + retry_count=1 + next_run_at set",
+        afterAttempt1?.status === "retrying" &&
+          afterAttempt1?.retry_count === 1 &&
+          typeof afterAttempt1?.next_run_at === "string",
+        `status=${String(afterAttempt1?.status)} retry_count=${String(afterAttempt1?.retry_count)} next_run_at=${String(afterAttempt1?.next_run_at)}`,
+      );
+
+      // Wait past the first backoff (base=10ms), then tick.
+      await sleep(30);
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const afterAttempt2 = readJob(dbHandle.db, jobId);
+      record(
+        "retry: after attempt 2 → status='retrying' + retry_count=2",
+        afterAttempt2?.status === "retrying" && afterAttempt2?.retry_count === 2,
+        `status=${String(afterAttempt2?.status)} retry_count=${String(afterAttempt2?.retry_count)}`,
+      );
+
+      // Wait past the second backoff (~20ms). Third attempt should be
+      // the final one and land 'failed'.
+      await sleep(40);
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const finalRow = readJob(dbHandle.db, jobId);
+      record(
+        "retry: after attempt 3 → status='failed' + retry_count=2 + error_message present",
+        finalRow?.status === "failed" &&
+          finalRow?.retry_count === 2 &&
+          typeof finalRow?.error_message === "string" &&
+          /boom/.test(finalRow.error_message as string),
+        `status=${String(finalRow?.status)} retry_count=${String(finalRow?.retry_count)} err=${String(finalRow?.error_message)}`,
+      );
+      record(
+        "retry: handler invoked exactly maxRetries+1 times",
+        calls === 3,
+        `calls=${calls} (expected 3)`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 14: handler fails twice, succeeds on third → ends 'success'
+    //
+    // retry_count carried at the moment of success is the post-bump
+    // value from the most recent retry (2 in this scenario).
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_retry_t14";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const jobId = insertJob(dbHandle.db, seeded.mediaId, jobType);
+      const handlers = new Map<string, JobHandler>();
+      let calls = 0;
+      handlers.set(jobType, async () => {
+        calls += 1;
+        if (calls < 3) throw new Error(`transient #${calls}`);
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 3,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig);
+
+      // Attempt 1 — fail → retrying
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      await sleep(30);
+      // Attempt 2 — fail → retrying
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      await sleep(40);
+      // Attempt 3 — success
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const finalRow = readJob(dbHandle.db, jobId);
+      record(
+        "retry-then-succeed: final status='success' + retry_count==2 + error_message cleared",
+        finalRow?.status === "success" &&
+          finalRow?.retry_count === 2 &&
+          finalRow?.error_message === null,
+        `status=${String(finalRow?.status)} retry_count=${String(finalRow?.retry_count)} err=${String(finalRow?.error_message)}`,
+      );
+      record("retry-then-succeed: handler invoked exactly 3 times", calls === 3, `calls=${calls}`);
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 15: next_run_at gating — a retrying row whose backoff has
+    //          NOT yet elapsed is NOT claimed by a tick, but IS claimed
+    //          once the deadline passes.
+    //
+    // We use baseDelayMs=200 so the gap is visible without flakiness.
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_retry_t15";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const jobId = insertJob(dbHandle.db, seeded.mediaId, jobType);
+      const handlers = new Map<string, JobHandler>();
+      let calls = 0;
+      handlers.set(jobType, async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("first-time fail");
+        // second call succeeds
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 3,
+        baseDelayMs: 200,
+        maxDelayMs: 1000,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig);
+
+      // Attempt 1 → retrying, next_run_at ~ now+200ms
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const afterFirst = readJob(dbHandle.db, jobId);
+      record(
+        "backoff gating: after fail row status='retrying'",
+        afterFirst?.status === "retrying",
+        `status=${String(afterFirst?.status)} next_run_at=${String(afterFirst?.next_run_at)}`,
+      );
+
+      // Tick immediately (well before 200ms). next_run_at gate should
+      // refuse the claim → no new handler invocation.
+      const earlyTick = await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      record(
+        "backoff gating: tick before next_run_at → claimed=0 + handler not re-called",
+        earlyTick.claimed.length === 0 && calls === 1,
+        `claimed=${earlyTick.claimed.length} calls=${calls}`,
+      );
+      const stillRetrying = readJob(dbHandle.db, jobId);
+      record(
+        "backoff gating: row stays in 'retrying' (untouched)",
+        stillRetrying?.status === "retrying" && stillRetrying?.retry_count === 1,
+        `status=${String(stillRetrying?.status)} retry_count=${String(stillRetrying?.retry_count)}`,
+      );
+
+      // Wait past the backoff, then tick — now the row IS claimed and
+      // the second invocation succeeds.
+      await sleep(220);
+      const lateTick = await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const finalRow = readJob(dbHandle.db, jobId);
+      record(
+        "backoff gating: tick after next_run_at → claimed=1 + handler ran again",
+        lateTick.claimed.length === 1 && lateTick.claimed[0]?.jobId === jobId && calls === 2,
+        `claimed=${lateTick.claimed.length} calls=${calls}`,
+      );
+      record(
+        "backoff gating: final status='success'",
+        finalRow?.status === "success" && finalRow?.retry_count === 1,
+        `status=${String(finalRow?.status)} retry_count=${String(finalRow?.retry_count)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 16: exponential doubling of backoff (capped by maxDelayMs)
+    //
+    // With baseDelayMs=100, maxDelayMs=500:
+    //   * 1st retry → delay ≈ 100ms (retryCount before = 0; 100 * 2^0)
+    //   * 2nd retry → delay ≈ 200ms (retryCount before = 1; 100 * 2^1)
+    //   * 3rd retry → delay ≈ 400ms (retryCount before = 2; 100 * 2^2)
+    //   * 4th retry → delay capped at 500ms (would otherwise be 800)
+    //
+    // We capture the gap between updated_at and next_run_at for the
+    // first two retries and assert the ratio is ~2x.
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_retry_t16";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const jobId = insertJob(dbHandle.db, seeded.mediaId, jobType);
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        throw new Error("always fail for doubling test");
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 4,
+        baseDelayMs: 100,
+        maxDelayMs: 500,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig);
+
+      function gapMs(row: Record<string, unknown> | undefined): number {
+        if (!row) return -1;
+        const t0 = Date.parse(row.updated_at as string);
+        const t1 = Date.parse(row.next_run_at as string);
+        return t1 - t0;
+      }
+
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const g1 = gapMs(readJob(dbHandle.db, jobId));
+
+      await sleep(g1 + 30);
+      await queue.tickChannel("image");
+      await queue.awaitInflight("image");
+      const g2 = gapMs(readJob(dbHandle.db, jobId));
+
+      // 1st gap ≈ 100ms, 2nd gap ≈ 200ms (allow generous slack since
+      // the SQL only stores ms precision in ISO strings and timers
+      // are coarse). Expect g2/g1 in [1.5, 3].
+      const ratio = g1 > 0 ? g2 / g1 : 0;
+      record(
+        "backoff doubling: 2nd retry delay ≈ 2x first retry delay",
+        g1 >= 50 && g1 <= 250 && g2 >= 100 && g2 <= 500 && ratio >= 1.5 && ratio <= 3,
+        `g1=${g1}ms g2=${g2}ms ratio=${ratio.toFixed(2)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 17: invalid retryConfig at construction → throws
+    // ---------------------------------------------------------------------
+    {
+      let threwNeg: unknown;
+      try {
+        new JobQueue({
+          jobRepo,
+          logger: createLogger({ nodeEnv: "test" }),
+          channels: [{ name: "image", concurrency: 1, handlers: new Map() }],
+          retryConfig: { maxRetries: -1, baseDelayMs: 10, maxDelayMs: 50 },
+        });
+      } catch (err) {
+        threwNeg = err;
+      }
+      record(
+        "construction with maxRetries<0 → throws",
+        threwNeg instanceof Error && /maxRetries/.test(threwNeg.message),
+        describeError(threwNeg),
+      );
+
+      let threwBase: unknown;
+      try {
+        new JobQueue({
+          jobRepo,
+          logger: createLogger({ nodeEnv: "test" }),
+          channels: [{ name: "image", concurrency: 1, handlers: new Map() }],
+          retryConfig: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 50 },
+        });
+      } catch (err) {
+        threwBase = err;
+      }
+      record(
+        "construction with baseDelayMs=0 + maxRetries>0 → throws",
+        threwBase instanceof Error && /baseDelayMs/.test(threwBase.message),
+        describeError(threwBase),
+      );
+
+      let threwOrder: unknown;
+      try {
+        new JobQueue({
+          jobRepo,
+          logger: createLogger({ nodeEnv: "test" }),
+          channels: [{ name: "image", concurrency: 1, handlers: new Map() }],
+          retryConfig: { maxRetries: 1, baseDelayMs: 100, maxDelayMs: 50 },
+        });
+      } catch (err) {
+        threwOrder = err;
+      }
+      record(
+        "construction with maxDelayMs<baseDelayMs → throws",
+        threwOrder instanceof Error && /maxDelayMs/.test(threwOrder.message),
+        describeError(threwOrder),
       );
     }
   } finally {

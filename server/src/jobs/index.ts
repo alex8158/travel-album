@@ -24,6 +24,7 @@ export {
   type JobQueueChannelConfig,
   type JobQueueChannelName,
   type JobQueueDeps,
+  type JobQueueRetryConfig,
   type JobQueueState,
   type TickChannelResult,
 } from "./jobQueue.js";
