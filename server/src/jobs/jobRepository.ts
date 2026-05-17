@@ -25,6 +25,12 @@
 //       - `findJobView`: `findById` + LEFT JOIN media_items.trip_id,
 //       - `listJobs`: filtered + paginated list with the same JOIN,
 //       - `cancelJob`: pending / retrying / running → cancelled.
+//   * P4.T5 syncs `media_items.status` from the aggregate of job
+//     statuses at every transition (claim / success / fail / retry
+//     / cancel / reset). The sync is a side-effect of the repo's
+//     mutating methods so every code path (JobQueue, JobService,
+//     MediaService.reprocess, ImageChannelExecutor) gets it for
+//     free. See `syncMediaStatusByMediaId` for the derivation rules.
 //
 // Transitions are guarded by `WHERE status='<expected>'` predicates so
 // a bug that called `markSuccess` on a non-running row simply returns
@@ -140,6 +146,10 @@ export class JobRepository {
   private readonly findZombieRunningJobsStmt;
   private readonly findJobViewByIdStmt;
   private readonly cancelJobStmt;
+  // P4.T5 — media status sync helpers
+  private readonly statusCountsByMediaStmt;
+  private readonly applyMediaStatusStmt;
+  private readonly lookupMediaIdForJobStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -311,6 +321,35 @@ export class JobRepository {
       WHERE id = ?
         AND status IN ('pending', 'retrying', 'running')
     `);
+
+    // P4.T5 media-status sync. Three statements, each tiny:
+    //   * statusCountsByMediaStmt: aggregate counts of jobs per
+    //     status for a single media. Fed into `syncMediaStatusByMediaId`
+    //     to derive the target media status.
+    //   * applyMediaStatusStmt: write the derived status onto the
+    //     media row. The WHERE clause protects soft-deleted +
+    //     archived rows and is a no-op when the target == current
+    //     (saves a write).
+    //   * lookupMediaIdForJobStmt: cheap "give me the media_id for
+    //     this job" lookup so methods that take only a jobId can
+    //     still drive the sync.
+    this.statusCountsByMediaStmt = db.prepare(`
+      SELECT status, COUNT(*) AS n
+      FROM processing_jobs
+      WHERE media_id = ?
+      GROUP BY status
+    `);
+    this.applyMediaStatusStmt = db.prepare(`
+      UPDATE media_items
+      SET status = ?, updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND status NOT IN ('archived', 'deleted')
+        AND status != ?
+    `);
+    this.lookupMediaIdForJobStmt = db.prepare(`
+      SELECT media_id AS media_id FROM processing_jobs WHERE id = ?
+    `);
   }
 
   /**
@@ -367,7 +406,11 @@ export class JobRepository {
       return null;
     }
     const updated = this.findByIdStmt.get(candidate.id) as JobRow | undefined;
-    return updated ? rowToJob(updated) : null;
+    if (!updated) return null;
+    // P4.T5: claim flipped the row pending/retrying → running, so
+    // the owning media transitions uploaded/processing → processing.
+    this.syncMediaStatusByMediaId(updated.media_id, now);
+    return rowToJob(updated);
   }
 
   /**
@@ -415,7 +458,10 @@ export class JobRepository {
     const info = this.claimStmt.run(now, now, candidate.id);
     if (info.changes === 0) return null;
     const updated = this.findByIdStmt.get(candidate.id) as JobRow | undefined;
-    return updated ? rowToJob(updated) : null;
+    if (!updated) return null;
+    // P4.T5: see claimNextPendingImageJob for rationale.
+    this.syncMediaStatusByMediaId(updated.media_id, now);
+    return rowToJob(updated);
   }
 
   /**
@@ -426,6 +472,7 @@ export class JobRepository {
    */
   markSuccess(jobId: string, finishedAt: string = nowIso()): number {
     const info = this.markSuccessStmt.run(finishedAt, finishedAt, jobId);
+    if (info.changes > 0) this.syncMediaStatusForJob(jobId, finishedAt);
     return info.changes;
   }
 
@@ -435,6 +482,7 @@ export class JobRepository {
    */
   markFailed(jobId: string, errorMessage: string, finishedAt: string = nowIso()): number {
     const info = this.markFailedStmt.run(errorMessage, finishedAt, finishedAt, jobId);
+    if (info.changes > 0) this.syncMediaStatusForJob(jobId, finishedAt);
     return info.changes;
   }
 
@@ -474,6 +522,7 @@ export class JobRepository {
     now: string = nowIso(),
   ): number {
     const info = this.markRetryingStmt.run(errorMessage, newRetryCount, nextRunAt, now, jobId);
+    if (info.changes > 0) this.syncMediaStatusForJob(jobId, now);
     return info.changes;
   }
 
@@ -497,6 +546,7 @@ export class JobRepository {
    */
   resetToRetrying(jobId: string, now: string = nowIso()): number {
     const info = this.resetToRetryingStmt.run(now, now, jobId);
+    if (info.changes > 0) this.syncMediaStatusForJob(jobId, now);
     return info.changes;
   }
 
@@ -567,6 +617,7 @@ export class JobRepository {
    */
   cancelJob(jobId: string, now: string = nowIso()): number {
     const info = this.cancelJobStmt.run(now, now, jobId);
+    if (info.changes > 0) this.syncMediaStatusForJob(jobId, now);
     return info.changes;
   }
 
@@ -588,6 +639,79 @@ export class JobRepository {
   findZombieRunningJobs(startedBefore: string): ProcessingJob[] {
     const rows = this.findZombieRunningJobsStmt.all(startedBefore) as JobRow[];
     return rows.map(rowToJob);
+  }
+
+  // ---------------------------------------------------------------------------
+  // P4.T5 — media status sync (private)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Look up `media_id` for a job and forward to
+   * `syncMediaStatusByMediaId`. Used by methods that take only a
+   * jobId (markSuccess / markFailed / markRetrying / cancelJob /
+   * resetToRetrying) so the caller doesn't have to re-fetch.
+   *
+   * Quietly returns when the job row is missing (e.g. caller deleted
+   * it between UPDATE and the sync — impossible under FK CASCADE,
+   * but defensive).
+   */
+  private syncMediaStatusForJob(jobId: string, now: string): void {
+    const row = this.lookupMediaIdForJobStmt.get(jobId) as { media_id: string } | undefined;
+    if (!row) return;
+    this.syncMediaStatusByMediaId(row.media_id, now);
+  }
+
+  /**
+   * Recompute and persist `media_items.status` for one media row
+   * from the aggregate of its job rows.
+   *
+   * Derivation rules (priority order):
+   *   1. Any job in {pending, retrying, running} → 'processing'.
+   *   2. Else any job in 'failed' → 'failed'.
+   *   3. Else any job in 'success' → 'processed' (cancelled rows
+   *      that coexist with successes count as user-intentional
+   *      skips and don't downgrade the media).
+   *   4. Else only 'cancelled' jobs → 'failed' (cancel is terminal
+   *      but not successful — "should not stay processing").
+   *   5. No jobs at all for this media → leave the row alone.
+   *
+   * `media_items` has no error-message column, so per-job error
+   * details stay in `processing_jobs.error_message` and are
+   * exposed via `GET /api/jobs?mediaId=…` (P4.T4). Schema is
+   * unchanged.
+   *
+   * The UPDATE guards against:
+   *   * soft-deleted rows (`deleted_at IS NOT NULL`),
+   *   * `archived` rows (user opt-in; future feature),
+   *   * `deleted` rows (status flag for soft delete),
+   *   * no-op writes (target == current).
+   */
+  private syncMediaStatusByMediaId(mediaId: string, now: string): void {
+    const counts = this.statusCountsByMediaStmt.all(mediaId) as {
+      status: string;
+      n: number;
+    }[];
+    let active = 0;
+    let success = 0;
+    let failed = 0;
+    let cancelled = 0;
+    for (const c of counts) {
+      if (c.status === "pending" || c.status === "retrying" || c.status === "running") {
+        active += c.n;
+      } else if (c.status === "success") success += c.n;
+      else if (c.status === "failed") failed += c.n;
+      else if (c.status === "cancelled") cancelled += c.n;
+    }
+    const total = active + success + failed + cancelled;
+    if (total === 0) return; // No jobs — don't touch the media row.
+
+    let target: "processing" | "failed" | "processed";
+    if (active > 0) target = "processing";
+    else if (failed > 0) target = "failed";
+    else if (success > 0) target = "processed";
+    else target = "failed"; // cancelled-only
+
+    this.applyMediaStatusStmt.run(target, now, mediaId, target);
   }
 }
 

@@ -162,7 +162,7 @@
 - [x] **P4.T2 [MUST]** 失败重试与退避（max 3 次，指数退避，可配置）
 - [x] **P4.T3 [MUST]** 僵尸任务恢复（启动扫描 + 心跳超时阈值）
 - [x] **P4.T4 [MUST]** Job API：`GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`、`POST /api/jobs/:id/cancel`
-- [ ] **P4.T5 [MUST]** Media 状态联动：根据关键任务结果更新 `media_items.status`
+- [x] **P4.T5 [MUST]** Media 状态联动：根据关键任务结果更新 `media_items.status`
 - [ ] **P4.T6 [MUST]** 前端任务状态页（§10.8）
 - [ ] **P4.T7 [MUST]** 阶段验收
   - 单文件失败不影响其他；重试后状态正确；僵尸任务可识别恢复。

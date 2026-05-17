@@ -30,7 +30,8 @@
     "smoke:media-reprocess": "tsx src/scripts/media-reprocess-smoke.ts",
     "smoke:trip-cover-url": "tsx src/scripts/trip-cover-url-smoke.ts",
     "smoke:job-queue": "tsx src/scripts/job-queue-smoke.ts",
-    "smoke:jobs-api": "tsx src/scripts/jobs-api-smoke.ts"
+    "smoke:jobs-api": "tsx src/scripts/jobs-api-smoke.ts",
+    "smoke:media-status-sync": "tsx src/scripts/media-status-sync-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

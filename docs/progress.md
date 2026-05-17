@@ -782,11 +782,40 @@ npm run format:check
   - 未引入新依赖
   - 未直接调用 handler — retry / cancel 均纯 DB 写入，由 JobQueue 在下次 tick 拾起 retrying 行
 
+### P4.T5 Media 状态联动 实现结果
+
+- Commit：待入库 — `feat(server): sync media status with jobs (P4.T5)`
+- 主要成果：
+  - `server/src/jobs/jobRepository.ts` 新增 **私有** `syncMediaStatusByMediaId(mediaId, now)` —— 聚合该 media 下所有 jobs 的 status 分布，按下列优先级判定 `media_items.status` 目标值：
+    1. 任一 job ∈ {`pending`, `retrying`, `running`} → **`processing`**
+    2. 任一 job = `failed` → **`failed`**
+    3. 任一 job = `success`（cancelled 共存视为用户跳过）→ **`processed`**
+    4. 仅 `cancelled`（无其他终态）→ **`failed`**（cancel 是终态但非成功，符合"不应继续显示处理中"）
+    5. 没有任何 job → 不动（保留 `uploaded`）
+  - 新增 `syncMediaStatusForJob(jobId, now)` 私有 helper：从 job id 解析 media_id 后转发到上面的方法，给只持有 jobId 的 mutating method 用
+  - 接线到 **所有** `JobRepository` 状态翻转方法（在 `changes > 0` 时调用）：
+    - `claimNextPendingImageJob` / `claimNextPendingByJobTypes`：使用 `updated.media_id`（已查询的行）直接同步
+    - `markSuccess` / `markFailed` / `markRetrying` / `cancelJob` / `resetToRetrying`：通过 `syncMediaStatusForJob` 查 media_id 再同步
+  - `applyMediaStatusStmt` 的 UPDATE WHERE 子句保护：`deleted_at IS NULL AND status NOT IN ('archived', 'deleted') AND status != target` —— 不覆盖 archived/deleted/soft-deleted 行；target == current 时 no-op（不写 `updated_at`）
+  - **insert() 不触发同步** —— 新 pending job 不会立即把 media 翻成 `processing`；upload-smoke 的 `media_items.status defaults to 'uploaded'` 断言保留。第一次同步发生在 claim（`pending/retrying → running`）。同时遵循 P2.T1 migration 注释 "processing → at least one job is RUNNING"。
+  - 自动覆盖所有调用方：JobQueue（生产）、ImageChannelExecutor（P3 stub smoke harness）、JobService.retry / cancel、MediaService.reprocess — 全部经过 JobRepository 状态翻转方法，无需各自接线。
+- **错误信息记录策略**：`media_items` 表没有 `error_message` 字段（schema 红线，禁止 migration）。错误细节继续存于 `processing_jobs.error_message`，调用方通过 `GET /api/jobs?mediaId=…`（P4.T4）获取。Media 状态只携带 status flag，详细原因在 jobs 上 — 这是有意的关注点分离。
+- 验证：
+  - 新增 `npm run smoke:media-status-sync` —— **18/18 PASS**：覆盖无 jobs 不动 / pending 不触发 / claim → processing / success → processed / failed → failed / retrying → 仍 processing / 多 job 混合（success+pending / success+failed / success+success）/ cancel pending / cancel running / cancel 部分 / Retry API → processing / Reprocess → processing / 软删除不动 / archived 不动 / no-op 时 updated_at 不变
+  - 既有 15 smoke 全部不回归：classify 37 / trips 22 / storage 19 / upload 30 / media 26 / storage-route 14 / image-channel-executor 26 / media-versions 24 / image-thumbnail 22 / migration-006 18 / image-metadata 23 / media-reprocess 21 / trip-cover-url 13 / job-queue 55 / jobs-api 28 —— 后端 smoke 总计 **396 / 396**
+  - `npm run typecheck` / `npm run lint` / `npm run build` / `npm run format:check` 一次过
+- 边界遵守：
+  - 未改 schema / 未新增 migration（`media_items.status` 枚举原样保留 `uploaded/processing/processed/failed/archived/deleted`，未新增 `cancelled` / `error_message` 列）
+  - 未实现前端 / 任务状态页（保留 P4.T6）
+  - 未改 thumbnail / metadata handler / 视频核心 / trip cover
+  - 未引入新依赖
+  - 未实现 priority queue / dead-letter queue
+  - JobRepository 写入 media_items 是有意的跨表副作用：状态机的真实位置在 JobRepository，集中同步避免每个 caller 重复实现
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| Media 状态联动 (`uploaded → processing → processed`) | P4.T5 |
 | 前端任务状态页 | P4.T6 |
 | 心跳 / live-zombie 检测（运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖绝大多数实际场景 |
 | FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 |
@@ -797,7 +826,7 @@ npm run format:check
 
 进入阶段 4 的下一项任务：
 
-- **P4.T5 [MUST]**：Media 状态联动 —— 根据关键任务（thumbnail / metadata）结果更新 `media_items.status`：`uploaded → processing`（首个关键任务进入 running）/ `processing → processed`（全部关键任务到 success）/ `processing → failed`（任一关键任务最终 failed）。需考虑 retry / cancel 的回滚或保持。
+- **P4.T6 [MUST]**：前端任务状态页（requirements §10.8）—— 列表 + 详情视图，调用 P4.T4 Job API，可视化各 job 的 status / retry_count / next_run_at / error_message，并提供"手动 retry / cancel"按钮。需考虑空状态、分页、错误展示，以及与 P3.T6 媒体详情页的入口联动。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
