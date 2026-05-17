@@ -812,13 +812,42 @@ npm run format:check
   - 未实现 priority queue / dead-letter queue
   - JobRepository 写入 media_items 是有意的跨表副作用：状态机的真实位置在 JobRepository，集中同步避免每个 caller 重复实现
 
+### P4.T6 前端任务状态页 实现结果
+
+- Commit：待入库 — `feat(client): add jobs page (P4.T6)`
+- 主要成果：
+  - 新增 `client/src/api/jobs.ts` —— 与 P4.T4 Job API 完全对齐的客户端：`JobStatus` 字面量联合（与服务端 enum 同字）、`JobView` 接口（与服务端 `JobView` 一致，含 `tripId | null`、`payload`、`progress`、`retryCount`、`nextRunAt`、`startedAt`、`finishedAt`、`errorMessage`）、`fetchJobs(opts, signal)` / `getJobById(id)` / `retryJob(id)` / `cancelJob(id)`。错误通过 `error.message` envelope 解码为 `Error.message`，沿用既有 trips/media 客户端风格
+  - 新增 `client/src/hooks/useJobs.ts` —— 与 `useTrips` 同模式的三态 hook（`{jobs, loading, error, refetch}`），传入 `FetchJobsOptions` 过滤器；通过稳定序列化的 `filterKey` 触发重 fetch；`AbortController` 取消未完成请求，避免 strict-mode double-mount 竞态
+  - 新增 `client/src/pages/JobsPage.tsx` —— `/jobs` 路由组件：
+    - 头部：Back link、标题、Refresh 按钮（loading 时禁用）
+    - 状态过滤 chip 行：`All / pending / running / retrying / success / failed / cancelled`，active chip 驱动 API filter
+    - 表格列：Job(id 截断) / Type / Status badge / Retries / Next run / Media+Trip(链接到 `/media/:id` 与 `/trips/:id`) / Created+Updated / Error / Actions
+    - Retry 按钮仅对 `{failed, success, cancelled, retrying}` 可用，Cancel 按钮仅对 `{pending, retrying, running}` 可用，与服务端 `JobService` 规则一致；不满足条件时按钮 disabled 并通过 `title` 解释
+    - 行内 busy state（Retry / Cancel 进行中显示 `…`）+ 行下方 success/error 反馈（`aria-live` 友好）
+    - 成功 retry/cancel 后调用 `refetch()` 重新拉取列表，状态以服务端为准（不在前端硬编码模拟）
+    - 空态文案区分 "无任何 job" 与 "当前过滤无匹配"
+  - `client/src/App.tsx` —— 注册 `<Route path="/jobs">`，注释里把 `/jobs` 标为 ✓ wired
+  - `client/src/pages/TripListPage.tsx` —— 首页 header 多加一个 `Jobs` secondary 按钮，让 `/jobs` 可达，不破坏既有 `+ New trip` CTA
+  - `client/src/index.css` —— 新增 `JobsPage (P4.T6)` 区块：filter chip、jobs table（横向滚动 wrapper、单元格类型、错误省略、操作堆叠）、6 色 status badge（pending/running/retrying/success/failed/cancelled），与既有 `.btn-*` / `.status-text` / `.empty-state` 视觉对齐
+- 验证：
+  - **client**：`npm run build` 一次过（vite 输出 49 模块 / 12.6 KB CSS gzip / 200 KB JS gzip 61.8 KB）；`npm run typecheck` / `npm run lint` / `npm run format:check` 全绿
+  - **server 不回归**：`npm run typecheck` / `npm run lint` / `npm run build` 一次过；冒烟回归 `smoke:job-queue 55/55` + `smoke:jobs-api 28/28` + `smoke:media-status-sync 18/18` + `smoke:media-reprocess 21/21`
+- 边界遵守：
+  - 未改后端 JobQueue 状态机 / 未改 schema / 未写 migration
+  - 未改 thumbnail / metadata handler / 未改视频核心 / 未改 trip cover
+  - 未引入新 npm 依赖（仅 React + react-router-dom，已存在）
+  - 未大范围重构：只新增 3 个文件 + 修改 3 个文件（App.tsx 注册路由、TripListPage 加入口、index.css 加样式）
+  - 状态以 API 为唯一真源；前端不维护并行状态机，retry/cancel 后 refetch
+  - 不直接调用 handler，只通过 `/api/jobs/:id/retry` 与 `/api/jobs/:id/cancel`
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| 前端任务状态页 | P4.T6 |
 | 心跳 / live-zombie 检测（运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖绝大多数实际场景 |
 | FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 |
+| 任务列表分页 UI（前端按钮 / 加载更多）| P4 后续 polish；当前页面单页拉取 50 条，足够 V1 |
+| Job 详情子页 `/jobs/:id` | P4 后续 polish；当前列表页已展示全字段 |
 
 ---
 
@@ -826,7 +855,7 @@ npm run format:check
 
 进入阶段 4 的下一项任务：
 
-- **P4.T6 [MUST]**：前端任务状态页（requirements §10.8）—— 列表 + 详情视图，调用 P4.T4 Job API，可视化各 job 的 status / retry_count / next_run_at / error_message，并提供"手动 retry / cancel"按钮。需考虑空状态、分页、错误展示，以及与 P3.T6 媒体详情页的入口联动。
+- **P4.T7 [MUST]**：阶段验收 —— 跑通 P4 全链路（上传 → JobQueue 调度 → retry / 退避 / 僵尸恢复 → Job API / Jobs page → media 状态联动），更新 `docs/progress.md` 总结性章节、关闭 P4 阶段、确认下一阶段（P5 图片去重）的前置条件。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

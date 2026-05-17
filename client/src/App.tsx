@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import JobsPage from "./pages/JobsPage";
 import MediaDetailPage from "./pages/MediaDetailPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import TripDetailPage from "./pages/TripDetailPage";
@@ -20,7 +21,7 @@ import UploadPage from "./pages/UploadPage";
 //   /media/:id                  -> P3.T6 (MediaDetailPage v1)      ✓ wired
 //                                  P6 / P8 / P10 add features
 //   /videos/:id/segments        -> P9.T9 (VideoSegmentsPage)
-//   /jobs                       -> P4.T6 (JobsPage)
+//   /jobs                       -> P4.T6 (JobsPage)             ✓ wired
 //
 // Route order matters: /trips/new sits before /trips/:id so it does
 // not get swallowed by the parameter route. The /trips/:id/upload and
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/trips/:id/upload" element={<UploadPage />} />
         <Route path="/trips/:id" element={<TripDetailPage />} />
         <Route path="/media/:id" element={<MediaDetailPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>

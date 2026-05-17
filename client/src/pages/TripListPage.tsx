@@ -28,9 +28,14 @@ export default function TripListPage() {
           <h1>Travel Album Site V2</h1>
           <p>Organise your travel photos and videos by trip.</p>
         </div>
-        <Link to="/trips/new" className="btn-primary">
-          + New trip
-        </Link>
+        <div className="page-header-actions">
+          <Link to="/jobs" className="btn-secondary">
+            Jobs
+          </Link>
+          <Link to="/trips/new" className="btn-primary">
+            + New trip
+          </Link>
+        </div>
       </header>
 
       {loading && <p className="status-text">Loading trips…</p>}
