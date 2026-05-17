@@ -16,8 +16,11 @@
 //         §4.3-canonical reprocess entry point),
 //       - claim SELECTs now also pick up retrying rows whose
 //         `next_run_at` has elapsed.
-//   * Everything else — cancel, zombie recovery, the public Job
-//     API — stays for P4.T3+.
+//   * P4.T3 adds zombie scanning:
+//       - `findZombieRunningJobs`: returns `running` rows whose
+//         `started_at` is older than the caller-supplied cutoff
+//         (used by JobQueue.recoverZombies at start() time).
+//   * Everything else — cancel, the public Job API — stays for P4.T4+.
 //
 // Transitions are guarded by `WHERE status='<expected>'` predicates so
 // a bug that called `markSuccess` on a non-running row simply returns
@@ -85,6 +88,7 @@ export class JobRepository {
   private readonly markFailedStmt;
   private readonly markRetryingStmt;
   private readonly resetToRetryingStmt;
+  private readonly findZombieRunningJobsStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -210,6 +214,24 @@ export class JobRepository {
           updated_at = ?
       WHERE id = ?
         AND status IN ('failed', 'success', 'retrying', 'cancelled')
+    `);
+
+    // P4.T3 zombie scan: list every row stuck in `running` whose
+    // `started_at` is at or before the caller-supplied cutoff. A
+    // NULL `started_at` is treated as "ancient" so it gets recovered
+    // too — that combination shouldn't occur (claim always sets
+    // started_at), but if a manual UPDATE or a future code path
+    // skipped it, we'd rather recover than leak the row.
+    //
+    // ORDER BY started_at ASC NULLS-FIRST (SQLite's default NULL
+    // ordering in ASC) so the oldest zombies surface first — gives
+    // logs deterministic ordering when multiple are queued.
+    this.findZombieRunningJobsStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM processing_jobs
+      WHERE status = 'running'
+        AND (started_at IS NULL OR started_at <= ?)
+      ORDER BY started_at ASC, id ASC
     `);
   }
 
@@ -398,6 +420,26 @@ export class JobRepository {
   resetToRetrying(jobId: string, now: string = nowIso()): number {
     const info = this.resetToRetryingStmt.run(now, now, jobId);
     return info.changes;
+  }
+
+  /**
+   * P4.T3 zombie recovery: return every `running` job whose
+   * `started_at` is at or before `startedBefore`. Rows are returned
+   * oldest-first (NULL started_at treated as ancient → first).
+   *
+   * The caller (JobQueue.recoverZombies) then decides per row
+   * whether to push it back to `retrying` (retry budget left) or
+   * `failed` (budget exhausted), using the existing `markRetrying`
+   * / `markFailed` methods — both already guard on
+   * `WHERE status='running'`, so a row that transitioned out of
+   * `running` between this SELECT and the UPDATE is a safe no-op.
+   *
+   * Returns an empty array when nothing is eligible. Throws only
+   * on a real SQL error (caller logs + bails).
+   */
+  findZombieRunningJobs(startedBefore: string): ProcessingJob[] {
+    const rows = this.findZombieRunningJobsStmt.all(startedBefore) as JobRow[];
+    return rows.map(rowToJob);
   }
 }
 

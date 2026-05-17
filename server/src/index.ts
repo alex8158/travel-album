@@ -180,6 +180,13 @@ async function main(): Promise<void> {
   // with exponential backoff, finally `→ failed` only after the
   // budget is exhausted. The defaults are 3 retries / 1 s base /
   // 60 s cap, all overridable via env.
+  //
+  // P4.T3: opt into zombie recovery (`zombieTimeoutMs` from
+  // config.workers.zombieTimeoutMs, env `ZOMBIE_TIMEOUT_MS`,
+  // default 30 min). On `start()`, JobQueue scans rows stuck in
+  // `running` past the cutoff and routes them back through the
+  // retry-budget judge — recovering from crash / kill -9 / OOM
+  // / the small markRetrying-itself-failed window in P4.T2.
   const imageHandlers = new Map<string, JobHandler>();
   imageHandlers.set(
     "image_thumbnail",
@@ -203,6 +210,7 @@ async function main(): Promise<void> {
       baseDelayMs: config.workers.jobRetryBaseDelayMs,
       maxDelayMs: config.workers.jobRetryMaxDelayMs,
     },
+    zombieTimeoutMs: config.workers.zombieTimeoutMs,
   });
 
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);

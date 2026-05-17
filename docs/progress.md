@@ -654,7 +654,7 @@ npm run format:check
 |---|---|---|
 | ~~R-40~~ | ~~P3.T7 `reprocess` 走 `failed/success → pending` 直接 reset，绕过 CLAUDE.md §4.3 的 `failed → retrying → running` 规范迁移~~ | ✅ P4.T2 消化：`resetToRetrying` 走规范路径，retry_count=0、next_run_at=now |
 | R-41 | `image_metadata` job 当前没有自动触发路径（upload 只入 `image_thumbnail`） | P4 调度框架或 P3.T4 worker 链式入队（任选）|
-| R-42 | P3.T2 executor 在 `markSuccess` 后若进程 crash，可能让"running"行卡死 | P4.T3 僵尸恢复（启动扫描 + 心跳）|
+| ~~R-42~~ | ~~P3.T2 executor 在 `markSuccess` 后若进程 crash，可能让"running"行卡死~~ | ✅ P4.T3 消化：启动期 `recoverZombies` 把超时 `running` 行按 retry 预算路由回 `retrying` / `failed`；同时兜底 P4.T2 markRetrying 自身失败的小窗口 |
 | R-43 | 详情页 EXIF 表无字段过滤 / 分类 / 单位格式化 —— 直接渲染 exifr 原始 key/value | UX polish；非阻断 |
 | R-44 | TripCard 用 `<img>` 直接加载 cover_url，列表大时（>50 trip）可能延迟首屏 | 后续可加 lazy loading + 预加载 hint；非阻断 |
 
@@ -725,14 +725,38 @@ npm run format:check
   - 未改视频 / AI 通道
   - 未引入新依赖
 
+### P4.T3 僵尸任务恢复 实现结果
+
+- Commit：待入库 — `feat(server): recover zombie jobs (P4.T3)`
+- 主要成果：
+  - `server/src/jobs/jobRepository.ts` 新增 `findZombieRunningJobsStmt` + `findZombieRunningJobs(startedBefore)`：SELECT `status='running' AND (started_at IS NULL OR started_at <= ?)`，按 `started_at ASC, id ASC` 排序返回。`started_at IS NULL` 的 running 行视为远古僵尸一并回收（防御性处理；正常 claim 路径会写入 started_at）
+  - `server/src/jobs/jobQueue.ts` 新增 `JobQueueDeps.zombieTimeoutMs`（默认 30 min；`0` 显式禁用；负数 / NaN 构造期抛错），私有字段 `zombieTimeoutMs`，公共 `recoverZombies(now?)`，自省 `getZombieTimeoutMs()`，结果类型 `ZombieRecoveryResult { scanned, recovered, failed, skipped }`
+  - `recoverZombies` 流程：以 `now - zombieTimeoutMs` 为 cutoff 拉 zombie 行 → 对每行复用 P4.T2 的 retry-预算判断：`retry_count < maxRetries` 走 `markRetrying`（同 `min(base × 2^retryCount, max)` 退避公式）+ retry_count++，否则走 `markFailed`。单行异常 try/catch 隔离，不影响整次扫描
+  - `start()` 在 `state='running'` 之后、`setInterval` / eager-first-poll 之前同步调用一次 `recoverZombies()`；此时 inflight 集合必为空，无误伤风险
+  - **R-42 兜底**：P4.T2 `handleFailure` 中 `markRetrying` 自身抛错的小窗口（行卡在 `running`），由下次进程重启时的 zombie 扫描自动覆盖。重用 `markRetrying / markFailed` 现有的 `WHERE status='running'` guard 保证幂等
+  - `server/src/index.ts` boot 传 `zombieTimeoutMs: config.workers.zombieTimeoutMs`，env `ZOMBIE_TIMEOUT_MS` 默认 1800000（30 min）已在 P4.T1 准备阶段就绪
+  - `server/src/jobs/index.ts` 导出 `ZombieRecoveryResult` 类型
+- 验证：
+  - `npm run smoke:job-queue` —— **55/55 PASS**（P4.T1 27 + P4.T2 15 + P4.T3 新增 13 case，覆盖：zombie + 预算 → retrying / zombie 预算耗尽 → failed / 未超时 running 不动 / pending+retrying 不动 / `started_at IS NULL` 也回收 / `start()` 自动跑扫描 / `zombieTimeoutMs=0` 关闭 / 负数 / NaN 构造抛错）
+  - 既有 13 smoke 全部不回归：classify 37 / trips 22 / storage 19 / upload 30 / media 26 / storage-route 14 / image-channel-executor 26 / media-versions 24 / image-thumbnail 22 / migration-006 18 / image-metadata 23 / media-reprocess 21 / trip-cover-url 13 / **job-queue 55** —— 后端 smoke 总计 **350 / 350**
+  - `npm run typecheck` / `npm run lint` / `npm run build` / `npm run format` 一次过
+- 边界遵守：
+  - 未改 schema / 未新增 migration（`started_at` / `retry_count` / `next_run_at` 字段在 P2.T2 已具备）
+  - 未实现 Job API（保留 P4.T4）
+  - 未实现 Media 状态联动（保留 P4.T5）
+  - 未引入心跳 / live-zombie 检测（仅启动期扫描；handler 中途崩溃要等下次进程启动）
+  - 未改前端 / 未改 thumbnail / metadata handler / 未改视频 / AI 通道
+  - 未实现 priority queue / dead-letter queue / 分布式锁
+  - 未引入新依赖
+
 ### 阶段 P4 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| 僵尸任务恢复 | P4.T3 |
 | Job API (`GET /api/jobs` / retry / cancel) | P4.T4 |
 | Media 状态联动 (`uploaded → processing → processed`) | P4.T5 |
 | 前端任务状态页 | P4.T6 |
+| 心跳 / live-zombie 检测（运行中检测进度停滞）| 非阻断；P4.T3 启动扫描已覆盖绝大多数实际场景 |
 | FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 |
 
 ---
@@ -741,7 +765,7 @@ npm run format:check
 
 进入阶段 4 的下一项任务：
 
-- **P4.T3 [MUST]**：僵尸任务恢复（启动扫描 `running` 行 + 超时阈值 `ZOMBIE_TIMEOUT_MS` + 选择"恢复 running / 失败 / 重置 retrying"策略）—— 消化 R-42
+- **P4.T4 [MUST]**：Job API —— `GET /api/jobs`（按 trip / media / status / job_type 过滤的分页列表）、`GET /api/jobs/:id`、`POST /api/jobs/:id/retry`（人工触发 retrying，复用 P4.T2 路径）、`POST /api/jobs/:id/cancel`（pending / retrying → cancelled，running 不直接干预）
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

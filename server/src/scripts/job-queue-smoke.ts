@@ -1,4 +1,4 @@
-// Manual smoke test for the JobQueue (P4.T1 + P4.T2).
+// Manual smoke test for the JobQueue (P4.T1 + P4.T2 + P4.T3).
 //
 // Usage: npm run smoke:job-queue
 //
@@ -37,6 +37,17 @@
 //     delay ≈ 2*baseDelayMs (caps at maxDelayMs).
 //   * Invalid retryConfig (negative max / base 0 with retries) →
 //     throws at construction.
+//
+// Coverage (P4.T3 — zombie recovery):
+//   * Zombie with retry budget left → recoverZombies routes to
+//     'retrying' (retry_count++ + next_run_at set + error_message).
+//   * Zombie with retry budget exhausted → routes to final 'failed'.
+//   * Fresh 'running' row (started_at within timeout) → untouched.
+//   * 'pending' / 'retrying' rows → untouched.
+//   * Zombie with started_at IS NULL → treated as ancient → recovered.
+//   * start() runs the scan automatically before polling fires.
+//   * zombieTimeoutMs=0 disables the scan.
+//   * Negative zombieTimeoutMs / non-finite → throws at construction.
 
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -113,6 +124,51 @@ function insertJob(db: SqliteDatabase, mediaId: string, jobType: string): string
   return id;
 }
 
+/**
+ * P4.T3: insert a job already in an arbitrary state. Used by zombie
+ * recovery cases to seed a `running` row with a controllable
+ * `started_at` (so we can hand-craft a row that looks like it has
+ * been running long enough to be a zombie).
+ */
+function insertJobAt(
+  db: SqliteDatabase,
+  mediaId: string,
+  jobType: string,
+  opts: {
+    status: "pending" | "running" | "failed" | "success" | "retrying" | "cancelled";
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    retryCount?: number;
+    nextRunAt?: string | null;
+    errorMessage?: string | null;
+    createdAt?: string;
+    updatedAt?: string;
+  },
+): string {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO processing_jobs (
+       id, media_id, job_type, status, retry_count,
+       error_message, next_run_at,
+       started_at, finished_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    mediaId,
+    jobType,
+    opts.status,
+    opts.retryCount ?? 0,
+    opts.errorMessage ?? null,
+    opts.nextRunAt ?? null,
+    opts.startedAt ?? null,
+    opts.finishedAt ?? null,
+    opts.createdAt ?? now,
+    opts.updatedAt ?? now,
+  );
+  return id;
+}
+
 function readJob(db: SqliteDatabase, jobId: string): Record<string, unknown> | undefined {
   return db.prepare(`SELECT * FROM processing_jobs WHERE id = ?`).get(jobId) as
     | Record<string, unknown>
@@ -131,13 +187,20 @@ function makeQueue(
   jobRepo: JobRepository,
   channels: JobQueueChannelConfig[],
   retryConfig?: JobQueueRetryConfig,
+  zombieTimeoutMs?: number,
 ): QueueRig {
   const logger = createLogger({ nodeEnv: "test" });
-  // exactOptionalPropertyTypes: omit the key entirely when no config
-  // was passed in instead of passing `undefined` explicitly.
-  const deps = retryConfig
-    ? { jobRepo, logger, channels, retryConfig }
-    : { jobRepo, logger, channels };
+  // exactOptionalPropertyTypes: build the deps object incrementally
+  // rather than passing `undefined` explicitly to optional fields.
+  const deps: {
+    jobRepo: JobRepository;
+    logger: ReturnType<typeof createLogger>;
+    channels: JobQueueChannelConfig[];
+    retryConfig?: JobQueueRetryConfig;
+    zombieTimeoutMs?: number;
+  } = { jobRepo, logger, channels };
+  if (retryConfig) deps.retryConfig = retryConfig;
+  if (zombieTimeoutMs !== undefined) deps.zombieTimeoutMs = zombieTimeoutMs;
   return { queue: new JobQueue(deps) };
 }
 
@@ -873,6 +936,315 @@ async function main(): Promise<void> {
         "construction with maxDelayMs<baseDelayMs → throws",
         threwOrder instanceof Error && /maxDelayMs/.test(threwOrder.message),
         describeError(threwOrder),
+      );
+    }
+
+    // =====================================================================
+    // P4.T3 zombie recovery cases. Each case seeds a row directly in
+    // `running` state with an explicit `started_at` so we can put it
+    // on either side of the timeout cutoff deterministically. The
+    // queue is constructed with a small `zombieTimeoutMs` (e.g. 50ms)
+    // so the cutoff is observable without long sleeps. As in the
+    // P4.T2 cases, each P4.T3 case uses a UNIQUE job_type
+    // (`image_zombie_tN`) to avoid colliding with rows from earlier
+    // cases — claim is filtered by registered handler types.
+    // =====================================================================
+
+    // ---------------------------------------------------------------------
+    // CASE 18: zombie with retry budget → recoverZombies → 'retrying'
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t18";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      // started_at = 10s ago, zombieTimeoutMs=50ms → definitely a zombie.
+      const startedAt = new Date(Date.now() - 10_000).toISOString();
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt,
+        retryCount: 0,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* never invoked — recoverZombies runs before any tick */
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 3,
+        baseDelayMs: 100,
+        maxDelayMs: 500,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig, 50);
+      const result = queue.recoverZombies();
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "zombie + retry budget: result = scanned 1 / recovered 1 / failed 0",
+        result.scanned === 1 && result.recovered === 1 && result.failed === 0,
+        JSON.stringify(result),
+      );
+      record(
+        "zombie + retry budget: row → status='retrying' + retry_count=1 + next_run_at set",
+        row?.status === "retrying" &&
+          row?.retry_count === 1 &&
+          typeof row?.next_run_at === "string",
+        `status=${String(row?.status)} retry_count=${String(row?.retry_count)} next_run_at=${String(row?.next_run_at)}`,
+      );
+      record(
+        "zombie + retry budget: row.error_message describes zombie",
+        typeof row?.error_message === "string" && /zombie/.test(row.error_message as string),
+        `err=${String(row?.error_message)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 19: zombie with budget exhausted → recoverZombies → 'failed'
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t19";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const startedAt = new Date(Date.now() - 10_000).toISOString();
+      // retry_count already at max → no more retries.
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt,
+        retryCount: 2,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* unused */
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 2,
+        baseDelayMs: 100,
+        maxDelayMs: 500,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig, 50);
+      const result = queue.recoverZombies();
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "zombie + budget exhausted: result = scanned 1 / recovered 0 / failed 1",
+        result.scanned === 1 && result.recovered === 0 && result.failed === 1,
+        JSON.stringify(result),
+      );
+      record(
+        "zombie + budget exhausted: row → status='failed' + retry_count unchanged + finished_at set",
+        row?.status === "failed" && row?.retry_count === 2 && typeof row?.finished_at === "string",
+        `status=${String(row?.status)} retry_count=${String(row?.retry_count)} finished_at=${String(row?.finished_at)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 20: fresh 'running' row (started_at within timeout) → untouched
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t20";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      // started_at just now, zombieTimeoutMs=5_000ms → not a zombie.
+      const startedAt = new Date().toISOString();
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt,
+        retryCount: 0,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* unused */
+      });
+      const retryConfig: JobQueueRetryConfig = {
+        maxRetries: 3,
+        baseDelayMs: 100,
+        maxDelayMs: 500,
+      };
+      const { queue } = makeQueue(jobRepo, [imageChannel(handlers)], retryConfig, 5_000);
+      const result = queue.recoverZombies();
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "fresh running: scanned 0 + row stays 'running' unchanged",
+        result.scanned === 0 && row?.status === "running" && row?.started_at === startedAt,
+        `result=${JSON.stringify(result)} status=${String(row?.status)} started_at=${String(row?.started_at)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 21: pending + retrying rows untouched by zombie scan
+    // ---------------------------------------------------------------------
+    {
+      const jobTypeP = "image_zombie_t21_pending";
+      const jobTypeR = "image_zombie_t21_retrying";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const pendingId = insertJobAt(dbHandle.db, seeded.mediaId, jobTypeP, {
+        status: "pending",
+      });
+      const retryingId = insertJobAt(dbHandle.db, seeded.mediaId, jobTypeR, {
+        status: "retrying",
+        retryCount: 1,
+        nextRunAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobTypeP, async () => {
+        /* unused */
+      });
+      handlers.set(jobTypeR, async () => {
+        /* unused */
+      });
+      const { queue } = makeQueue(
+        jobRepo,
+        [imageChannel(handlers)],
+        { maxRetries: 3, baseDelayMs: 100, maxDelayMs: 500 },
+        50,
+      );
+      const result = queue.recoverZombies();
+      const pendingRow = readJob(dbHandle.db, pendingId);
+      const retryingRow = readJob(dbHandle.db, retryingId);
+      record(
+        "non-running rows: zombie scan ignores pending + retrying",
+        result.scanned === 0 &&
+          pendingRow?.status === "pending" &&
+          retryingRow?.status === "retrying",
+        `result=${JSON.stringify(result)} pending=${String(pendingRow?.status)} retrying=${String(retryingRow?.status)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 22: zombie with started_at IS NULL → still recovered
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t22";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt: null,
+        retryCount: 0,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* unused */
+      });
+      const { queue } = makeQueue(
+        jobRepo,
+        [imageChannel(handlers)],
+        { maxRetries: 3, baseDelayMs: 100, maxDelayMs: 500 },
+        50,
+      );
+      const result = queue.recoverZombies();
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "null started_at: row treated as ancient and recovered",
+        result.scanned === 1 && row?.status === "retrying" && row?.retry_count === 1,
+        `result=${JSON.stringify(result)} status=${String(row?.status)} retry_count=${String(row?.retry_count)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 23: start() runs recovery automatically before polling
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t23";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const startedAt = new Date(Date.now() - 10_000).toISOString();
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt,
+        retryCount: 0,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* unused — backoff delay (200ms) keeps the retrying row
+         * away from claim until after we read it. */
+      });
+      const { queue } = makeQueue(
+        jobRepo,
+        [{ name: "image", concurrency: 1, handlers, pollIntervalMs: 60_000 }],
+        { maxRetries: 3, baseDelayMs: 200, maxDelayMs: 1_000 },
+        50,
+      );
+      queue.start();
+      // start() ran recoverZombies synchronously before scheduling
+      // setInterval and the eager first poll. Even with the eager
+      // poll, the row is now `retrying` with next_run_at ~200ms out,
+      // so claim won't fire it again immediately.
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "start(): zombie scan auto-runs and routes row to 'retrying'",
+        row?.status === "retrying" && row?.retry_count === 1,
+        `status=${String(row?.status)} retry_count=${String(row?.retry_count)}`,
+      );
+      await queue.stop();
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 24: zombieTimeoutMs=0 disables the scan entirely
+    // ---------------------------------------------------------------------
+    {
+      const jobType = "image_zombie_t24";
+      const seeded = seedImageMedia(tripService, mediaRepo);
+      const startedAt = new Date(Date.now() - 10_000).toISOString();
+      const jobId = insertJobAt(dbHandle.db, seeded.mediaId, jobType, {
+        status: "running",
+        startedAt,
+        retryCount: 0,
+      });
+      const handlers = new Map<string, JobHandler>();
+      handlers.set(jobType, async () => {
+        /* unused */
+      });
+      const { queue } = makeQueue(
+        jobRepo,
+        [imageChannel(handlers)],
+        { maxRetries: 3, baseDelayMs: 100, maxDelayMs: 500 },
+        0,
+      );
+      record(
+        "disabled: getZombieTimeoutMs returns 0",
+        queue.getZombieTimeoutMs() === 0,
+        `getZombieTimeoutMs=${queue.getZombieTimeoutMs()}`,
+      );
+      const result = queue.recoverZombies();
+      const row = readJob(dbHandle.db, jobId);
+      record(
+        "disabled: recoverZombies short-circuits, row stays 'running'",
+        result.scanned === 0 &&
+          result.recovered === 0 &&
+          result.failed === 0 &&
+          row?.status === "running",
+        `result=${JSON.stringify(result)} status=${String(row?.status)}`,
+      );
+    }
+
+    // ---------------------------------------------------------------------
+    // CASE 25: invalid zombieTimeoutMs at construction → throws
+    // ---------------------------------------------------------------------
+    {
+      let threwNeg: unknown;
+      try {
+        new JobQueue({
+          jobRepo,
+          logger: createLogger({ nodeEnv: "test" }),
+          channels: [{ name: "image", concurrency: 1, handlers: new Map() }],
+          zombieTimeoutMs: -1,
+        });
+      } catch (err) {
+        threwNeg = err;
+      }
+      record(
+        "construction with zombieTimeoutMs<0 → throws",
+        threwNeg instanceof Error && /zombieTimeoutMs/.test(threwNeg.message),
+        describeError(threwNeg),
+      );
+
+      let threwNaN: unknown;
+      try {
+        new JobQueue({
+          jobRepo,
+          logger: createLogger({ nodeEnv: "test" }),
+          channels: [{ name: "image", concurrency: 1, handlers: new Map() }],
+          zombieTimeoutMs: Number.NaN,
+        });
+      } catch (err) {
+        threwNaN = err;
+      }
+      record(
+        "construction with zombieTimeoutMs=NaN → throws",
+        threwNaN instanceof Error && /zombieTimeoutMs/.test(threwNaN.message),
+        describeError(threwNaN),
       );
     }
   } finally {

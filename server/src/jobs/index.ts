@@ -27,6 +27,7 @@ export {
   type JobQueueRetryConfig,
   type JobQueueState,
   type TickChannelResult,
+  type ZombieRecoveryResult,
 } from "./jobQueue.js";
 export {
   makeImageThumbnailHandler,

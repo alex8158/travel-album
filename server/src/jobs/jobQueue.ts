@@ -1,4 +1,4 @@
-// JobQueue scheduler (P4.T1 + P4.T2).
+// JobQueue scheduler (P4.T1 + P4.T2 + P4.T3).
 //
 // Multi-channel polling scheduler that supersedes the P3.T2
 // `ImageChannelExecutor` stub in production. Each channel
@@ -15,21 +15,32 @@
 // budget is exhausted. The §4.3-canonical transition graph is
 // strictly observed.
 //
-// What this module covers as of P4.T2:
+// P4.T3 adds zombie recovery: at `start()` time (before polling
+// fires), any row stuck in `running` past `zombieTimeoutMs` is
+// routed back through the retry-budget judge — `running → retrying`
+// if budget remains, otherwise `running → failed`. This covers
+// process crashes, kill -9, OOM, and the small window in P4.T2
+// where `markRetrying` itself can SQL-fail and leave the row
+// stranded in `running`.
+//
+// What this module covers as of P4.T3:
 //   * Stable JobQueue abstraction with start / stop lifecycle.
 //   * Per-channel concurrency limit.
 //   * State machine: pending → running → success / retrying
 //                    retrying → running → success / failed
+//                    running(zombie) → retrying / failed
 //   * Failure retry with exponential backoff (cap'd) configured
 //     via JobQueueRetryConfig.
+//   * Zombie scan-and-recover at start(), reusing markRetrying /
+//     markFailed; cutoff configurable via `zombieTimeoutMs`.
 //   * Handler contract unchanged: `(job) => Promise<void>`.
 //   * Structural placeholder for video / ai channels (no handlers
 //     registered today — they exist as channels but never claim).
 //
 // What this module does NOT cover (deferred):
-//   * Zombie-job recovery (P4.T3).
 //   * Job API: GET / retry / cancel HTTP routes (P4.T4).
 //   * Media-status linkage uploaded → processing → processed (P4.T5).
+//   * Heartbeat / live-zombie detection during execution.
 //   * FFmpeg subprocess gating, distributed locks, dead-letter
 //     queues, priority routing.
 //   * `image_metadata` auto-enqueue from upload flow (R-41 — held
@@ -106,6 +117,17 @@ export interface JobQueueDeps {
    * `server/src/index.ts` opts in with values from config.
    */
   readonly retryConfig?: JobQueueRetryConfig;
+  /**
+   * P4.T3: max wall-clock duration a row may stay in `running`
+   * before it is considered a zombie (process crashed, kill -9,
+   * OOM, etc.) and reset back through the retry-budget judge.
+   *
+   * Default = 30 min. Set `0` to disable the scan (the start()
+   * call will simply skip it). Smokes pass small values so the
+   * cutoff is observable; production boot uses
+   * `config.workers.zombieTimeoutMs` (env `ZOMBIE_TIMEOUT_MS`).
+   */
+  readonly zombieTimeoutMs?: number;
 }
 
 /**
@@ -119,6 +141,7 @@ export interface JobQueueDeps {
 export type JobQueueState = "idle" | "running" | "stopping" | "stopped";
 
 const DEFAULT_POLL_INTERVAL_MS = 1500;
+const DEFAULT_ZOMBIE_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
 
 interface ChannelRuntime {
   readonly cfg: JobQueueChannelConfig;
@@ -138,10 +161,26 @@ export interface TickChannelResult {
   readonly saturatedBefore: boolean;
 }
 
+/**
+ * P4.T3 zombie-recovery result. Returned by `recoverZombies()` and
+ * exposed so smokes can assert on counts deterministically.
+ *   * `recovered` — rows that landed in `retrying`.
+ *   * `failed` — rows that landed in final `failed` (budget exhausted).
+ *   * `skipped` — rows that were no longer `running` at UPDATE time
+ *                 (raced with another transition; very rare).
+ */
+export interface ZombieRecoveryResult {
+  readonly scanned: number;
+  readonly recovered: number;
+  readonly failed: number;
+  readonly skipped: number;
+}
+
 export class JobQueue {
   private state: JobQueueState = "idle";
   private readonly channels: Map<JobQueueChannelName, ChannelRuntime>;
   private readonly retryConfig: JobQueueRetryConfig;
+  private readonly zombieTimeoutMs: number;
 
   constructor(private readonly deps: JobQueueDeps) {
     this.channels = new Map();
@@ -175,6 +214,14 @@ export class JobQueue {
       }
     }
     this.retryConfig = cfg;
+
+    // P4.T3 zombie timeout. Negative is rejected outright; 0 is the
+    // documented "disable" sentinel; > 0 is the cutoff.
+    const zt = deps.zombieTimeoutMs ?? DEFAULT_ZOMBIE_TIMEOUT_MS;
+    if (!Number.isFinite(zt) || zt < 0) {
+      throw new Error(`JobQueue: invalid zombieTimeoutMs (${zt}) — must be a finite number >= 0`);
+    }
+    this.zombieTimeoutMs = zt;
   }
 
   /**
@@ -193,6 +240,17 @@ export class JobQueue {
       throw new Error(`JobQueue: cannot start from state '${this.state}'`);
     }
     this.state = "running";
+    // P4.T3: run zombie recovery BEFORE polling fires. At this
+    // moment no channel has dispatched anything yet — inflight is
+    // empty across the board — so there is no live handler we could
+    // race with. Any row currently in `running` is either:
+    //   * a zombie from a prior process (started_at is old → caught
+    //     by the cutoff), or
+    //   * a row some other process is mid-flight on (out of scope
+    //     for V1, single-instance deploy).
+    // We deliberately do this synchronously so logs land before the
+    // first tick claims new work.
+    this.recoverZombies();
     for (const ch of this.channels.values()) {
       const interval = ch.cfg.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
       ch.intervalHandle = setInterval(() => {
@@ -289,9 +347,169 @@ export class JobQueue {
     return [...this.channels.keys()];
   }
 
+  /** P4.T3 config introspection — used by smokes / diagnostics. */
+  getZombieTimeoutMs(): number {
+    return this.zombieTimeoutMs;
+  }
+
+  /**
+   * P4.T3 zombie recovery. Scans every `running` row whose
+   * `started_at` is older than `now - zombieTimeoutMs` and routes
+   * each one back through the P4.T2 retry-budget judge:
+   *   * `retry_count < maxRetries` → `markRetrying` with exponential
+   *     backoff (same formula as `handleFailure`).
+   *   * otherwise → `markFailed` (final, no further retries).
+   *
+   * Called automatically once from `start()`. Also public so smokes
+   * (and a future "manual maintenance" CLI) can drive it on demand.
+   * Returns counters so callers can assert deterministically.
+   *
+   * Disabled when `zombieTimeoutMs === 0`. The cutoff is computed
+   * from the caller-supplied `now` (defaulting to wall-clock) so
+   * deterministic tests can pass a fixed timestamp.
+   *
+   * Errors per-row are caught and logged; one bad row does not
+   * abort the scan.
+   */
+  recoverZombies(now: Date = new Date()): ZombieRecoveryResult {
+    if (this.zombieTimeoutMs <= 0) {
+      return { scanned: 0, recovered: 0, failed: 0, skipped: 0 };
+    }
+    const cutoffMs = now.getTime() - this.zombieTimeoutMs;
+    const cutoffIso = new Date(cutoffMs).toISOString();
+    const nowIsoStr = now.toISOString();
+    let zombies: readonly ProcessingJob[];
+    try {
+      zombies = this.deps.jobRepo.findZombieRunningJobs(cutoffIso);
+    } catch (err) {
+      this.deps.logger.error(
+        { err: serializeErr(err), cutoffIso, zombieTimeoutMs: this.zombieTimeoutMs },
+        "JobQueue: zombie scan SQL failed (no rows recovered)",
+      );
+      return { scanned: 0, recovered: 0, failed: 0, skipped: 0 };
+    }
+    if (zombies.length === 0) {
+      return { scanned: 0, recovered: 0, failed: 0, skipped: 0 };
+    }
+    this.deps.logger.warn(
+      { count: zombies.length, cutoffIso, zombieTimeoutMs: this.zombieTimeoutMs },
+      "JobQueue: zombie scan found stuck 'running' rows; routing through retry-budget judge",
+    );
+    let recovered = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const job of zombies) {
+      const outcome = this.recoverOneZombie(job, now, nowIsoStr);
+      if (outcome === "retrying") recovered += 1;
+      else if (outcome === "failed") failed += 1;
+      else skipped += 1;
+    }
+    return { scanned: zombies.length, recovered, failed, skipped };
+  }
+
   // -------------------------------------------------------------------------
   // private
   // -------------------------------------------------------------------------
+
+  /**
+   * Per-row zombie recovery: pick retry vs. final-fail based on the
+   * job's current `retry_count` and the configured `maxRetries`,
+   * then call the matching repository method. All errors are
+   * swallowed (logged + skipped) so a single bad row does not
+   * abort the whole scan.
+   */
+  private recoverOneZombie(
+    job: ProcessingJob,
+    now: Date,
+    nowIsoStr: string,
+  ): "retrying" | "failed" | "skipped" {
+    const startedAtMs = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
+    const ageMs = Number.isFinite(startedAtMs) ? now.getTime() - startedAtMs : null;
+    const correlation = {
+      channel: this.channelNameForJobType(job.jobType),
+      jobId: job.id,
+      jobType: job.jobType,
+      mediaId: job.mediaId,
+      retryCount: job.retryCount,
+      ageMs,
+      zombieTimeoutMs: this.zombieTimeoutMs,
+    };
+    const message =
+      ageMs !== null
+        ? `zombie: stuck in 'running' for ${Math.round(ageMs / 1000)}s (>${Math.round(
+            this.zombieTimeoutMs / 1000,
+          )}s timeout)`
+        : `zombie: 'running' with null started_at (recovered by P4.T3 scan)`;
+
+    const { maxRetries, baseDelayMs, maxDelayMs } = this.retryConfig;
+    if (job.retryCount < maxRetries) {
+      const delayMs = Math.min(baseDelayMs * Math.pow(2, job.retryCount), maxDelayMs);
+      const nextRunAt = new Date(now.getTime() + delayMs).toISOString();
+      const newRetryCount = job.retryCount + 1;
+      try {
+        const changes = this.deps.jobRepo.markRetrying(
+          job.id,
+          message,
+          nextRunAt,
+          newRetryCount,
+          nowIsoStr,
+        );
+        if (changes === 0) {
+          this.deps.logger.warn(
+            { ...correlation },
+            "JobQueue: zombie no longer 'running' at UPDATE time (skipped)",
+          );
+          return "skipped";
+        }
+        this.deps.logger.warn(
+          { ...correlation, newRetryCount, maxRetries, delayMs, nextRunAt },
+          "JobQueue: zombie recovered → retrying",
+        );
+        return "retrying";
+      } catch (err) {
+        this.deps.logger.error(
+          { ...correlation, err: serializeErr(err) },
+          "JobQueue: markRetrying threw during zombie recovery (skipped)",
+        );
+        return "skipped";
+      }
+    }
+    // Budget exhausted: final fail.
+    try {
+      const changes = this.deps.jobRepo.markFailed(job.id, message, nowIsoStr);
+      if (changes === 0) {
+        this.deps.logger.warn(
+          { ...correlation },
+          "JobQueue: zombie no longer 'running' at UPDATE time (skipped)",
+        );
+        return "skipped";
+      }
+      this.deps.logger.warn(
+        { ...correlation, maxRetries },
+        "JobQueue: zombie has no retries remaining → failed",
+      );
+      return "failed";
+    } catch (err) {
+      this.deps.logger.error(
+        { ...correlation, err: serializeErr(err) },
+        "JobQueue: markFailed threw during zombie recovery (skipped)",
+      );
+      return "skipped";
+    }
+  }
+
+  /**
+   * Best-effort reverse lookup: which channel owns this jobType?
+   * Used only for correlation logging. Returns the channel name or
+   * `"unknown"` if no channel has a handler for it (e.g. a row
+   * whose handler was deregistered between runs).
+   */
+  private channelNameForJobType(jobType: string): JobQueueChannelName | "unknown" {
+    for (const [name, ch] of this.channels) {
+      if (ch.cfg.handlers.has(jobType)) return name;
+    }
+    return "unknown";
+  }
 
   /**
    * Claim and dispatch as many jobs as remaining capacity permits.
