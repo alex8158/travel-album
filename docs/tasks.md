@@ -113,7 +113,7 @@
 > 完整的 Worker pool（含三通道、退避、僵尸恢复、Job API、Media 状态联动）保留在 P4.T1 ~ P4.T7。
 > 设计层面 stub 与正式 Worker pool 共用 handler 注册表接口，P4.T1 落地时不需改 P3 的 ImageWorker 代码。
 
-- [ ] **P3.T1 [MUST]** Storage 静态文件路由
+- [x] **P3.T1 [MUST]** Storage 静态文件路由
   - `GET /storage/<logicalPath>` 从 `LocalStorageProvider` 根 read-only serve 文件，供前端 `<img>` / `<video>` 直接消费。
   - 复用 P0.T7 的路径校验三道闸（`assertSafeRelPath` / `resolveUnderRoot`），拒越界 / null byte / 绝对路径；404 走 `STORAGE_NOT_FOUND`。
   - Content-Type 优先从 `media_items.mime_type` 查；缺失时按扩展名映射；未知回 `application/octet-stream`。
@@ -121,7 +121,7 @@
   - **明确不做**：鉴权 / signed URL / IP 限流（design.md §12.1 "仅本机访问"假设）；Range header / 视频 seek（留给 P9 / 后续）；ETag / CDN 缓存策略。
   - 验证：smoke 覆盖正常 GET / 404 / traversal 拒绝 / stream 完整性。
   - 消化 R-34。
-- [ ] **P3.T2 [MUST]** 最小 image-channel job 执行器（P4.T1 的 stub）
+- [x] **P3.T2 [MUST]** 最小 image-channel job 执行器（P4.T1 的 stub）
   - 进程内执行器，启动时挂在 server bootstrap；setInterval 周期（1–3s）扫 `processing_jobs WHERE status='pending' AND job_type LIKE 'image_%'`。
   - 抢占式 UPDATE 防并发拉同一行：`UPDATE ... SET status='running', started_at=? WHERE id=? AND status='pending'`。
   - 单并发（IMAGE_WORKER_CONCURRENCY 配置项参考，实现层先固定 inflight=1）；状态推进 `pending → running → success / failed`，失败写 `error_message + finished_at`。
@@ -130,20 +130,20 @@
   - **明确不做**（全部留给 P4.T1 ~ P4.T7）：三通道（image / video / AI）拆分、retry + 退避、僵尸恢复、Job API（GET / retry / cancel）、Media 状态联动（`uploaded → processing → processed`）、FFmpeg 可用性 gating。
   - **与 P4.T1 的衔接契约**：执行器接口稳定，P4.T1 落地时替换扫描循环为多通道独立调度器 + 加退避 + 僵尸 + Job API + Media 状态联动；handler 注册表与 P3 已注册的 handler 不变。
   - 消化 R-36 最小子集。
-- [ ] **P3.T3 [MUST]** 迁移：`media_versions` 表  *(原 P3.T1)*
-- [ ] **P3.T4 [MUST]** `ImageWorker.thumbnail`（注册到 P3.T2 执行器）  *(原 P3.T2)*
+- [x] **P3.T3 [MUST]** 迁移：`media_versions` 表  *(原 P3.T1)*
+- [x] **P3.T4 [MUST]** `ImageWorker.thumbnail`（注册到 P3.T2 执行器）  *(原 P3.T2)*
   - sharp 生成 `thumb.webp` + `preview.webp`，写 `media_versions`，更新 `media_items.width/height/preview_path/thumbnail_path`。
-- [ ] **P3.T5 [MUST]** `ImageWorker.metadata`（注册到 P3.T2 执行器）  *(原 P3.T3)*
+- [x] **P3.T5 [MUST]** `ImageWorker.metadata`（注册到 P3.T2 执行器）  *(原 P3.T3)*
   - `exifr` 读 EXIF；新增 `image_metadata` 任务类型（与 thumbnail 同链）。
-- [ ] **P3.T6 [MUST]** 前端图片详情页（v1）  *(原 P3.T4)*
+- [x] **P3.T6 [MUST]** 前端图片详情页（v1）  *(原 P3.T4)*
   - 展示原图（按需加载）、预览图、EXIF 信息表。
   - 原图 / 预览图 URL 通过 P3.T1 静态路由加载。
-- [ ] **P3.T7 [MUST]** 失败重试入口（先在详情页做单任务“重新处理”按钮）  *(原 P3.T5)*
-- [ ] **P3.T8 [MUST]** 临时封面：第一张图片  *(原 P3.T6)*
+- [x] **P3.T7 [MUST]** 失败重试入口（先在详情页做单任务“重新处理”按钮）  *(原 P3.T5)*
+- [x] **P3.T8 [MUST]** 临时封面：第一张图片  *(原 P3.T6)*
   - 当 `trips.cover_media_id IS NULL` 时，Trip 详情 / 列表响应层动态计算 `cover_url`：取该 Trip 中按 `created_at` 升序、已生成缩略图、`deleted_at IS NULL` 的第一张图片的 `thumbnail_path`。
   - **不写入 `cover_media_id`**，仅在响应层派生，避免与 P6 自动最佳封面写库逻辑冲突。
   - 没有任何已生成缩略图时回退到默认占位。
-- [ ] **P3.T9 [MUST]** 阶段验收  *(原 P3.T7)*
+- [x] **P3.T9 [MUST]** 阶段验收  *(原 P3.T7)*
   - 手动验证 §7.4 验收标准 5 条；上传图片后 Trip 卡片自动显示第一张图片为临时封面。
   - 额外验证（前置任务闭环）：
     - Gallery / 详情页缩略图通过 P3.T1 静态路由可正常 GET（R-34 闭环）。

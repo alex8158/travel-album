@@ -553,15 +553,134 @@ npm run format:check
 
 ---
 
+## 阶段 P3：图片缩略图与元数据
+
+- 状态：**已完成**
+- 任务范围：P3.T1 – P3.T9（9 / 9；T1/T2 是 P2.T8 验收后于 commit `0fa0980` 插入的前置任务）
+- 提交范围：`90552ff` … `d2423a0`（P3.T9 验收无业务代码改动，仅本文件 + tasks.md）
+- 完成日期：2026-05-17
+
+### P3 阶段完成内容
+
+| Task | Commit | 主要交付 |
+|---|---|---|
+| **P3.T1** | `90552ff` | `/storage/<path>` 静态文件路由（消化 R-34）；三道闸路径校验；Content-Type 表 + Cache-Control + nosniff；smoke 14/14 |
+| **P3.T2** | `c2b04c8` | 最小 image-channel job executor（P4.T1 的 stub）—— 单并发、4 态生命周期（idle/running/stopping/stopped）、`pending → running → success/failed` 状态机、handler 注册表、优雅关停；消化 R-36 最小子集；smoke 26/26 |
+| **P3.T3** | `4fd668a` | `005_create_media_versions.sql` —— STRICT 表 + 11 个约束 + 4 个索引 + FK CASCADE + 7 值 version_type 枚举（前瞻性设计）；smoke 24/24 |
+| **P3.T4** | `9579a19` | `ImageWorker.thumbnail` —— sharp 生成 thumb.webp (320) + preview.webp (1600)，写 media_versions（UPSERT），更新 media_items.{width,height,preview_path,thumbnail_path}；`.rotate()` 处理 EXIF orientation；`overwrite:true` 幂等；新增依赖 sharp；smoke 22/22 |
+| **P3.T5** | `56c4cbe` | `ImageWorker.metadata` —— exifr 读 EXIF/TIFF/IPTC（`gps:false` 遵循 CLAUDE.md §5.3），UPSERT `media_versions(version_type='metadata', mime_type='application/json', params=JSON)`；新增 `006_extend_media_versions_version_type.sql` 12-step 重建扩 enum 加 `'metadata'`；新增依赖 exifr；删除 `imageJobHandlers.ts`（最后一个 stub 退役）；smoke 18 + 23 = 41/41 |
+| **P3.T6** | `9d4641a` | 前端图片详情页 `/media/:id` v1 —— 后端 `GET /api/media/:id` 改返 `{media, versions}`；新增 `MediaService.getMediaDetailById` + `MediaVersionsRepository.listByMediaId`；前端 hero / basics / versions / EXIF 四区；Gallery MediaCard 整张包 `<Link>` 并用真 thumbnail 替换 emoji；smoke 26/26（含 5 项 detail bundle） |
+| **P3.T7** | `0e8fb4f` | `POST /api/media/:id/reprocess` —— 对 `image_thumbnail` / `image_metadata` 两 slot 分别 created/reset/skipped（P3.T7 stub：`failed/success → pending` 直接 reset，P4.T2 落地正式 retry/backoff 时取代）；前端详情页加 Reprocess 按钮；smoke 21/21 |
+| **P3.T8** | `d2423a0` | 派生 `cover_url` —— `GET /api/trips` + `GET /api/trips/:id` 新增字段；三优先级（pinned → first thumbnailed → placeholder）；**零写库零 schema**；前端 TripCard 用新字段；smoke 13/13 |
+| **P3.T9** | （本任务）| 阶段验收 + 文档收口（仅 progress.md + tasks.md） |
+
+### P3.T9 验收结果
+
+| 验收项 | 结果 |
+|---|---|
+| [requirements §7.4 验收 1](requirements.md) 图片上传后前端可以显示缩略图 | **PASS** — `image_thumbnail` worker 写 `media_items.thumbnail_path` + `media_versions(version_type='thumbnail')`；TripDetailPage Gallery MediaCard 用 `/storage/<thumbnail_path>` 直接 `<img src>`；smoke:image-thumbnail "thumb.webp is readable via /storage/<thumbnail_path>" 实证 |
+| §7.4 验收 2 图片详情页可以显示基础元数据 | **PASS** — MediaDetailPage Basics 表（type / status / MIME / extension / dimensions / file_size / 时间戳 / 三种 storage 路径） + EXIF 区表格化展示（来自 `metadata` 版本的 params JSON） |
+| §7.4 验收 3 原始图片路径和缩略图路径分别保存 | **PASS** — `media_items.original_path` / `thumbnail_path` / `preview_path` 三列独立；P3.T4 同时把 derived 路径写入 `media_versions` 行（`version_type='thumbnail'/'preview'`），形成双轨：媒体表用于 Gallery 快速渲染、版本表用于细节查询 |
+| §7.4 验收 4 缩略图失败时任务状态记录失败原因 | **PASS** — P3.T2 executor 失败路径写 `processing_jobs.status='failed' + error_message`；smoke:image-thumbnail "failure: job row.status='failed' with error_message present" + smoke:image-channel-executor "failed path" 实证 |
+| §7.4 验收 5 失败图片可以重新处理 | **PASS** — P3.T7 `POST /api/media/:id/reprocess` 把 failed → pending 重置；前端详情页 Reprocess 按钮；smoke:media-reprocess "failed → reset" + "executor handoff: reset thumbnail job now status='success'" 实证 |
+| **P3.T9 额外**：上传图片后 Trip 卡片自动显示第一张图片为临时封面 | **PASS** — P3.T8 `deriveCoverUrl` 优先级 2 取该 trip 最早一张含 thumbnail_path 的 image；smoke:trip-cover-url "single-image trip → /storage/<thumbnail_path>" 实证；TripListPage 用 `trip.coverUrl` 渲染 |
+| **P3.T9 额外**：`/storage` 静态路由仍可访问缩略图 / 预览图 | **PASS** — `app.ts:97` 挂载未变；smoke:storage-route 14/14 PASS；smoke:image-thumbnail 实测 `storage.read(thumbnail_path)` 返字节流 |
+| **P3.T9 额外**：image-channel executor stub 闭环 | **PASS** — 注册 2 个真实 handler (`image_thumbnail` / `image_metadata`)；上传 → executor 自动拉 → handler 写 media_versions + media_items；smoke:image-thumbnail / smoke:image-metadata / smoke:media-reprocess 都包含端到端 executor 触发链路 |
+
+### 阶段 P3 验证命令
+
+后端（`server/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+npm run smoke:storage         # 19/19
+npm run smoke:trips           # 22/22
+npm run smoke:classify        # 37/37
+npm run smoke:upload          # 30/30
+npm run smoke:media           # 26/26（P3.T6 加 5 项 detail bundle）
+npm run smoke:storage-route   # 14/14（P3.T1）
+npm run smoke:image-channel-executor  # 26/26（P3.T2）
+npm run smoke:media-versions  # 24/24（P3.T3）
+npm run smoke:image-thumbnail # 22/22（P3.T4）
+npm run smoke:migration-006   # 18/18（P3.T5 配套）
+npm run smoke:image-metadata  # 23/23（P3.T5）
+npm run smoke:media-reprocess # 21/21（P3.T7）
+npm run smoke:trip-cover-url  # 13/13（P3.T8）
+```
+
+后端 smoke 总计 **295 / 295**（既有 110 + 阶段 P3 新增 185），零回归。
+
+前端（`client/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+```
+
+均一次过。Vite gzip JS 60.24 KB / CSS 2.47 KB。
+
+新增依赖：`sharp ^0.33.5`（P3.T4）+ 6 传递；`exifr ^7.1.3`（P3.T5）+ 0 传递。无其他依赖变更。
+
+### 阶段 P3 PARTIAL 项与依赖
+
+| 项 | 状态 | 何时完成 |
+|---|---|---|
+| 自动最佳封面（按 quality_score 写库） | 仍是派生 `cover_url`（响应层） | P6.T7 落地后 `trips.cover_media_id` 持久化；`deriveCoverUrl` 优先级 1 自动接管 |
+| Worker pool 正式版（多通道 / 退避重试 / 僵尸恢复 / Job API） | P3.T2 仅 stub | P4.T1 ~ P4.T7 |
+| 缩略图实际触发链路 | upload 仅入队 `image_thumbnail`；`image_metadata` job 当前由 P3.T7 reprocess 或手动 INSERT 触发 | 后续：要么 thumbnail handler 链式入队 metadata，要么 upload 一次入队两个 job —— 留给 P4 调度框架 |
+| 列表页 TripCard 素材计数 | 仍硬编 0（[P1 R-20](#)）| P3.T9 未在范围；后续给 `GET /api/trips` 加 `imageCount` / `videoCount` 聚合字段 |
+
+### 阶段 P3 PARTIAL 已消化
+
+| 编号 | 描述 | 消化点 |
+|---|---|---|
+| R-34 | 缺 storage 静态文件路由 | P3.T1 `/storage/<path>` |
+| R-36（最小子集）| `processing_jobs` 写入但无 Worker 执行 | P3.T2 image-channel executor stub；P3.T4 / T5 真实 handler 注册 |
+
+### 阶段 P3 剩余风险
+
+承自前期：R-01 ~ R-12（P0）、R-14 / R-15 / R-16 / R-17 / R-18 / R-19 / R-20 / R-23 / R-24（P1）、R-29 / R-30 / R-31 / R-35 / R-36（完整版）/ R-37 / R-38 / R-39（P2）继续延续。
+
+**P3 新增 / 校准**：
+
+| 编号 | 风险 | 何时跟进 |
+|---|---|---|
+| R-40 | P3.T7 `reprocess` 走 `failed/success → pending` 直接 reset，绕过 CLAUDE.md §4.3 的 `failed → retrying → running` 规范迁移 | P4.T2 失败重试 / 退避落地时改为规范路径 |
+| R-41 | `image_metadata` job 当前没有自动触发路径（upload 只入 `image_thumbnail`） | P4 调度框架或 P3.T4 worker 链式入队（任选）|
+| R-42 | P3.T2 executor 在 `markSuccess` 后若进程 crash，可能让"running"行卡死 | P4.T3 僵尸恢复（启动扫描 + 心跳）|
+| R-43 | 详情页 EXIF 表无字段过滤 / 分类 / 单位格式化 —— 直接渲染 exifr 原始 key/value | UX polish；非阻断 |
+| R-44 | TripCard 用 `<img>` 直接加载 cover_url，列表大时（>50 trip）可能延迟首屏 | 后续可加 lazy loading + 预加载 hint；非阻断 |
+
+### P4 前置条件
+
+- P3.T1 ~ P3.T9 全部完成 ✅
+- P3 验收通过（11 项全部 PASS）✅
+- 工作区干净 ✅
+- P3 阶段文档已收口 ✅（本节）
+- image-channel executor stub 接口稳定，P4.T1 落地时替换调度层、保留 handler 注册不变（详见 P3.T2 commit message）
+- 无 schema / migration 改动（仍是 000 ~ 006）
+- Trip CRUD mutation 契约不变
+
+---
+
 ## 下一阶段入口
 
-进入阶段 2：媒体上传与文件识别（[docs/tasks.md](tasks.md) §阶段 2）。
+进入阶段 4：任务队列与处理状态（[docs/tasks.md](tasks.md) §阶段 4）。
 
 第一项任务：
 
-- **P2.T1 [MUST]**：迁移 `media_items` 表（含 `status`、`user_decision`、软删除）
-  - 字段以 [docs/requirements.md](requirements.md) §8.2 为准
-  - 同时承接补充迁移：给 `trips.cover_media_id` 加 FK → `media_items(id) ON DELETE SET NULL`（消化 R-13）
+- **P4.T1 [MUST]**：`JobQueue` 实现 —— 抢占式拉取、按通道分组的并发控制（image=2 / video=1 / AI=1）、状态机迁移、`started_at` / `finished_at`、FFmpeg 子进程并发上限、视频任务出队前 ffmpeg 可用性 gating
+
+P4.T1 落地时替换 P3.T2 executor 的调度循环；handler 注册表 + handler 代码不变。
+
+进入 P4 前建议先评估 R-41（`image_metadata` job 触发路径）是否在 P4.T1 范围内一并处理，还是单独拆任务。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
