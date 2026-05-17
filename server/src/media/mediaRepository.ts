@@ -85,6 +85,7 @@ export class MediaRepository {
   private readonly listByTripActiveStmt;
   private readonly listByTripAllStmt;
   private readonly updateImageDerivedPathsStmt;
+  private readonly findFirstThumbnailPathStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -145,6 +146,23 @@ export class MediaRepository {
           thumbnail_path = @thumbnailPath,
           updated_at = @updatedAt
       WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P3.T8 derived cover: pick the oldest active image in this trip
+    // that already has a thumbnail_path. Returns just the path so we
+    // don't pull a whole MediaItem when the caller only needs the URL
+    // suffix. ORDER BY created_at ASC, id ASC mirrors the
+    // tie-break the design (§7.7) prescribes ("按 created_at 升序的
+    // 第一张已生成缩略图的图片").
+    this.findFirstThumbnailPathStmt = db.prepare(`
+      SELECT thumbnail_path
+      FROM media_items
+      WHERE trip_id = ?
+        AND type = 'image'
+        AND thumbnail_path IS NOT NULL
+        AND deleted_at IS NULL
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
     `);
   }
 
@@ -228,6 +246,22 @@ export class MediaRepository {
       updatedAt: args.updatedAt,
     });
     return info.changes;
+  }
+
+  /**
+   * Return the `thumbnail_path` of the oldest active image in the
+   * trip whose thumbnail has already been generated, or `null` when
+   * no such row exists yet (trip is empty, or thumbnail worker has
+   * not run for any image).
+   *
+   * Used by the response-layer cover_url derivation (P3.T8). Pure
+   * read; the value is NOT persisted on `trips.cover_media_id`.
+   */
+  findFirstThumbnailPath(tripId: string): string | null {
+    const row = this.findFirstThumbnailPathStmt.get(tripId) as
+      | { thumbnail_path: string | null }
+      | undefined;
+    return row?.thumbnail_path ?? null;
   }
 }
 

@@ -64,16 +64,15 @@ export default function TripListPage() {
 
 function TripCard({ trip }: { trip: Trip }) {
   const dateRange = formatDateRange(trip.startDate, trip.endDate);
+  // P3.T8: server now returns a derived `coverUrl`. It's a `/storage/...`
+  // path when a thumbnail-bearing image exists for this trip, otherwise
+  // the placeholder. Fall back to the placeholder for any older / cached
+  // response that lacks the field.
+  const coverSrc = trip.coverUrl ?? "/placeholder-cover.svg";
   return (
     <li className="trip-card">
       <Link to={`/trips/${trip.id}`} className="trip-card-link">
-        <img
-          src="/placeholder-cover.svg"
-          alt=""
-          className="trip-card-cover"
-          width={600}
-          height={400}
-        />
+        <img src={coverSrc} alt="" className="trip-card-cover" width={600} height={400} />
         <div className="trip-card-body">
           <h3 className="trip-card-title">{trip.title}</h3>
           {trip.destination && <p className="trip-card-meta">{trip.destination}</p>}

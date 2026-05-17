@@ -208,6 +208,7 @@ async function main(): Promise<void> {
     tripService,
     uploadService,
     mediaService,
+    mediaRepo,
     debugRoutes: config.nodeEnv !== "production",
   });
 

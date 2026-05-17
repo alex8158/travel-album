@@ -23,7 +23,7 @@ import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
-import type { MediaService } from "./media/index.js";
+import type { MediaRepository, MediaService } from "./media/index.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeMediaRouter } from "./routes/media.js";
 import { makeStorageRouter } from "./routes/storage.js";
@@ -45,6 +45,8 @@ export interface CreateAppOptions {
   readonly uploadService: UploadService;
   /** Media read service powering GET /api/(trips/:tripId/)?media[/:id] (P2.T5). */
   readonly mediaService: MediaService;
+  /** Media repository (read-only) — needed by the trips route for P3.T8 cover_url derivation. */
+  readonly mediaRepo: MediaRepository;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -53,8 +55,16 @@ export interface CreateAppOptions {
 }
 
 export function createApp(opts: CreateAppOptions): Express {
-  const { logger, capabilities, storage, tripService, uploadService, mediaService, debugRoutes } =
-    opts;
+  const {
+    logger,
+    capabilities,
+    storage,
+    tripService,
+    uploadService,
+    mediaService,
+    mediaRepo,
+    debugRoutes,
+  } = opts;
 
   const app = express();
   app.disable("x-powered-by");
@@ -73,8 +83,8 @@ export function createApp(opts: CreateAppOptions): Express {
   // snapshot; never re-spawns ffmpeg / ffprobe.
   app.use("/api/health", makeHealthRouter({ capabilities, storage }));
 
-  // Trip CRUD (P1.T3).
-  app.use("/api/trips", makeTripsRouter({ service: tripService }));
+  // Trip CRUD (P1.T3) + derived cover_url (P3.T8).
+  app.use("/api/trips", makeTripsRouter({ service: tripService, mediaRepo }));
 
   // Media routes (P2.T4 upload + P2.T5 read). Mounted at /api so this
   // router can own paths like /trips/:tripId/media/upload and

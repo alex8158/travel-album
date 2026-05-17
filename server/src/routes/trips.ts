@@ -16,12 +16,19 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { ValidationError } from "../errors/AppError.js";
+import type { MediaRepository } from "../media/index.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { entityIdSchema, type TripService } from "../trips/index.js";
+import { deriveCoverUrl, entityIdSchema, type Trip, type TripService } from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
 export interface TripsRouterDeps {
   readonly service: TripService;
+  /**
+   * Needed by `deriveCoverUrl` (P3.T8) to look up the pinned cover
+   * media's thumbnail and to find the oldest thumbnailed image in
+   * the trip when no pin is set. Read-only from the route layer.
+   */
+  readonly mediaRepo: MediaRepository;
 }
 
 const setCoverBodySchema = z
@@ -54,7 +61,16 @@ const listQuerySchema = z.object({
 
 export function makeTripsRouter(deps: TripsRouterDeps): Router {
   const router = Router();
-  const { service } = deps;
+  const { service, mediaRepo } = deps;
+
+  // P3.T8: shallow response wrapper that adds the derived `coverUrl`
+  // field to a trip object. POST / PATCH / DELETE / cover responses
+  // intentionally do NOT use this — only the two GET endpoints carry
+  // `coverUrl`, per the P3.T8 user spec. Client consumers handle the
+  // optional field accordingly.
+  function withCoverUrl(trip: Trip): Trip & { coverUrl: string } {
+    return { ...trip, coverUrl: deriveCoverUrl(trip, mediaRepo) };
+  }
 
   // POST /api/trips — create
   router.post(
@@ -68,20 +84,23 @@ export function makeTripsRouter(deps: TripsRouterDeps): Router {
   // GET /api/trips — list (default deleted_at IS NULL).
   // Pagination is enforced HERE rather than in the Service, so the public
   // HTTP cap (1..100) is independent of the Service contract.
+  //
+  // P3.T8: each trip is enriched with `coverUrl` derived in the
+  // response layer (no DB write).
   router.get(
     "/",
     asyncHandler((req, res) => {
       const query = parseOrThrow(listQuerySchema, req.query, "query parameters");
-      const trips = service.listTrips(query);
+      const trips = service.listTrips(query).map(withCoverUrl);
       res.json({ trips });
     }),
   );
 
-  // GET /api/trips/:id — read one
+  // GET /api/trips/:id — read one (P3.T8: enriched with coverUrl).
   router.get(
     "/:id",
     asyncHandler((req, res) => {
-      const trip = service.getTripById(getIdParam(req.params));
+      const trip = withCoverUrl(service.getTripById(getIdParam(req.params)));
       res.json({ trip });
     }),
   );

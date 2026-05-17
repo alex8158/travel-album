@@ -18,6 +18,17 @@ export interface Trip {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
+  /**
+   * Derived response-layer field (P3.T8). Present on GET /api/trips
+   * and GET /api/trips/:id responses only; POST / PATCH / DELETE
+   * responses do NOT carry it (server contract). Always a string when
+   * present: a `/storage/<path>` URL when a cover can be derived, or
+   * the static placeholder (`/placeholder-cover.svg`) otherwise.
+   *
+   * Optional in the type because the same `Trip` shape is used by the
+   * mutation endpoints' responses too.
+   */
+  readonly coverUrl?: string;
 }
 
 interface ListTripsResponse {
