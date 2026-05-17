@@ -670,17 +670,53 @@ npm run format:check
 
 ---
 
+## 阶段 P4：任务队列与处理状态
+
+- 状态：**进行中**
+- 任务范围：P4.T1 – P4.T7（参见 [docs/tasks.md](tasks.md) §阶段 4）
+
+### P4.T1 JobQueue 实现结果
+
+- Commit：待入库 — `feat(server): add job queue scheduler (P4.T1)`
+- 主要成果：
+  - 新增 `server/src/jobs/jobQueue.ts`：多通道 polling 调度器，三个 channel（`image` / `video` / `ai`）独立维护 concurrency cap / poll loop / inflight Set / handler Map；channel 内并发 N 个 handler 真并行；handler 错误隔离不影响 channel 拉取后续 job
+  - 状态机：`pending → running → success / failed`（claim 时 `WHERE status='pending'` race-safe；markSuccess / markFailed 仍带 `WHERE status='running'` guard）—— **未实现** retry / backoff（保留 P4.T2）、僵尸恢复（P4.T3）、Job API（P4.T4）、Media 状态联动（P4.T5）
+  - `JobRepository` 加 `claimNextPendingByJobTypes(types[])` —— 取代 P3.T2 硬编码的 `LIKE 'image\_%'`，支持任意 channel 的 handler 闭集 IN 查询；旧 `claimNextPendingImageJob` 保留供 P3 stub `ImageChannelExecutor` 继续使用
+  - `server/src/index.ts` boot 切换：`new ImageChannelExecutor(...)` → `new JobQueue({ jobRepo, logger, channels: [image / video / ai] })`；image 通道用 `config.workers.imageConcurrency`（env `IMAGE_WORKER_CONCURRENCY` 默认 2），video / ai 通道 handlers Map 为空（结构预留，永不 claim）；shutdown 改为 `await jobQueue.stop()`
+  - **保留** `ImageChannelExecutor` —— 既有 4 个 P3 smoke（image-channel-executor / image-thumbnail / image-metadata / media-reprocess）依赖其单并发确定性 tick 语义，作为 handler 测试用的"确定性测试 harness"留存；P4.T1 不改这些 smoke、不删旧 executor 类
+  - 新增 `smoke:job-queue` —— **27 / 27 PASS**：覆盖空队列 / 单任务 / 真并行（concurrency=2 实测 inflightPeak=2）/ saturatedBefore 反压 / handler 异常隔离 / video 通道空 handlers 不偷 video_metadata / start auto-drain / start 幂等 / stop 幂等 / tick-after-stop / mid-flight stop 等 handler 完成 / 未知 channel 抛错 / 非法 concurrency 抛错 / 重复 channel 名抛错 / channelNames + getState 自省
+  - **结构预留**：video / ai channel 已在 boot 注册（handler Map 空），后续 P4 video / AI worker 落地时只需 `imageHandlers.set(...)` 同款 API 注册；不需要改 JobQueue 内部
+- 验证：
+  - `npm run smoke:job-queue` 27/27 PASS
+  - 既有 13 smoke 不回归（classify 37 / trips 22 / storage 19 / upload 30 / media 26 / storage-route 14 / image-channel-executor 26 / media-versions 24 / image-thumbnail 22 / migration-006 18 / image-metadata 23 / media-reprocess 21 / trip-cover-url 13）—— 后端 smoke 总计 **322 / 322**
+  - build / typecheck / lint / format:check 一次过
+- 边界遵守：
+  - 未进入 P4.T2 retry/backoff
+  - 未改 P3 thumbnail / metadata handler 业务逻辑
+  - 未改 schema / 未新增 migration
+  - 未改前端
+  - 未改视频处理核心逻辑
+  - 未引入 FFmpeg 实际处理流程
+  - 未新增第三方依赖
+
+### 阶段 P4 PARTIAL 项与依赖
+
+| 项 | 何时完成 |
+|---|---|
+| 失败重试 + 退避策略 | P4.T2 |
+| 僵尸任务恢复 | P4.T3 |
+| Job API (`GET /api/jobs` / retry / cancel) | P4.T4 |
+| Media 状态联动 (`uploaded → processing → processed`) | P4.T5 |
+| 前端任务状态页 | P4.T6 |
+| FFmpeg 实际子进程执行 + ffmpeg 可用性 gating（视频 channel 真正激活）| P9 任务实际落地视频 handler 时；P4.T1 仅预留 channel 结构 |
+
+---
+
 ## 下一阶段入口
 
-进入阶段 4：任务队列与处理状态（[docs/tasks.md](tasks.md) §阶段 4）。
+进入阶段 4 的下一项任务：
 
-第一项任务：
-
-- **P4.T1 [MUST]**：`JobQueue` 实现 —— 抢占式拉取、按通道分组的并发控制（image=2 / video=1 / AI=1）、状态机迁移、`started_at` / `finished_at`、FFmpeg 子进程并发上限、视频任务出队前 ffmpeg 可用性 gating
-
-P4.T1 落地时替换 P3.T2 executor 的调度循环；handler 注册表 + handler 代码不变。
-
-进入 P4 前建议先评估 R-41（`image_metadata` job 触发路径）是否在 P4.T1 范围内一并处理，还是单独拆任务。
+- **P4.T2 [MUST]**：失败重试与退避（max 3 次，指数退避，可配置）—— 在 JobQueue handler 失败路径接入 `failed → retrying` 迁移、记录 `retry_count` / `next_run_at`、规范化 P3.T7 reprocess 的状态迁移路径（R-40）
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

@@ -202,6 +202,11 @@ export class JobRepository {
    *   * no pending image_* jobs exist
    *   * the row was flipped by someone else between (1) and (2)
    *   * the post-claim re-read returns nothing (vanishingly rare)
+   *
+   * Retained for backward compatibility with the P3.T2
+   * `ImageChannelExecutor` stub (and its smokes). The new
+   * `claimNextPendingByJobTypes` (P4.T1) generalises this to any
+   * channel's handler set.
    */
   claimNextPendingImageJob(now: string = nowIso()): ProcessingJob | null {
     const candidate = this.selectNextPendingImageStmt.get() as JobRow | undefined;
@@ -210,6 +215,45 @@ export class JobRepository {
     if (info.changes === 0) {
       return null;
     }
+    const updated = this.findByIdStmt.get(candidate.id) as JobRow | undefined;
+    return updated ? rowToJob(updated) : null;
+  }
+
+  /**
+   * Generalised claim used by the P4.T1 JobQueue. Each channel
+   * passes the closed list of job_type strings it has handlers
+   * registered for; we SELECT the oldest pending row whose job_type
+   * is in that set and flip it to `running` race-safely.
+   *
+   * Empty `jobTypes` returns null immediately — a channel with no
+   * handlers should never claim, full stop. Otherwise the semantics
+   * mirror `claimNextPendingImageJob`:
+   *   * `null` when nothing eligible exists OR we lost a race.
+   *   * Returns the row in its new `running` state on success.
+   *
+   * Implementation detail: SQLite has no `ANY (?)` placeholder for
+   * dynamic-length IN-lists, so the SELECT is prepared per call
+   * with the right number of placeholders. The cost (~6 prepares/s
+   * across 3 channels at 1.5 s poll interval) is negligible vs. the
+   * IO of a real handler. The UPDATE re-uses `claimStmt`.
+   */
+  claimNextPendingByJobTypes(
+    jobTypes: readonly string[],
+    now: string = nowIso(),
+  ): ProcessingJob | null {
+    if (jobTypes.length === 0) return null;
+    const placeholders = jobTypes.map(() => "?").join(", ");
+    const selectStmt = this.db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM processing_jobs
+      WHERE status = 'pending' AND job_type IN (${placeholders})
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
+    const candidate = selectStmt.get(...jobTypes) as JobRow | undefined;
+    if (!candidate) return null;
+    const info = this.claimStmt.run(now, now, candidate.id);
+    if (info.changes === 0) return null;
     const updated = this.findByIdStmt.get(candidate.id) as JobRow | undefined;
     return updated ? rowToJob(updated) : null;
   }

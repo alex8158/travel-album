@@ -155,7 +155,7 @@
 
 > requirements §7.17 / §14 阶段 4。
 
-- [ ] **P4.T1 [MUST]** `JobQueue` 实现：抢占式拉取、按通道分组的并发控制、状态迁移、`started_at/finished_at`
+- [x] **P4.T1 [MUST]** `JobQueue` 实现：抢占式拉取、按通道分组的并发控制、状态迁移、`started_at/finished_at`
   - 三类独立通道（实现层各自维护并发计数）：图片通道默认并发 `IMAGE_WORKER_CONCURRENCY=2`、视频通道默认 `VIDEO_WORKER_CONCURRENCY=1`、AI 通道默认 `AI_WORKER_CONCURRENCY=1`。
   - 严禁出现“所有任务共用一个并发上限”的实现；FFmpeg 子进程总数不得超过视频通道并发上限。
   - 视频任务出队执行前先检查 `ffmpegAvailable`，不可用直接以 `FFMPEG_NOT_AVAILABLE` 标记失败，不占用并发槽。

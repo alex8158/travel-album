@@ -9,11 +9,12 @@ import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import {
-  ImageChannelExecutor,
-  JobHandlerRegistry,
+  JobQueue,
   JobRepository,
   makeImageMetadataHandler,
   makeImageThumbnailHandler,
+  type JobHandler,
+  type JobQueueChannelConfig,
 } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import { MediaRepository, MediaService, MediaVersionsRepository } from "./media/index.js";
@@ -166,39 +167,35 @@ async function main(): Promise<void> {
   });
   const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo);
 
-  // P3.T2: image-channel job executor + handler registry. Stub for
-  // P4.T1 — single concurrency, no retry / zombie / channels.
-  // P3.T4 / P3.T5 wired both real handlers; no stubs remain.
-  const handlerRegistry = new JobHandlerRegistry();
-  handlerRegistry.register(
+  // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
+  // P3.T2 ImageChannelExecutor in production wiring. Each channel
+  // owns its own concurrency cap (from config). Video / AI channels
+  // are registered with empty handler maps as structural placeholders
+  // — they exist so a future video / AI worker can be slotted in
+  // without changing the boot shape, but they never claim today.
+  // P4.T2 / T3 / T4 will add retry / zombie recovery / Job API on
+  // top of this same JobQueue.
+  const imageHandlers = new Map<string, JobHandler>();
+  imageHandlers.set(
     "image_thumbnail",
-    makeImageThumbnailHandler({
-      storage,
-      mediaRepo,
-      mediaVersionsRepo,
-      logger,
-    }),
+    makeImageThumbnailHandler({ storage, mediaRepo, mediaVersionsRepo, logger }),
   );
-  handlerRegistry.register(
+  imageHandlers.set(
     "image_metadata",
-    makeImageMetadataHandler({
-      storage,
-      mediaRepo,
-      mediaVersionsRepo,
-      logger,
-    }),
+    makeImageMetadataHandler({ storage, mediaRepo, mediaVersionsRepo, logger }),
   );
-  const imageExecutor = new ImageChannelExecutor({
-    jobRepo,
-    registry: handlerRegistry,
-    logger,
-  });
+  const channels: JobQueueChannelConfig[] = [
+    { name: "image", concurrency: config.workers.imageConcurrency, handlers: imageHandlers },
+    { name: "video", concurrency: config.workers.videoConcurrency, handlers: new Map() },
+    { name: "ai", concurrency: config.workers.aiConcurrency, handlers: new Map() },
+  ];
+  const jobQueue = new JobQueue({ jobRepo, logger, channels });
 
   logStartup(logger, config, dbHandle, migrationResult, storage, capabilities);
 
   // Start polling AFTER the startup log so any noise from the very
   // first tick lands after the "server initialised" line.
-  imageExecutor.start();
+  jobQueue.start();
 
   // 8) HTTP server.
   const app = createApp({
@@ -240,13 +237,13 @@ async function main(): Promise<void> {
       if (closeErr) {
         logger.error({ err: serializeReason(closeErr) }, "error closing http server");
       }
-      // Stop the image executor BEFORE closing the DB so any in-flight
-      // tick can finish its status UPDATE on a live connection. The
-      // 10-second forceExit guards against a runaway handler.
-      void imageExecutor
+      // Stop the JobQueue BEFORE closing the DB so any in-flight
+      // handler can finish its status UPDATE on a live connection.
+      // The 10-second forceExit guards against a runaway handler.
+      void jobQueue
         .stop()
         .catch((execErr) => {
-          logger.error({ err: serializeReason(execErr) }, "error stopping image-channel executor");
+          logger.error({ err: serializeReason(execErr) }, "error stopping job queue");
         })
         .finally(() => {
           try {
