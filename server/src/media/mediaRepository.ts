@@ -11,6 +11,9 @@
 //   * P5.T2 adds `updateImageHashes` so the `image_hash` worker can
 //     cache SHA256 + perceptual hash (pHash + dHash concatenation) on
 //     the media row. Columns already exist in 002; no schema change.
+//   * P5.T3 adds `findActiveImageHashesByTripId` — read-only projection
+//     used by `Dedup_Engine.exact` to enumerate the (mediaId, fileHash)
+//     pairs for one trip without pulling whole MediaItem rows.
 //   * No state-machine helpers (e.g. markProcessing / markFailed),
 //     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
@@ -90,6 +93,7 @@ export class MediaRepository {
   private readonly updateImageDerivedPathsStmt;
   private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
+  private readonly findActiveImageHashesByTripIdStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -181,6 +185,28 @@ export class MediaRepository {
         AND deleted_at IS NULL
       ORDER BY created_at ASC, id ASC
       LIMIT 1
+    `);
+
+    // P5.T3 Dedup_Engine.exact: enumerate every active image in a
+    // trip that has a `file_hash` set. We deliberately return only
+    // (id, file_hash) instead of a full MediaItem — the dedup engine
+    // groups by hash in JS and never needs the larger projection.
+    //   * Active rows only (`deleted_at IS NULL`).
+    //   * type='image' — videos do not participate in image dedup
+    //     (P9 has its own video-side dedup if/when it lands).
+    //   * file_hash IS NOT NULL — rows whose `image_hash` worker has
+    //     not run yet are out of scope; the engine simply ignores
+    //     them rather than failing.
+    // ORDER BY created_at ASC, id ASC keeps the per-hash member list
+    // deterministic across runs (logs and group items are stable).
+    this.findActiveImageHashesByTripIdStmt = db.prepare(`
+      SELECT id, file_hash AS file_hash
+      FROM media_items
+      WHERE trip_id = ?
+        AND type = 'image'
+        AND deleted_at IS NULL
+        AND file_hash IS NOT NULL
+      ORDER BY created_at ASC, id ASC
     `);
   }
 
@@ -315,6 +341,26 @@ export class MediaRepository {
       | { thumbnail_path: string | null }
       | undefined;
     return row?.thumbnail_path ?? null;
+  }
+
+  /**
+   * P5.T3 Dedup_Engine.exact: enumerate every active image of one
+   * trip whose `file_hash` has been computed. Returns just the
+   * (mediaId, fileHash) pairs ordered by `created_at ASC, id ASC`
+   * for deterministic grouping. Empty array when the trip has no
+   * hash-bearing images yet.
+   *
+   * The caller groups by `fileHash` in memory; we deliberately do
+   * NOT push the GROUP BY into SQL so the dedup engine can apply
+   * its own per-cohort policy (idempotency check, user-confirmed
+   * protection) before any write.
+   */
+  findActiveImageHashesByTripId(tripId: string): { id: string; fileHash: string }[] {
+    const rows = this.findActiveImageHashesByTripIdStmt.all(tripId) as {
+      id: string;
+      file_hash: string;
+    }[];
+    return rows.map((r) => ({ id: r.id, fileHash: r.file_hash }));
   }
 }
 

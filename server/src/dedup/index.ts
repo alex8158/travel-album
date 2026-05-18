@@ -1,11 +1,14 @@
 // Public surface for the dedup domain (P5).
 //
 // Importers should pull from `../dedup` rather than reaching into
-// individual files. Today only the Repository is exposed; Services /
-// engines / API will be added by P5.T2 ... P5.T8 and re-exported
-// from here.
+// individual files.
+//
+// P5.T1 — duplicate_groups + duplicate_group_items migration.
+// P5.T1.5 — DuplicateGroupsRepository data-access layer.
+// P5.T3 — DedupEngine.exact (`runExactForTrip`).
 
 export { DuplicateGroupsRepository } from "./duplicateGroupsRepository.js";
+export { DedupEngine, type DedupEngineDeps, type RunExactResult } from "./dedupEngine.js";
 
 export type {
   DuplicateDecision,
