@@ -24,6 +24,11 @@ export {
   type DedupExactApiResult,
   type DedupRunApiResult,
   type DedupSimilarApiResult,
+  type DuplicateGroupItemView,
+  type DuplicateGroupView,
+  type DuplicateMediaProjection,
+  type ListDuplicateGroupsResponse,
+  type SingleDuplicateGroupResponse,
 } from "./dedupService.js";
 export {
   dedupRunBodySchema,

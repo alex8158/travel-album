@@ -173,7 +173,7 @@ async function main(): Promise<void> {
   const jobService = new JobService(jobRepo);
   const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
   const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
-  const dedupService = new DedupService(dedupEngine, tripService);
+  const dedupService = new DedupService(dedupEngine, tripService, duplicateGroupsRepo, mediaRepo);
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel

@@ -17,6 +17,9 @@
 //   * P5.T4 adds `findActiveImagePerceptualHashesByTripId` — same
 //     shape but for `perceptual_hash`, consumed by
 //     `Dedup_Engine.similar` (pHash Hamming distance grouping).
+//   * P5.T6 adds `findByIds` — batch lookup returning a Map; used
+//     by `DedupService` to hydrate per-item media projections in
+//     one round-trip when rendering duplicate group lists / detail.
 //   * No state-machine helpers (e.g. markProcessing / markFailed),
 //     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
@@ -398,6 +401,37 @@ export class MediaRepository {
       perceptual_hash: string;
     }[];
     return rows.map((r) => ({ id: r.id, perceptualHash: r.perceptual_hash }));
+  }
+
+  /**
+   * P5.T6: batch lookup of active media rows by id. Returns a Map
+   * keyed by id so callers can hydrate per-item projections (e.g.
+   * duplicate group items → MediaItem) in a single round-trip.
+   *
+   * Missing / soft-deleted ids are silently absent from the map (no
+   * throw) — the dedup-list view tolerates and explicitly renders
+   * "missing media" placeholders. Empty input yields an empty map.
+   *
+   * SQLite has no `ANY (?)` placeholder for variable-length IN-lists,
+   * so we build the `?, ?, …` placeholder string per call. The cost
+   * is negligible compared to the SELECT itself at V1 scale (< 100
+   * media per dedup view).
+   */
+  findByIds(ids: readonly string[]): Map<string, MediaItem> {
+    const out = new Map<string, MediaItem>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => "?").join(", ");
+    const sql = `
+      SELECT ${SELECT_COLUMNS}
+      FROM media_items
+      WHERE id IN (${placeholders})
+        AND deleted_at IS NULL
+    `;
+    const rows = this.db.prepare(sql).all(...ids) as MediaRow[];
+    for (const row of rows) {
+      out.set(row.id, rowToItem(row));
+    }
+    return out;
   }
 }
 

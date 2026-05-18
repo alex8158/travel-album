@@ -1,4 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import DuplicateGroupDetailPage from "./pages/DuplicateGroupDetailPage";
+import DuplicateGroupListPage from "./pages/DuplicateGroupListPage";
 import JobsPage from "./pages/JobsPage";
 import MediaDetailPage from "./pages/MediaDetailPage";
 import NotFoundPage from "./pages/NotFoundPage";
@@ -16,8 +18,8 @@ import UploadPage from "./pages/UploadPage";
 //   /trips/:id                  -> P1.T6 (TripDetailPage skeleton) ✓ wired
 //                                  P2.T7 filled the gallery section
 //   /trips/:id/upload           -> P2.T6 (UploadPage)              ✓ wired
-//   /trips/:id/duplicates       -> P5.T6 (DuplicateGroupListPage)
-//   /duplicate-groups/:id       -> P5.T6 (DuplicateGroupDetailPage)
+//   /trips/:id/duplicates       -> P5.T6 (DuplicateGroupListPage)   ✓ wired
+//   /duplicate-groups/:id       -> P5.T6 (DuplicateGroupDetailPage) ✓ wired
 //   /media/:id                  -> P3.T6 (MediaDetailPage v1)      ✓ wired
 //                                  P6 / P8 / P10 add features
 //   /videos/:id/segments        -> P9.T9 (VideoSegmentsPage)
@@ -36,7 +38,9 @@ export default function App() {
         <Route path="/trips/new" element={<TripFormPage mode="create" />} />
         <Route path="/trips/:id/edit" element={<TripFormPage mode="edit" />} />
         <Route path="/trips/:id/upload" element={<UploadPage />} />
+        <Route path="/trips/:tripId/duplicates" element={<DuplicateGroupListPage />} />
         <Route path="/trips/:id" element={<TripDetailPage />} />
+        <Route path="/duplicate-groups/:id" element={<DuplicateGroupDetailPage />} />
         <Route path="/media/:id" element={<MediaDetailPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="*" element={<NotFoundPage />} />

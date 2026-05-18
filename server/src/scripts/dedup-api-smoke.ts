@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     const mediaRepo = new MediaRepository(dbHandle.db);
     const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
     const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
-    const dedupService = new DedupService(dedupEngine, tripService);
+    const dedupService = new DedupService(dedupEngine, tripService, duplicateGroupsRepo, mediaRepo);
 
     // Minimal Express app — only the dedup router + standard error
     // pipeline. Other routers (trips / media / storage / jobs) are
@@ -653,6 +653,158 @@ async function main(): Promise<void> {
           body.cohortsSkipped.length === 1 &&
           body.cohortsSkipped[0]?.reason === "already-grouped",
         `body=${JSON.stringify(body)}`,
+      );
+    }
+
+    // -----------------------------------------------------------------
+    // P5.T6 — GET endpoints backing the duplicate groups UI.
+    // -----------------------------------------------------------------
+
+    // CASE 17: GET list returns groups + items + media projection
+    {
+      const trip = tripService.createTrip({ title: "Case17 GET list" });
+      const m1 = seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case17" });
+      const m2 = seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case17" });
+      // Run exact to create one group.
+      await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/dedup/exact`, {
+        method: "POST",
+      });
+      const res = await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/duplicate-groups`);
+      const body = (await res.json()) as {
+        tripId: string;
+        groups: Array<{
+          id: string;
+          groupType: string;
+          items: Array<{
+            mediaId: string;
+            media: { id: string; type: string; extension: string | null } | null;
+          }>;
+        }>;
+      };
+      record(
+        "GET /api/trips/:tripId/duplicate-groups → 200 + 1 group with hydrated items",
+        res.status === 200 &&
+          body.tripId === trip.id &&
+          body.groups.length === 1 &&
+          body.groups[0]?.groupType === "exact" &&
+          body.groups[0]?.items.length === 2,
+        `body=${JSON.stringify(body).slice(0, 250)}…`,
+      );
+      const mediaIdsFromBody = body.groups[0]?.items.map((i) => i.mediaId).sort() ?? [];
+      const expectedIds = [m1, m2].sort();
+      record(
+        "GET list: items carry both seeded mediaIds",
+        JSON.stringify(mediaIdsFromBody) === JSON.stringify(expectedIds),
+        `got=${JSON.stringify(mediaIdsFromBody)}`,
+      );
+      const firstItem = body.groups[0]?.items[0];
+      record(
+        "GET list: each item has hydrated `media` projection (type='image')",
+        firstItem?.media !== null && firstItem?.media?.type === "image",
+        `item.media=${JSON.stringify(firstItem?.media)}`,
+      );
+    }
+
+    // CASE 18: GET list on empty trip → 200 + empty array
+    {
+      const trip = tripService.createTrip({ title: "Case18 empty" });
+      const res = await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/duplicate-groups`);
+      const body = (await res.json()) as { groups: unknown[] };
+      record(
+        "GET list on empty trip → 200 + empty groups array",
+        res.status === 200 && Array.isArray(body.groups) && body.groups.length === 0,
+        `body=${JSON.stringify(body)}`,
+      );
+    }
+
+    // CASE 19: GET list on missing trip → 404
+    {
+      const res = await fetch(
+        `${base}/api/trips/${encodeURIComponent("never-such-trip-19")}/duplicate-groups`,
+      );
+      const body = (await res.json()) as { error?: { code?: string } };
+      record(
+        "GET list on missing trip → 404 NOT_FOUND",
+        res.status === 404 && body.error?.code === "NOT_FOUND",
+        `status=${res.status} code=${body.error?.code ?? "(none)"}`,
+      );
+    }
+
+    // CASE 20: GET single by id returns the group + items + media
+    {
+      const trip = tripService.createTrip({ title: "Case20 GET single" });
+      seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case20" });
+      seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case20" });
+      await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/dedup/exact`, {
+        method: "POST",
+      });
+      const listRes = (await (
+        await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/duplicate-groups`)
+      ).json()) as { groups: Array<{ id: string }> };
+      const groupId = listRes.groups[0]?.id ?? "";
+      const res = await fetch(`${base}/api/duplicate-groups/${encodeURIComponent(groupId)}`);
+      const body = (await res.json()) as {
+        group: { id: string; tripId: string; items: { media: unknown }[] };
+      };
+      record(
+        "GET /api/duplicate-groups/:id → 200 + group hydrated with items + media",
+        res.status === 200 &&
+          body.group.id === groupId &&
+          body.group.tripId === trip.id &&
+          body.group.items.length === 2 &&
+          body.group.items.every((i) => i.media !== null),
+        `body=${JSON.stringify(body).slice(0, 250)}…`,
+      );
+    }
+
+    // CASE 21: GET single on missing id → 404
+    {
+      const res = await fetch(
+        `${base}/api/duplicate-groups/${encodeURIComponent("never-such-group")}`,
+      );
+      const body = (await res.json()) as { error?: { code?: string } };
+      record(
+        "GET /api/duplicate-groups/<missing> → 404 NOT_FOUND",
+        res.status === 404 && body.error?.code === "NOT_FOUND",
+        `status=${res.status} code=${body.error?.code ?? "(none)"}`,
+      );
+    }
+
+    // CASE 22: GET single on malformed id → 400
+    {
+      const res = await fetch(`${base}/api/duplicate-groups/bad.id.shape`);
+      const body = (await res.json()) as { error?: { code?: string } };
+      record(
+        "GET /api/duplicate-groups/<malformed> → 400 VALIDATION_FAILED",
+        res.status === 400 && body.error?.code === "VALIDATION_FAILED",
+        `status=${res.status} code=${body.error?.code ?? "(none)"}`,
+      );
+    }
+
+    // CASE 23: GET list — soft-deleted media still surfaces as item
+    // but with media=null (the group row outlives a soft-deleted member).
+    {
+      const trip = tripService.createTrip({ title: "Case23 soft-deleted member" });
+      const m1 = seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case23" });
+      seedMedia(dbHandle.db, { tripId: trip.id, fileHash: "h-case23" });
+      await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/dedup/exact`, {
+        method: "POST",
+      });
+      // Soft-delete m1 AFTER the group is created.
+      dbHandle.db
+        .prepare(`UPDATE media_items SET deleted_at = ?, status = 'deleted' WHERE id = ?`)
+        .run(new Date().toISOString(), m1);
+      const res = await fetch(`${base}/api/trips/${encodeURIComponent(trip.id)}/duplicate-groups`);
+      const body = (await res.json()) as {
+        groups: Array<{ items: Array<{ mediaId: string; media: unknown | null }> }>;
+      };
+      const items = body.groups[0]?.items ?? [];
+      const softItem = items.find((i) => i.mediaId === m1);
+      const liveItem = items.find((i) => i.mediaId !== m1);
+      record(
+        "GET list: soft-deleted member → item.media = null; live member still hydrated",
+        items.length === 2 && softItem?.media === null && liveItem?.media !== null,
+        `items=${JSON.stringify(items.map((i) => ({ id: i.mediaId, hasMedia: i.media !== null })))}`,
       );
     }
   } finally {

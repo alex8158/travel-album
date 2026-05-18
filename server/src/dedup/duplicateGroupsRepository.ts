@@ -288,6 +288,17 @@ export class DuplicateGroupsRepository {
   }
 
   /**
+   * P5.T6: look up one duplicate group + hydrate its items. Null
+   * when the group does not exist. Mirrors `listByTripIdWithItems`
+   * but for a single id — used by `GET /api/duplicate-groups/:id`.
+   */
+  findGroupByIdWithItems(id: string): DuplicateGroupWithItems | null {
+    const group = this.findGroupById(id);
+    if (group === null) return null;
+    return { ...group, items: this.listItemsByGroupId(group.id) };
+  }
+
+  /**
    * List every duplicate_groups row that belongs to a trip, ordered
    * newest-first. Returns `[]` when none exist. Does NOT hydrate the
    * item list — call `listByTripIdWithItems` when you want both in

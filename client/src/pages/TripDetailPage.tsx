@@ -42,6 +42,7 @@
 
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { runDedupRun } from "../api/dedup";
 import type { MediaItem } from "../api/media";
 import { deleteTrip } from "../api/trips";
 import { useTrip } from "../hooks/useTrip";
@@ -91,6 +92,27 @@ export default function TripDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // ---- Find duplicates state (P5.T6) --------------------------------------
+  // POST .../dedup/run and navigate to the duplicate group list on
+  // success. Failures surface inline so the rest of the page keeps
+  // working.
+  const [finding, setFinding] = useState(false);
+  const [findError, setFindError] = useState<string | null>(null);
+
+  async function handleFindDuplicates(): Promise<void> {
+    if (!trip || finding) return;
+    setFinding(true);
+    setFindError(null);
+    try {
+      await runDedupRun(trip.id);
+      navigate(`/trips/${trip.id}/duplicates`);
+    } catch (err: unknown) {
+      setFindError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFinding(false);
+    }
+  }
 
   function openDelete(): void {
     setDeleteError(null);
@@ -201,11 +223,28 @@ export default function TripDetailPage() {
           <Link to={`/trips/${trip.id}/upload`} className="btn-primary">
             Upload media
           </Link>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleFindDuplicates}
+            disabled={finding}
+          >
+            {finding ? "Finding…" : "Find duplicates"}
+          </button>
+          <Link to={`/trips/${trip.id}/duplicates`} className="btn-secondary">
+            View duplicates
+          </Link>
           <button type="button" className="btn-danger" onClick={openDelete}>
             Delete
           </button>
         </div>
       </header>
+
+      {findError !== null && (
+        <p className="status-text status-error" role="alert">
+          Failed to find duplicates: {findError}
+        </p>
+      )}
 
       {trip.description && (
         <section className="trip-detail-section">

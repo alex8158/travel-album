@@ -1,10 +1,13 @@
-// Dedup API routes (P5.T5).
+// Dedup API routes (P5.T5 + P5.T6).
 //
-// Mounted at `/api`. Owns the per-trip dedup invocation endpoints:
+// Mounted at `/api`. Owns the per-trip dedup invocation endpoints
+// and the read endpoints backing the duplicate-groups UI:
 //
-//   POST /api/trips/:tripId/dedup/exact     — DedupEngine.runExactForTrip
-//   POST /api/trips/:tripId/dedup/similar   — DedupEngine.runSimilarForTrip
-//   POST /api/trips/:tripId/dedup/run       — exact then similar
+//   POST /api/trips/:tripId/dedup/exact         — DedupEngine.runExactForTrip
+//   POST /api/trips/:tripId/dedup/similar       — DedupEngine.runSimilarForTrip
+//   POST /api/trips/:tripId/dedup/run           — exact then similar
+//   GET  /api/trips/:tripId/duplicate-groups    — list groups + items + media
+//   GET  /api/duplicate-groups/:id              — single group + items + media
 //
 // Path-binding rules:
 //   * `tripId` ALWAYS comes from the URL path; there is no body
@@ -14,7 +17,7 @@
 //
 // Errors flow through the global error middleware:
 //   * 400 VALIDATION_FAILED — malformed tripId / bad body
-//   * 404 NOT_FOUND         — trip missing or soft-deleted
+//   * 404 NOT_FOUND         — trip / group missing or soft-deleted
 //   * 500 INTERNAL_ERROR    — unexpected, swallowed message
 //
 // All handlers wrap in `asyncHandler` so a thrown AppError reaches
@@ -57,6 +60,24 @@ export function makeDedupRouter(deps: DedupRouterDeps): Router {
     }),
   );
 
+  // P5.T6 read endpoints — back the frontend duplicate group list /
+  // detail pages. Synchronous DB read, no side effects.
+  router.get(
+    "/trips/:tripId/duplicate-groups",
+    asyncHandler((req, res) => {
+      const result = service.listForTrip(getTripIdParam(req.params));
+      res.status(200).json(result);
+    }),
+  );
+
+  router.get(
+    "/duplicate-groups/:id",
+    asyncHandler((req, res) => {
+      const result = service.getById(getIdParam(req.params));
+      res.status(200).json(result);
+    }),
+  );
+
   return router;
 }
 
@@ -72,4 +93,8 @@ export function makeDedupRouter(deps: DedupRouterDeps): Router {
  */
 function getTripIdParam(params: Record<string, string | undefined>): string {
   return params.tripId ?? "";
+}
+
+function getIdParam(params: Record<string, string | undefined>): string {
+  return params.id ?? "";
 }
