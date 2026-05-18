@@ -8,6 +8,9 @@
 //     cache the derived image's display dimensions + preview / thumb
 //     paths on the media_items row (so the Gallery can read them
 //     without joining media_versions).
+//   * P5.T2 adds `updateImageHashes` so the `image_hash` worker can
+//     cache SHA256 + perceptual hash (pHash + dHash concatenation) on
+//     the media row. Columns already exist in 002; no schema change.
 //   * No state-machine helpers (e.g. markProcessing / markFailed),
 //     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
@@ -85,6 +88,7 @@ export class MediaRepository {
   private readonly listByTripActiveStmt;
   private readonly listByTripAllStmt;
   private readonly updateImageDerivedPathsStmt;
+  private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
 
   constructor(private readonly db: SqliteDatabase) {
@@ -144,6 +148,20 @@ export class MediaRepository {
           height = @height,
           preview_path = @previewPath,
           thumbnail_path = @thumbnailPath,
+          updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P5.T2 image_hash worker: cache the file-level SHA256 and the
+    // perceptual hash signature on the media row. Active rows only —
+    // a soft-deleted media should not absorb further writes. The
+    // handler logs a warning when changes=0 so the soft-delete race
+    // case is observable. Both columns already exist in 002 (with an
+    // index on file_hash), so no schema change is required.
+    this.updateImageHashesStmt = db.prepare(`
+      UPDATE media_items
+      SET file_hash = @fileHash,
+          perceptual_hash = @perceptualHash,
           updated_at = @updatedAt
       WHERE id = @mediaId AND deleted_at IS NULL
     `);
@@ -243,6 +261,41 @@ export class MediaRepository {
       height: args.height,
       previewPath: args.previewPath,
       thumbnailPath: args.thumbnailPath,
+      updatedAt: args.updatedAt,
+    });
+    return info.changes;
+  }
+
+  /**
+   * Cache the file-level SHA256 and perceptual hash signature on the
+   * media row. Called by `image_hash` worker (P5.T2) after sharp +
+   * crypto finish.
+   *
+   * Returns the number of rows touched. 0 means the row was missing
+   * or already soft-deleted between the worker's `findById` and this
+   * UPDATE — the caller logs that case and proceeds.
+   *
+   * The handler computes hashes deterministically over the same byte
+   * stream, so re-running this method on the same media writes the
+   * same values; idempotency is built in.
+   */
+  updateImageHashes(args: {
+    readonly mediaId: string;
+    /** SHA256 hex string of the original file bytes (64 chars). */
+    readonly fileHash: string;
+    /**
+     * Perceptual hash signature, currently the concatenation of
+     * `pHashHex(16) + dHashHex(16)` = 32 hex chars. Documented in
+     * `imageHashWorker.ts`; the dedup engine slices the two halves
+     * apart at compare time.
+     */
+    readonly perceptualHash: string;
+    readonly updatedAt: string;
+  }): number {
+    const info = this.updateImageHashesStmt.run({
+      mediaId: args.mediaId,
+      fileHash: args.fileHash,
+      perceptualHash: args.perceptualHash,
       updatedAt: args.updatedAt,
     });
     return info.changes;

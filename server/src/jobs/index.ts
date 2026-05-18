@@ -12,6 +12,9 @@
 //       for the P3 smokes (see jobQueue.ts header note).
 // P4.T4 adds the public Job API surface: `JobService` (read / retry /
 //       cancel) backing `routes/jobs.ts`.
+// P5.T2 adds `makeImageHashHandler` — the `image_hash` worker that
+//       writes `media_items.file_hash` (SHA256) + `media_items.perceptual_hash`
+//       (pHash + dHash concatenation) for the dedup engine to consume.
 
 export { JobRepository, type JobListFilter } from "./jobRepository.js";
 export { JobService } from "./jobService.js";
@@ -38,5 +41,12 @@ export {
   type ImageThumbnailHandlerDeps,
 } from "./imageThumbnailWorker.js";
 export { makeImageMetadataHandler, type ImageMetadataHandlerDeps } from "./imageMetadataWorker.js";
+export {
+  IMAGE_HASH_JOB_TYPE,
+  computeDHash,
+  computePHash,
+  makeImageHashHandler,
+  type ImageHashHandlerDeps,
+} from "./imageHashWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

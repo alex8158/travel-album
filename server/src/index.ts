@@ -9,9 +9,11 @@ import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import {
+  IMAGE_HASH_JOB_TYPE,
   JobQueue,
   JobRepository,
   JobService,
+  makeImageHashHandler,
   makeImageMetadataHandler,
   makeImageThumbnailHandler,
   type JobHandler,
@@ -198,6 +200,7 @@ async function main(): Promise<void> {
     "image_metadata",
     makeImageMetadataHandler({ storage, mediaRepo, mediaVersionsRepo, logger }),
   );
+  imageHandlers.set(IMAGE_HASH_JOB_TYPE, makeImageHashHandler({ storage, mediaRepo, logger }));
   const channels: JobQueueChannelConfig[] = [
     { name: "image", concurrency: config.workers.imageConcurrency, handlers: imageHandlers },
     { name: "video", concurrency: config.workers.videoConcurrency, handlers: new Map() },
