@@ -14,6 +14,9 @@
 //   * P5.T3 adds `findActiveImageHashesByTripId` — read-only projection
 //     used by `Dedup_Engine.exact` to enumerate the (mediaId, fileHash)
 //     pairs for one trip without pulling whole MediaItem rows.
+//   * P5.T4 adds `findActiveImagePerceptualHashesByTripId` — same
+//     shape but for `perceptual_hash`, consumed by
+//     `Dedup_Engine.similar` (pHash Hamming distance grouping).
 //   * No state-machine helpers (e.g. markProcessing / markFailed),
 //     soft-delete writes, or restore ops — those belong to P4 / P7.
 //
@@ -94,6 +97,7 @@ export class MediaRepository {
   private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
   private readonly findActiveImageHashesByTripIdStmt;
+  private readonly findActiveImagePerceptualHashesByTripIdStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -206,6 +210,19 @@ export class MediaRepository {
         AND type = 'image'
         AND deleted_at IS NULL
         AND file_hash IS NOT NULL
+      ORDER BY created_at ASC, id ASC
+    `);
+
+    // P5.T4 Dedup_Engine.similar: same projection but for
+    // `perceptual_hash`. The engine slices the first 16 chars as
+    // pHash. Filter / ordering identical to the file_hash variant.
+    this.findActiveImagePerceptualHashesByTripIdStmt = db.prepare(`
+      SELECT id, perceptual_hash AS perceptual_hash
+      FROM media_items
+      WHERE trip_id = ?
+        AND type = 'image'
+        AND deleted_at IS NULL
+        AND perceptual_hash IS NOT NULL
       ORDER BY created_at ASC, id ASC
     `);
   }
@@ -361,6 +378,26 @@ export class MediaRepository {
       file_hash: string;
     }[];
     return rows.map((r) => ({ id: r.id, fileHash: r.file_hash }));
+  }
+
+  /**
+   * P5.T4 Dedup_Engine.similar: enumerate every active image of one
+   * trip whose `perceptual_hash` has been computed. Returns just the
+   * (mediaId, perceptualHash) pairs ordered by `created_at ASC, id ASC`
+   * for deterministic cohort iteration. Empty array when no rows yet.
+   *
+   * The caller is expected to slice the first 16 hex chars off the
+   * returned `perceptualHash` to get the pHash half (P5.T2 layout:
+   * `pHashHex(16) + dHashHex(16) = 32 hex`).
+   */
+  findActiveImagePerceptualHashesByTripId(
+    tripId: string,
+  ): { id: string; perceptualHash: string }[] {
+    const rows = this.findActiveImagePerceptualHashesByTripIdStmt.all(tripId) as {
+      id: string;
+      perceptual_hash: string;
+    }[];
+    return rows.map((r) => ({ id: r.id, perceptualHash: r.perceptual_hash }));
   }
 }
 
