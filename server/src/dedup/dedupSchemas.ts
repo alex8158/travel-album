@@ -14,6 +14,8 @@
 
 import { z } from "zod";
 
+import { entityIdSchema } from "../trips/index.js";
+
 import { HEX16_MAX_BITS } from "./hamming.js";
 
 /**
@@ -40,3 +42,25 @@ export type DedupSimilarBody = z.infer<typeof dedupSimilarBodySchema>;
  */
 export const dedupRunBodySchema = dedupSimilarBodySchema;
 export type DedupRunBody = z.infer<typeof dedupRunBodySchema>;
+
+/**
+ * Body schema for `POST /api/duplicate-groups/:id/recommend`.
+ * `mediaId` is required and validated against the `entityIdSchema`
+ * pattern. The Service additionally verifies that the mediaId is a
+ * current member of the target group (cross-group leak guard).
+ */
+export const dedupRecommendBodySchema = z.object({
+  mediaId: entityIdSchema,
+});
+export type DedupRecommendBody = z.infer<typeof dedupRecommendBodySchema>;
+
+/**
+ * Body schema for `POST /api/duplicate-groups/:id/confirm`. Same
+ * shape as recommend but the field is named `recommendedMediaId`
+ * to match `duplicate_groups.recommended_media_id` and the
+ * design.md §7.3 vocabulary.
+ */
+export const dedupConfirmBodySchema = z.object({
+  recommendedMediaId: entityIdSchema,
+});
+export type DedupConfirmBody = z.infer<typeof dedupConfirmBodySchema>;

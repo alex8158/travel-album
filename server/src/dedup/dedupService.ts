@@ -24,14 +24,20 @@
 //     HTTP perspective. Per-trip scan is < 100 ms at V1 sizes so a
 //     synchronous response is honest about the result.
 
-import { NotFoundError } from "../errors/AppError.js";
+import { AppError, NotFoundError } from "../errors/AppError.js";
+import { ERROR_CODES } from "../errors/errorCodes.js";
 import type { MediaItem, MediaRepository } from "../media/index.js";
 import { entityIdSchema, type TripService } from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
 import type { DedupEngine, RunExactResult, RunSimilarResult } from "./dedupEngine.js";
 import type { DuplicateGroupsRepository } from "./duplicateGroupsRepository.js";
-import { dedupRunBodySchema, dedupSimilarBodySchema } from "./dedupSchemas.js";
+import {
+  dedupConfirmBodySchema,
+  dedupRecommendBodySchema,
+  dedupRunBodySchema,
+  dedupSimilarBodySchema,
+} from "./dedupSchemas.js";
 import type {
   DuplicateGroup,
   DuplicateGroupItem,
@@ -222,6 +228,95 @@ export class DedupService {
       throw new NotFoundError(`Duplicate group not found after hydration: ${id}`, { id });
     }
     return { group: hydrated };
+  }
+
+  /**
+   * POST /api/duplicate-groups/:id/recommend — set the recommended
+   * media on a group. Does NOT flip `user_confirmed` or touch the
+   * per-item `user_decision`: it's a "suggestion" surface that the
+   * UI uses to remember which image is the current pick.
+   *
+   * Validation gates (in order):
+   *   * 404 — group missing.
+   *   * 400 INVALID_STATE_TRANSITION — mediaId is not a current
+   *     member of the group (cross-group leak guard).
+   *
+   * Returns the hydrated post-update group + items.
+   */
+  recommend(idInput: unknown, bodyInput: unknown): SingleDuplicateGroupResponse {
+    const groupId = parseOrThrow(entityIdSchema, idInput, "id");
+    const body = parseOrThrow(dedupRecommendBodySchema, bodyInput ?? {}, "request body");
+    this.ensureGroupExists(groupId);
+    this.ensureMediaInGroup(groupId, body.mediaId);
+    const changes = this.duplicateGroupsRepo.setRecommendedMedia(groupId, body.mediaId);
+    if (changes === 0) {
+      // Group disappeared between the existence check and the
+      // UPDATE — narrow window but possible if another caller
+      // deleted it. Surface 404 honestly.
+      throw new NotFoundError(`Duplicate group not found: ${groupId}`, { id: groupId });
+    }
+    return this.getById(groupId);
+  }
+
+  /**
+   * POST /api/duplicate-groups/:id/confirm — bind the user's pick
+   * for a duplicate group. Atomically updates the group header
+   * (`recommended_media_id` + `user_confirmed=1`) and every item
+   * row's `user_decision` / `recommendation` (selected → keep,
+   * others → remove) inside a single SQL transaction.
+   *
+   * Validation gates (in order):
+   *   * 404 — group missing.
+   *   * 400 INVALID_STATE_TRANSITION — recommendedMediaId is not a
+   *     member of the group.
+   *
+   * Idempotency: a second call with the same `recommendedMediaId`
+   * lands the same final state (keep stays keep, remove stays
+   * remove). A call with a different mediaId on an already-confirmed
+   * group flips the items accordingly — the user is allowed to
+   * change their mind. Engine-side auto re-grouping (P5.T3 / P5.T4)
+   * still skips this group because its members remain in the
+   * "already-grouped" set, regardless of `user_confirmed`.
+   */
+  confirmGroup(idInput: unknown, bodyInput: unknown): SingleDuplicateGroupResponse {
+    const groupId = parseOrThrow(entityIdSchema, idInput, "id");
+    const body = parseOrThrow(dedupConfirmBodySchema, bodyInput ?? {}, "request body");
+    this.ensureGroupExists(groupId);
+    this.ensureMediaInGroup(groupId, body.recommendedMediaId);
+    const changes = this.duplicateGroupsRepo.confirmGroupRecommendation(
+      groupId,
+      body.recommendedMediaId,
+    );
+    if (changes === 0) {
+      throw new NotFoundError(`Duplicate group not found: ${groupId}`, { id: groupId });
+    }
+    return this.getById(groupId);
+  }
+
+  /** Throws NotFoundError when the group is missing. */
+  private ensureGroupExists(groupId: string): void {
+    const group = this.duplicateGroupsRepo.findGroupById(groupId);
+    if (group === null) {
+      throw new NotFoundError(`Duplicate group not found: ${groupId}`, { id: groupId });
+    }
+  }
+
+  /**
+   * Throws AppError(INVALID_STATE_TRANSITION, 400) when the media
+   * is not a current member of the target group. Used by recommend
+   * + confirm to keep cross-group writes impossible.
+   */
+  private ensureMediaInGroup(groupId: string, mediaId: string): void {
+    if (!this.duplicateGroupsRepo.groupContainsMedia(groupId, mediaId)) {
+      throw new AppError(
+        ERROR_CODES.INVALID_STATE_TRANSITION,
+        `media ${mediaId} is not a member of duplicate group ${groupId}`,
+        {
+          statusCode: 400,
+          details: { groupId, mediaId },
+        },
+      );
+    }
   }
 
   /**

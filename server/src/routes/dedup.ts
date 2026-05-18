@@ -1,13 +1,16 @@
-// Dedup API routes (P5.T5 + P5.T6).
+// Dedup API routes (P5.T5 + P5.T6 + P5.T7).
 //
-// Mounted at `/api`. Owns the per-trip dedup invocation endpoints
-// and the read endpoints backing the duplicate-groups UI:
+// Mounted at `/api`. Owns the per-trip dedup invocation endpoints,
+// the read endpoints backing the duplicate-groups UI, and the
+// user-confirmation surface:
 //
-//   POST /api/trips/:tripId/dedup/exact         — DedupEngine.runExactForTrip
-//   POST /api/trips/:tripId/dedup/similar       — DedupEngine.runSimilarForTrip
-//   POST /api/trips/:tripId/dedup/run           — exact then similar
-//   GET  /api/trips/:tripId/duplicate-groups    — list groups + items + media
-//   GET  /api/duplicate-groups/:id              — single group + items + media
+//   POST /api/trips/:tripId/dedup/exact          — DedupEngine.runExactForTrip
+//   POST /api/trips/:tripId/dedup/similar        — DedupEngine.runSimilarForTrip
+//   POST /api/trips/:tripId/dedup/run            — exact then similar
+//   GET  /api/trips/:tripId/duplicate-groups     — list groups + items + media
+//   GET  /api/duplicate-groups/:id               — single group + items + media
+//   POST /api/duplicate-groups/:id/recommend     — set recommended_media_id
+//   POST /api/duplicate-groups/:id/confirm       — bind user pick (atomic)
 //
 // Path-binding rules:
 //   * `tripId` ALWAYS comes from the URL path; there is no body
@@ -74,6 +77,25 @@ export function makeDedupRouter(deps: DedupRouterDeps): Router {
     "/duplicate-groups/:id",
     asyncHandler((req, res) => {
       const result = service.getById(getIdParam(req.params));
+      res.status(200).json(result);
+    }),
+  );
+
+  // P5.T7 user-confirmation surface. Both endpoints mutate group /
+  // item state through the Service so cross-group writes and
+  // missing membership are rejected before any SQL fires.
+  router.post(
+    "/duplicate-groups/:id/recommend",
+    asyncHandler((req, res) => {
+      const result = service.recommend(getIdParam(req.params), req.body);
+      res.status(200).json(result);
+    }),
+  );
+
+  router.post(
+    "/duplicate-groups/:id/confirm",
+    asyncHandler((req, res) => {
+      const result = service.confirmGroup(getIdParam(req.params), req.body);
       res.status(200).json(result);
     }),
   );

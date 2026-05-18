@@ -185,3 +185,59 @@ export async function runDedupRun(
   if (!res.ok) throw new Error(await readErrorMessage(res));
   return (await res.json()) as DedupRunApiResult;
 }
+
+// ---------------------------------------------------------------------------
+// User confirmation (P5.T7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Set `recommended_media_id` on a duplicate group. Does NOT flip
+ * `user_confirmed`; the UI uses this when the user is exploring
+ * picks before binding via `confirmDuplicateGroup`.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — malformed group id / body / mediaId not a member
+ *   * 404 — group missing
+ */
+export async function recommendDuplicateGroupMedia(
+  groupId: string,
+  mediaId: string,
+): Promise<DuplicateGroupView> {
+  const res = await fetch(`/api/duplicate-groups/${encodeURIComponent(groupId)}/recommend`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ mediaId }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const body = (await res.json()) as SingleDuplicateGroupResponse;
+  return body.group;
+}
+
+/**
+ * Atomically confirm a duplicate group with the user's picked
+ * media. Server writes the group header (`recommended_media_id` +
+ * `user_confirmed=true`) and every item's `user_decision` /
+ * `recommendation` ('keep' for the picked media, 'remove' for the
+ * rest) inside a SQLite transaction.
+ *
+ * Idempotent: calling twice with the same payload yields the same
+ * final state. Calling with a different mediaId on an already-
+ * confirmed group flips the items — the user can change their pick.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — malformed group id / body / mediaId not a member
+ *   * 404 — group missing
+ */
+export async function confirmDuplicateGroup(
+  groupId: string,
+  recommendedMediaId: string,
+): Promise<DuplicateGroupView> {
+  const res = await fetch(`/api/duplicate-groups/${encodeURIComponent(groupId)}/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ recommendedMediaId }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const body = (await res.json()) as SingleDuplicateGroupResponse;
+  return body.group;
+}

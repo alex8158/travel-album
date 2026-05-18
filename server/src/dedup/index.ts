@@ -31,8 +31,12 @@ export {
   type SingleDuplicateGroupResponse,
 } from "./dedupService.js";
 export {
+  dedupConfirmBodySchema,
+  dedupRecommendBodySchema,
   dedupRunBodySchema,
   dedupSimilarBodySchema,
+  type DedupConfirmBody,
+  type DedupRecommendBody,
   type DedupRunBody,
   type DedupSimilarBody,
 } from "./dedupSchemas.js";

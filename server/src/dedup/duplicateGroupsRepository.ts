@@ -17,11 +17,21 @@
 // What this Repository deliberately does NOT cover (later phases):
 //   * Recommendation / quality / similarity *recompute* logic
 //     (P5.T2 … P5.T4 / P6.T5).
-//   * `user_confirmed` toggle / `user_decision` flip
-//     (P5.T7).
 //   * Soft-delete cascade reset of `recommended_media_id` and item
 //     `user_decision='remove'` (P7.T1).
 //   * Any HTTP-shaped validation (Service / Route layer).
+//
+// P5.T7 added the user-confirmation surface:
+//   * `groupContainsMedia` — membership check used to reject
+//     recommend / confirm requests that point at a media not in
+//     the group.
+//   * `setRecommendedMedia` — single UPDATE of `recommended_media_id`
+//     (used by `POST /api/duplicate-groups/:id/recommend`).
+//   * `confirmGroupRecommendation` — `db.transaction`-wrapped write:
+//     `recommended_media_id` + `user_confirmed=1` on the group, plus
+//     items.user_decision = 'keep' for the selected media and
+//     'remove' for every other member of the same group. Atomic so
+//     a partial failure can never leave the group half-confirmed.
 //
 // Constraint violations (CHECK / FK / UNIQUE) propagate untouched —
 // `.run()` on better-sqlite3 throws on constraint failure and the
@@ -106,6 +116,12 @@ export class DuplicateGroupsRepository {
   private readonly listItemsByGroupIdStmt;
   private readonly listGroupsByMediaIdStmt;
   private readonly deleteGroupStmt;
+  // P5.T7 — user confirmation
+  private readonly groupContainsMediaStmt;
+  private readonly setRecommendedMediaStmt;
+  private readonly confirmGroupHeaderStmt;
+  private readonly markItemKeepStmt;
+  private readonly markOtherItemsRemoveStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     // Insert one duplicate_groups row. `user_confirmed` is the only
@@ -200,6 +216,50 @@ export class DuplicateGroupsRepository {
     this.deleteGroupStmt = db.prepare(`
       DELETE FROM duplicate_groups
       WHERE id = ?
+    `);
+
+    // P5.T7 user confirmation primitives. Each statement is tiny
+    // and guarded so the Service layer can compose them safely
+    // without re-deriving the schema invariants.
+    //
+    // Membership check: returns the count of items matching
+    // (group_id, media_id). Used to reject `recommend` / `confirm`
+    // requests whose mediaId is not actually a member of the
+    // target group (cross-group leak protection).
+    this.groupContainsMediaStmt = db.prepare(`
+      SELECT COUNT(*) AS n
+      FROM duplicate_group_items
+      WHERE group_id = ? AND media_id = ?
+    `);
+    // Set the recommended media on a group (recommend endpoint).
+    // The WHERE clause guards on group id only — Service validates
+    // the (group, media) membership before calling.
+    this.setRecommendedMediaStmt = db.prepare(`
+      UPDATE duplicate_groups
+      SET recommended_media_id = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    // Confirm: flip the group's user_confirmed flag and the
+    // recommended media in one statement.
+    this.confirmGroupHeaderStmt = db.prepare(`
+      UPDATE duplicate_groups
+      SET recommended_media_id = ?, user_confirmed = 1, updated_at = ?
+      WHERE id = ?
+    `);
+    // Per-item decision UPDATEs used by confirmGroupRecommendation
+    // inside a db.transaction so the (group, items) state lands
+    // atomically. The "keep" stmt also tightens
+    // `recommendation = 'keep'` so the engine-derived signal
+    // stays consistent with the user choice; same for 'remove'.
+    this.markItemKeepStmt = db.prepare(`
+      UPDATE duplicate_group_items
+      SET user_decision = 'keep', recommendation = 'keep', updated_at = ?
+      WHERE group_id = ? AND media_id = ?
+    `);
+    this.markOtherItemsRemoveStmt = db.prepare(`
+      UPDATE duplicate_group_items
+      SET user_decision = 'remove', recommendation = 'remove', updated_at = ?
+      WHERE group_id = ? AND media_id != ?
     `);
   }
 
@@ -362,6 +422,82 @@ export class DuplicateGroupsRepository {
   deleteGroup(groupId: string): number {
     const info = this.deleteGroupStmt.run(groupId);
     return info.changes;
+  }
+
+  /**
+   * P5.T7 membership check: does `mediaId` currently belong to
+   * `groupId` as a `duplicate_group_items` row? Used by the
+   * recommend / confirm service paths to reject cross-group writes
+   * (a client cannot smuggle a mediaId from another group via the
+   * body).
+   *
+   * Returns `false` for missing group, missing media, or a
+   * (group, media) pair that simply isn't there. The Service maps
+   * `false` to a 400 INVALID_STATE_TRANSITION.
+   */
+  groupContainsMedia(groupId: string, mediaId: string): boolean {
+    const row = this.groupContainsMediaStmt.get(groupId, mediaId) as { n: number };
+    return row.n > 0;
+  }
+
+  /**
+   * P5.T7 `POST /api/duplicate-groups/:id/recommend`: set the
+   * recommended media on a group. Does NOT flip user_confirmed or
+   * touch items.user_decision — that's reserved for the confirm
+   * endpoint per CLAUDE.md §3.9 ("recommendation is suggestive,
+   * confirmation is binding").
+   *
+   * Service is expected to call `groupContainsMedia` first; this
+   * method assumes the membership invariant holds. Returns the
+   * UPDATE rowcount (0 means the group disappeared between the
+   * Service's check and this write — caller surfaces 404).
+   */
+  setRecommendedMedia(
+    groupId: string,
+    mediaId: string,
+    now: string = new Date().toISOString(),
+  ): number {
+    const info = this.setRecommendedMediaStmt.run(mediaId, now, groupId);
+    return info.changes;
+  }
+
+  /**
+   * P5.T7 `POST /api/duplicate-groups/:id/confirm`: atomically
+   * confirm the user's pick for a duplicate group.
+   *
+   * Inside a single `db.transaction` we write three UPDATEs:
+   *   1. duplicate_groups SET recommended_media_id=?, user_confirmed=1
+   *   2. duplicate_group_items SET user_decision='keep', recommendation='keep'
+   *      WHERE group_id=? AND media_id = recommendedMediaId
+   *   3. duplicate_group_items SET user_decision='remove', recommendation='remove'
+   *      WHERE group_id=? AND media_id != recommendedMediaId
+   *
+   * Any thrown error (constraint failure, foreign-key clash) rolls
+   * the entire write back so a partial confirm can never leave the
+   * group in a "header confirmed but items still undecided" state.
+   *
+   * Idempotency: a second call with the same recommendedMediaId
+   * yields the same final state (keep stays keep, remove stays
+   * remove); a call with a DIFFERENT mediaId on an already-confirmed
+   * group flips the items accordingly — the user is allowed to
+   * change their mind.
+   *
+   * Returns the number of rows affected on the group header (0 or 1).
+   * 0 means the group was deleted mid-call; Service maps to 404.
+   */
+  confirmGroupRecommendation(
+    groupId: string,
+    recommendedMediaId: string,
+    now: string = new Date().toISOString(),
+  ): number {
+    const tx = this.db.transaction((gid: string, mid: string, ts: string): number => {
+      const header = this.confirmGroupHeaderStmt.run(mid, ts, gid);
+      if (header.changes === 0) return 0;
+      this.markItemKeepStmt.run(ts, gid, mid);
+      this.markOtherItemsRemoveStmt.run(ts, gid, mid);
+      return header.changes;
+    });
+    return tx(groupId, recommendedMediaId, now);
   }
 }
 

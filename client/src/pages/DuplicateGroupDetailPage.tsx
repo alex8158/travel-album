@@ -1,19 +1,93 @@
-// Duplicate group detail page (P5.T6).
+// Duplicate group detail page (P5.T6 + P5.T7).
 //
-// Mounted at /duplicate-groups/:id. Read-only view of one group:
-// group metadata (id, type, confidence, similarity, status,
-// timestamps) + every member item (thumbnail / preview, mediaId,
-// recommendation, reason, similarity score, user_decision).
+// Mounted at /duplicate-groups/:id. Shows one group:
+// metadata (id, type, confidence, similarity, status, timestamps) +
+// every member (thumbnail, mediaId, recommendation, reason,
+// similarity score, user_decision).
 //
-// Keep/remove writes and user confirmation are P5.T7.
+// P5.T7 adds two user actions:
+//   * "Keep this one" — per-item button calling
+//     `POST /api/duplicate-groups/:id/recommend`. Sets the group's
+//     recommended_media_id without binding the decisions; the picked
+//     row gets a "Recommended" badge.
+//   * "Confirm group" — header button calling
+//     `POST /api/duplicate-groups/:id/confirm` with the current
+//     recommendedMediaId. Atomically flips user_confirmed=true and
+//     items.user_decision (keep / remove). Disabled when no
+//     recommendation is selected; visually shows "Confirmed" once
+//     `user_confirmed=true`. The user can change their pick by
+//     selecting a different "Keep this one" and confirming again —
+//     the server allows that, the UI does not block it.
 
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import type { DuplicateDecision, DuplicateGroupItemView, DuplicateGroupType } from "../api/dedup";
+import {
+  confirmDuplicateGroup,
+  recommendDuplicateGroupMedia,
+  type DuplicateDecision,
+  type DuplicateGroupItemView,
+  type DuplicateGroupType,
+  type DuplicateGroupView,
+} from "../api/dedup";
 import { useDuplicateGroupDetail } from "../hooks/useDuplicateGroupDetail";
 
 export default function DuplicateGroupDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const { group, loading, error, refetch } = useDuplicateGroupDetail(id);
+  const { group: serverGroup, loading, error, refetch } = useDuplicateGroupDetail(id);
+
+  // Local mutation state. The hook's `group` is the source of truth
+  // until the user takes an action; after a recommend/confirm
+  // response, `localGroup` overrides so the UI updates without
+  // waiting for a refetch.
+  const [localGroup, setLocalGroup] = useState<DuplicateGroupView | null>(null);
+  const [recommendingMediaId, setRecommendingMediaId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Whenever the server re-fetches (initial load, refetch, id change),
+  // reset the local override so the freshly-loaded server state shows.
+  useEffect(() => {
+    setLocalGroup(null);
+    setActionError(null);
+  }, [serverGroup?.id]);
+
+  const group = localGroup ?? serverGroup;
+
+  async function handleKeepThisOne(mediaId: string): Promise<void> {
+    if (!group || recommendingMediaId !== null || confirming) return;
+    setRecommendingMediaId(mediaId);
+    setActionError(null);
+    try {
+      const updated = await recommendDuplicateGroupMedia(group.id, mediaId);
+      setLocalGroup(updated);
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecommendingMediaId(null);
+    }
+  }
+
+  async function handleConfirm(): Promise<void> {
+    if (!group || !group.recommendedMediaId || confirming || recommendingMediaId !== null) {
+      return;
+    }
+    setConfirming(true);
+    setActionError(null);
+    try {
+      const updated = await confirmDuplicateGroup(group.id, group.recommendedMediaId);
+      setLocalGroup(updated);
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  function handleRefresh(): void {
+    setLocalGroup(null);
+    setActionError(null);
+    refetch();
+  }
 
   if (loading) {
     return (
@@ -31,9 +105,17 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
       </main>
     );
   }
-  if (group === null) {
+  if (!group) {
     return null as unknown as JSX.Element;
   }
+
+  const confirmDisabled =
+    confirming || recommendingMediaId !== null || group.recommendedMediaId === null;
+  const confirmReason = group.userConfirmed
+    ? "Already confirmed — pick a different image and click Confirm again to change."
+    : group.recommendedMediaId === null
+      ? "Pick an image with 'Keep this one' first."
+      : null;
 
   return (
     <main>
@@ -42,17 +124,39 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
           <Link to={`/trips/${group.tripId}/duplicates`} className="back-link">
             ← Back to duplicate groups
           </Link>
-          <h1>{labelForType(group.groupType)} duplicate group</h1>
+          <h1>
+            {labelForType(group.groupType)} duplicate group
+            {group.userConfirmed && <span className="confirmed-pill">Confirmed</span>}
+          </h1>
           <p className="trip-detail-meta">
             <span className="trip-detail-meta-label">Group id:</span> {group.id}
           </p>
         </div>
         <div className="page-header-actions">
-          <button type="button" className="btn-secondary" onClick={refetch}>
+          <button type="button" className="btn-secondary" onClick={handleRefresh}>
             Refresh
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={handleConfirm}
+            disabled={confirmDisabled}
+            title={confirmReason ?? undefined}
+          >
+            {confirming
+              ? "Confirming…"
+              : group.userConfirmed
+                ? "Re-confirm group"
+                : "Confirm group"}
           </button>
         </div>
       </header>
+
+      {actionError !== null && (
+        <p className="status-text status-error" role="alert">
+          {actionError}
+        </p>
+      )}
 
       <section className="trip-detail-section">
         <h2>Overview</h2>
@@ -78,7 +182,14 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
         ) : (
           <ul className="duplicate-detail-member-list">
             {group.items.map((it) => (
-              <MemberRow key={it.id} item={it} />
+              <MemberRow
+                key={it.id}
+                item={it}
+                isRecommended={it.mediaId === group.recommendedMediaId}
+                recommendInFlight={recommendingMediaId === it.mediaId}
+                anyActionInFlight={recommendingMediaId !== null || confirming}
+                onKeep={handleKeepThisOne}
+              />
             ))}
           </ul>
         )}
@@ -87,10 +198,26 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
   );
 }
 
-function MemberRow({ item }: { item: DuplicateGroupItemView }): JSX.Element {
+function MemberRow({
+  item,
+  isRecommended,
+  recommendInFlight,
+  anyActionInFlight,
+  onKeep,
+}: {
+  item: DuplicateGroupItemView;
+  isRecommended: boolean;
+  recommendInFlight: boolean;
+  anyActionInFlight: boolean;
+  onKeep: (mediaId: string) => void;
+}): JSX.Element {
   const m = item.media;
+  // "Keep this one" button — disabled while ANY action is in flight,
+  // and also disabled when this item is already the recommended one
+  // (clicking again is a no-op; clearer to surface "Recommended").
+  const keepDisabled = anyActionInFlight || isRecommended;
   return (
-    <li className="duplicate-detail-member">
+    <li className={`duplicate-detail-member${isRecommended ? " member-recommended" : ""}`}>
       <div className="duplicate-detail-member-thumb">
         {m === null ? (
           <div className="duplicate-group-card-thumb thumb-missing">(missing)</div>
@@ -111,6 +238,7 @@ function MemberRow({ item }: { item: DuplicateGroupItemView }): JSX.Element {
           ) : (
             <span>{short(item.mediaId)}</span>
           )}
+          {isRecommended && <span className="recommended-pill">Recommended</span>}
           <span className={`decision-badge decision-${item.recommendation}`}>
             {labelForDecision("Recommendation", item.recommendation)}
           </span>
@@ -133,6 +261,17 @@ function MemberRow({ item }: { item: DuplicateGroupItemView }): JSX.Element {
           </div>
         </dl>
         {item.reason && <p className="duplicate-detail-member-reason">{item.reason}</p>}
+        <div className="duplicate-detail-member-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => onKeep(item.mediaId)}
+            disabled={keepDisabled}
+            aria-pressed={isRecommended}
+          >
+            {recommendInFlight ? "Selecting…" : isRecommended ? "Recommended" : "Keep this one"}
+          </button>
+        </div>
       </div>
     </li>
   );
@@ -153,9 +292,6 @@ function formatScore(value: number | null): string {
 }
 
 function formatDateTime(value: string): string {
-  // Server stores ISO-8601 timestamps with millisecond precision.
-  // Render with the locale's default; fall back to the raw string on
-  // any parse problem.
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleString();
