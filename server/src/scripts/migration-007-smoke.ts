@@ -552,14 +552,17 @@ async function main(): Promise<void> {
       closeDatabase(stage1);
     }
 
-    // ---- Stage 2: re-open, run migrations → only 007 should apply ----
+    // ---- Stage 2: re-open, run migrations → 007 (and any later
+    // siblings added by future tasks like 008) apply in order. The
+    // tight "exactly [007]" assertion was loosened when 008 landed
+    // (P6.T1) so this smoke does not need a refresh per migration. ----
     const stage2 = openDatabase(dbPath);
     try {
       const result = runMigrations(stage2.db);
       record(
-        "upgrade: appliedNow contains exactly [007]",
-        result.appliedNow.length === 1 &&
-          result.appliedNow[0] === "007_create_duplicate_groups.sql",
+        "upgrade: appliedNow includes 007 as the first newly-applied file",
+        result.appliedNow[0] === "007_create_duplicate_groups.sql" &&
+          result.appliedNow.includes("007_create_duplicate_groups.sql"),
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
 
