@@ -958,12 +958,14 @@ npm run format:check
 
 ## 阶段 P5：图片去重
 
-- 状态：**进行中**
-- 任务范围：P5.T1 – P5.T8（参见 [docs/tasks.md](tasks.md) §阶段 5）
+- 状态：**已完成**
+- 任务范围：P5.T1 – P5.T8（8 / 8；T1.5 Repository 与 T1 同一 commit 区间，作为 T1 的紧邻交付）
+- 提交范围：`caebea4` … `a7ad70f`（P5.T8 验收无业务代码改动，仅本文件 + tasks.md）
+- 完成日期：2026-05-18
 
 ### P5.T1 `duplicate_groups` / `duplicate_group_items` 迁移 实现结果
 
-- Commit：待入库 — `feat(server): add duplicate groups migration (P5.T1)`
+- Commit：`caebea4` — `feat(server): add duplicate groups migration (P5.T1)`
 - 主要成果：
   - 新增 `server/migrations/007_create_duplicate_groups.sql` —— 一次性建两张 STRICT 表
     - **`duplicate_groups`** 9 列（per requirements §8.4）：`id` / `trip_id` / `group_type` / `recommended_media_id` / `confidence` / `similarity_score` / `user_confirmed` / `created_at` / `updated_at`
@@ -987,27 +989,152 @@ npm run format:check
   - 未引入新 npm 依赖
   - 既有删除流程（trip / media）通过 ON DELETE RESTRICT / SET NULL / CASCADE 三种策略保证 schema 层兜底；P7 软删除业务逻辑（重置 `recommended_media_id`、把 `user_decision` 切到 `'remove'`）会接续完成
 
-### 阶段 P5 待办 / 后续依赖
+### P5 阶段完成内容
+
+| Task | Commit | 主要交付 |
+|---|---|---|
+| **P5.T1** | `caebea4` | `007_create_duplicate_groups.sql` —— `duplicate_groups`（9 列）+ `duplicate_group_items`（10 列）STRICT 表 + CHECK enums + FK RESTRICT/SET NULL/CASCADE 三策略 + UNIQUE (group_id, media_id) + 反向 media_id 索引；smoke:migration-007 37/37 |
+| **P5.T1.5** | `bbfafbd` | `DuplicateGroupsRepository` 数据访问层 —— insertGroup / insertItem / `createGroupWithItems` 事务 / findGroupById / listByTripId / listItemsByGroupId / listByTripIdWithItems / listGroupsByMediaId / deleteGroup；smoke:duplicate-groups-repository 30/30 |
+| **P5.T2** | `18f1c37` | `image_hash` worker —— SHA256（node:crypto）+ pHash（32×32 grayscale + 2-D DCT-II + 中位数阈值）+ dHash（9×8 梯度），写 `media_items.file_hash`（64 hex）+ `perceptual_hash`（32 hex = pHash16 + dHash16）；`MediaRepository.updateImageHashes`；注册到 JobQueue image 通道；零新依赖（DCT 50 行自实现）；smoke:image-hash 25/25 |
+| **P5.T3** | `921e8f3` | `DedupEngine.runExactForTrip(tripId)` —— 同 trip 内按 `file_hash` 严格聚合，confidence=1.0，事务原子写；已在某 exact 组的成员形成"已分组"Set，重叠 cohort 整组 skip（同一规则覆盖幂等性 + user_confirmed 保护 + partial-overlap）；`MediaRepository.findActiveImageHashesByTripId`；smoke:dedup-exact 26/26 |
+| **P5.T4** | `047ee3a` | `DedupEngine.runSimilarForTrip(tripId, {hammingThreshold?})` —— pHash 16-hex 半区 pairwise Hamming + DSU 连通分量合并（支持传递相似）；阈值默认 `DEFAULT_SIMILAR_HAMMING_THRESHOLD=8`（mirror `PHASH_DISTANCE_MAX`），confidence/similarity = `1 - maxPairDistance/64`；`hexHammingDistance` 纯函数 + 独立测试；保护规则升级覆盖 **所有 group_type**（不破坏既有 exact 组）；smoke:dedup-similar 40/40 |
+| **P5.T5** | `0b36f91` | Dedup API —— `POST /api/trips/:tripId/dedup/{exact, similar, run}` 三端点 + `DedupService` 包装层（tripId 验证 + tripService.getTripById 404 + `cohortsSkippedByReason` 聚合）；body 仅 `hammingThreshold` 0..64；URL path 唯一作用域绑定，body strip 未知 key 阻断 cross-trip；smoke:dedup-api 18/18（初版）|
+| **P5.T6** | `8bf6fd2` | 前端列表 + 详情页 + 后端 GET 端点补齐 —— `GET /api/trips/:tripId/duplicate-groups` + `GET /api/duplicate-groups/:id`；`DuplicateGroupsRepository.findGroupByIdWithItems` + `MediaRepository.findByIds`（批量 hydrate）；前端 `/trips/:tripId/duplicates` 卡片网格 + `/duplicate-groups/:id` 详情；Trip 详情页 "Find duplicates" 按钮调 run API 跳列表；soft-deleted media 显示 "missing" 占位；smoke:dedup-api 27/27（+7 GET case）|
+| **P5.T7** | `a7ad70f` | 用户确认写入 —— `POST /api/duplicate-groups/:id/recommend`（设 recommended_media_id）+ `POST /api/duplicate-groups/:id/confirm`（事务原子：group header user_confirmed=1 + items.user_decision keep/remove）；`Repository.groupContainsMedia` cross-group leak guard；前端 "Keep this one" / "Confirm group" / "Re-confirm group" 按钮 + Recommended/Confirmed badge + 蓝边高亮；smoke:duplicate-group-confirm 20/20 |
+| **P5.T8** | （本任务）| 阶段验收 + 文档收口（仅 progress.md + tasks.md，零业务代码改动）|
+
+### P5.T8 验收结果
+
+| 验收项 | 结果 |
+|---|---|
+| [requirements §7.5 验收 1](requirements.md) 完全相同的图片可以被识别 | **PASS** — `image_hash` 写 SHA256（file_hash 列已有索引），`DedupEngine.runExactForTrip` 按 file_hash 严格聚合 `group_type='exact'`；smoke:image-hash "happy: file_hash equals SHA256 of seeded JPEG buffer" + smoke:dedup-exact CASE 1-3 + smoke:dedup-api "POST /dedup/exact" 实证 |
+| §7.5 验收 2 连拍或轻微角度变化的图片可以被归组 | **PASS** — pHash + dHash 写入 `perceptual_hash`（32 hex），`runSimilarForTrip` 按 Hamming ≤ T 聚合 `group_type='similar'`；DSU 连通分量合并使 A~B~C 三元链即使 d(A,C)>T 仍归一组；smoke:dedup-similar "transitive similar" + "3 directly similar" 实证；阈值走 `PHASH_DISTANCE_MAX` 配置 |
+| §7.5 验收 3 同一组中系统推荐一张默认保留图 | **PARTIAL（自动推荐留 P6）** — schema 列 `duplicate_groups.recommended_media_id` 与 API 路径已就绪；P5 仅支持**用户手动**选择推荐图（`POST .../recommend`），自动按 quality_score 推荐留给 P6.T5 `Quality_Selector`。设计层闭环已具备（design.md §7.3 #5 + CLAUDE.md §3.9） |
+| §7.5 验收 4 用户可以更改默认保留图 | **PASS** — `POST /api/duplicate-groups/:id/recommend` 改 recommended；`POST .../confirm` 再次以不同 mediaId 调用允许"改主意"，items.user_decision 同步翻转；smoke:duplicate-group-confirm CASE 9 "re-confirm with different mediaId flips items" 实证；前端详情页 "Re-confirm group" 入口 |
+| §7.5 验收 5 用户可以批量删除未保留图片，但必须二次确认 | **N/A（留给 P7）** — 真实删除属于 P7 软删除 / 永久删除范围。P5 仅写 `items.user_decision='remove'` 作为意图标记，不删除文件、不更新 `media_items.deleted_at`；前端无 batch delete 按钮。CLAUDE.md §2.4 ~ §2.6 红线明确"删除必须由用户二次确认 + 处理关联表" |
+| §7.5 验收 6 删除重复图片前必须删除 duplicate_group_items 等关联记录 | **PASS（schema 兜底）** — `duplicate_group_items.media_id` FK ON DELETE CASCADE（007 migration），`recommended_media_id` FK ON DELETE SET NULL（design.md §4.2 R-row）；schema 层兜底永久删除不会违反 FK；smoke:migration-007 "media delete sets recommended_media_id to NULL" + "duplicate_group_items cascades from media_items delete" 实证。业务层手动重置由 P7 接续 |
+| §7.5 验收 7 低置信度相似组应标记为"疑似重复"，不能直接建议强删除 | **PASS（数据层）** — `duplicate_groups.confidence = 1 - maxPairDistance/64`，松散 cohort 自带低置信度（如 d_max=10 → confidence=0.844）；前端详情页 Overview 区显示 Confidence + Similarity 分数；不存在"强删除"按钮，删除路径完全留给 P7；smoke:dedup-similar "transitive similar: group confidence reflects worst pair (d=10)" 实证 confidence=0.84375 |
+| **P5.T8 额外**：用户已确认的重复组不被自动 dedup 覆盖 | **PASS** — `Dedup_Engine` 扫描前用 `listByTripIdWithItems` 构建 "已在任意 group" 的 mediaId Set，候选 cohort 任一成员命中即整组 skip（同规则覆盖 exact / similar / candidate / user_confirmed）；smoke:duplicate-group-confirm CASE 10 "engine protection: rerun exact creates 0 new groups + user_confirmed=1 preserved" 实证 |
+| **P5.T8 额外**：API 调用作用域严格按 tripId 绑定，无 cross-trip 写入路径 | **PASS** — tripId 仅从 URL path 读取；zod schema 默认 `strip` 行为静默丢弃 body 中的 `tripId` / `mediaIds` 等多余 key；mediaId 在 recommend / confirm 时被 `groupContainsMedia` 验证为目标 group 成员（400 INVALID_STATE_TRANSITION）；smoke:dedup-api CASE 15 "cross-trip safety: body keys ignored" + smoke:duplicate-group-confirm CASE 2 "foreign mediaId → 400" + CASE 11 "isolation: group A confirmed; group B stays untouched" 实证 |
+| **P5.T8 额外**：P3 / P4 链路不回归 | **PASS** — smoke:image-channel-executor 26/26 + smoke:image-thumbnail 22/22 + smoke:image-metadata 23/23 + smoke:media-reprocess 21/21 + smoke:trip-cover-url 13/13 + smoke:storage-route 14/14 + smoke:job-queue 55/55 + smoke:jobs-api 28/28 + smoke:media-status-sync 18/18 + smoke:migration-007 37/37 全绿；前端 build / typecheck / lint / format:check 一次过 |
+
+### 阶段 P5 验证命令
+
+后端（`server/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+npm run smoke:storage                       # 19/19
+npm run smoke:trips                         # 22/22
+npm run smoke:classify                      # 37/37
+npm run smoke:upload                        # 30/30
+npm run smoke:media                         # 26/26
+npm run smoke:storage-route                 # 14/14
+npm run smoke:image-channel-executor        # 26/26
+npm run smoke:media-versions                # 24/24
+npm run smoke:image-thumbnail               # 22/22
+npm run smoke:migration-006                 # 18/18
+npm run smoke:image-metadata                # 23/23
+npm run smoke:media-reprocess               # 21/21
+npm run smoke:trip-cover-url                # 13/13
+npm run smoke:job-queue                     # 55/55
+npm run smoke:jobs-api                      # 28/28
+npm run smoke:media-status-sync             # 18/18
+npm run smoke:migration-007                 # 37/37（P5.T1）
+npm run smoke:duplicate-groups-repository   # 30/30（P5.T1.5）
+npm run smoke:image-hash                    # 25/25（P5.T2）
+npm run smoke:dedup-exact                   # 26/26（P5.T3）
+npm run smoke:dedup-similar                 # 40/40（P5.T4）
+npm run smoke:dedup-api                     # 27/27（P5.T5 + P5.T6 GET 端点）
+npm run smoke:duplicate-group-confirm       # 20/20（P5.T7）
+```
+
+后端 smoke 总计 **601 / 601**（既有 396 + 阶段 P5 新增 205），零回归。
+
+前端（`client/`）：
+
+```bash
+npm install
+npm run build
+npm run typecheck
+npm run lint
+npm run format:check
+```
+
+均一次过。Vite gzip JS 64.17 KB / CSS 3.64 KB（含 DuplicateGroupListPage + DetailPage + 5 个 dedup api 函数 + 2 个 hook + ~310 行 CSS 新增）。
+
+新增依赖：**无**（P5 全程零新增 npm 依赖；DCT-II 由 ~50 行 TS 自实现，未引入 phash 库）。
+
+### 阶段 P5 最终能力
+
+P5 建立了图片去重的端到端闭环：
+
+1. **hash 生成**（`image_hash` worker）：每张活动图片可一次性算 SHA256 + pHash + dHash 并写回 `media_items` —— 幂等、JobQueue 调度、type≠image 拒绝。
+2. **exact dedup**：按 `file_hash` 严格聚合，confidence=1.0；事务写入；已分组保护。
+3. **similar dedup**：pHash Hamming + DSU 传递合并；阈值可配（`PHASH_DISTANCE_MAX`）；confidence 反映 cohort 紧密度（`1 - d_max/64`）。
+4. **API 触发**：`POST /api/trips/:tripId/dedup/{exact, similar, run}` 三端点（synchronous，trip 范围）。
+5. **API 读取**：`GET /api/trips/:tripId/duplicate-groups` + `GET /api/duplicate-groups/:id`，items 内联 media 投影。
+6. **前端查看**：`/trips/:tripId/duplicates` 卡片网格 + `/duplicate-groups/:id` 详情 + Trip 详情页 "Find duplicates" 入口。
+7. **用户确认**：`/recommend`（设 recommended_media_id）+ `/confirm`（事务原子写 user_confirmed=1 + items keep/remove）；前端 "Keep this one" / "Confirm group" / "Re-confirm group" 按钮 + Confirmed pill。
+8. **confirmed group 保护**：所有 group_type 的成员都进入"已分组"Set，自动重算永远 skip 重叠 cohort —— 不偷偷加入新图、不覆盖用户决策。
+
+### 阶段 P5 PARTIAL 项与依赖
 
 | 项 | 何时完成 |
 |---|---|
-| `image_hash` 任务（SHA256 + pHash + dHash 计算）| P5.T2 |
-| `Dedup_Engine.exact`（file_hash 相等聚合）| P5.T3 |
-| `Dedup_Engine.similar`（pHash 海明距离 ≤ 阈值聚合，同 Trip 内）| P5.T4 |
-| Duplicate Group API（requirements §9.4 全部端点）| P5.T5 |
-| 前端重复组列表 + 详情（requirements §10.5）| P5.T6 |
-| 用户切换推荐图（写 `user_confirmed`，自动流程不再覆盖）| P5.T7 |
-| P5 阶段验收（§7.5 验收 7 条）| P5.T8 |
-| P7 软删除 / 恢复 联动 `duplicate_groups` + `_items` | P7.T1 / P7.T2 |
-| P6 `Quality_Selector` 写 `quality_score` + `recommended_media_id` | P6.T5 |
+| 自动按 `quality_score` 推荐保留图（§7.5 验收 3 全 PASS）| P6.T5 `Quality_Selector` —— schema 字段已就绪（`duplicate_group_items.quality_score`、`duplicate_groups.recommended_media_id`），算法和 worker 留待 P6 |
+| 用户批量删除未保留图片（§7.5 验收 5）| P7.T1 / P7.T3 软删除路径 + 二次确认 + 关联表清理 |
+| 真实文件 / `media_items.deleted_at` 写入 | P7.T1（软删除路径会基于 `user_decision='remove'` 信号清理）|
+| 高级相似度（DINOv2 / CLIP embedding + FAISS）| P10 AI 扩展；§7.5 处理策略第 3 层；V1 不必要 |
+| 视频重复检测（video duplicate / scene similarity）| 非阻断；P9 视频处理上线时评估 |
+| `image_hash` upload 阶段自动入队 | 当前由 `POST /api/media/:id/reprocess` 或手动 INSERT 触发；与 R-41 同源 —— 上传链式入队是 P6 / P7 阶段评估 |
+| 重复组列表分页 UI | P5 后续 polish；当前 list 单页拉取，trip 内 group 数 V1 远不至于触发分页问题 |
+| BK-tree / LSH 加速 pHash pairwise 比较 | P5.T4 当前 O(N²) 在 V1 trip 规模（< 10k 图）下完全够用；超大数据集再评估 |
+
+### 阶段 P5 PARTIAL 已消化
+
+| 编号 | 描述 | 消化点 |
+|---|---|---|
+| —— | P5 阶段自身未引入新风险编号；既有 R-40 / R-42 在 P4 已消化；R-41 仍延续至 P6 评估 | —— |
+
+### 阶段 P5 剩余风险
+
+承自前期：R-01 ~ R-12（P0）、R-14 / R-15 / R-16 / R-17 / R-18 / R-19 / R-20 / R-23 / R-24（P1）、R-29 / R-30 / R-31 / R-35 / R-36 / R-37 / R-38 / R-39（P2）、R-41 / R-43 / R-44（P3）、R-45 / R-46 / R-47（P4）继续延续。
+
+**P5 新增**：
+
+| 编号 | 风险 | 何时跟进 |
+|---|---|---|
+| R-48 | pHash + dHash 的 hex 拼接存储格式（`pHashHex(16) + dHashHex(16)`）是约定式而非 schema 强制；未来引入第三种 hash 或改长度需要在多处同步修改（image_hash worker、hexHammingDistance 调用方、dedup-similar slice 逻辑） | 若 P10 引入 CLIP embedding，建议把 perceptual signature 改成结构化 JSON 或专用列 |
+| R-49 | similar dedup 对完全相同色块的合成图会 dHash=0000…，仅靠 pHash 区分；现实摄影场景（梯度色彩）影响不大，但合成 / 截图 / 图表类内容判定可能偏松 | 真实数据上线后观察；必要时把 dHash 引入 V1 比较或换算法 |
+| R-50 | `runSimilarForTrip` 单次扫描内每对图都做 pairwise 比较（O(N²)），trip 内图片极多时（> 几万）会出现明显延迟；当前没有 BK-tree / LSH 优化 | 用户体感问题时再优化；可优先做 SQL 候选预筛选（同 trip 内 hash 一阶差距过滤） |
+| R-51 | "改主意"重新 confirm 会硬性把其他 items 的 `user_decision='remove'`，无 history 记录；用户曾经点过 keep 的旧 item 改主意后只能再点 keep 才能恢复 | UX polish；V1 接受，列表 UI 已通过实时刷新缓解 |
+
+### P6 前置条件
+
+- P5.T1 ~ P5.T8 全部完成 ✅
+- P5 验收通过（10 项：7 条 §7.5 + 3 项额外，其中 2 条标 PARTIAL / N/A 明确依赖 P6 / P7）✅
+- 工作区干净 ✅
+- P5 阶段文档已收口 ✅（本节）
+- `duplicate_groups.recommended_media_id` / `duplicate_group_items.quality_score` 字段就绪；P6 `Quality_Selector` 可直接写入并由前端详情页 Overview 显示
+- dedup engine 的"已分组成员"保护规则覆盖所有 group_type；P6 写 `quality_score` / 自动 recommended 时**不应**绕过该 protection（user_confirmed 组不可被自动覆盖）
+- 后端 `MediaRepository.findByIds` + Repository.findGroupByIdWithItems 已可被 P6 复用
+- 前端 Detail Overview 显示 Quality 列已预留（当前显示 "—"），P6 写入后自动渲染
+- 无 schema / migration 改动（仍是 000 ~ 007）
+- Trip / Media / Upload / Storage / Jobs / Dedup 契约不变
+- 前端 Trip CRUD / Media 详情 / Gallery / Upload / Jobs / Duplicates 页面契约不变
 
 ---
 
 ## 下一阶段入口
 
-进入阶段 5 的下一项任务：
+进入阶段 6（图片质量评分）的第一项任务：
 
-- **P5.T2 [MUST]**：`image_hash` 任务 —— 计算 SHA256（文件指纹）+ pHash（感知 hash）+ dHash（梯度 hash）写入 `media_items.file_hash` / `perceptual_hash`（pHash + dHash 拼接或选其一）。作为新 job_type 注册到 JobQueue image 通道；为 P5.T3 / P5.T4 的 exact / similar 聚合提供基础数据。
+- **P6.T1 [MUST]**：迁移 / 扩展 —— 评估是否需要新增列（如 `media_analysis.blur_score` 等）或新表 `media_analysis`，落 schema 后再写 worker / Service / API。注意 P5 已就绪的 `duplicate_group_items.quality_score`（0..1 nullable）由 P6.T5 `Quality_Selector` 写入，是 P5 → P6 的关键交接点。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 

@@ -174,13 +174,13 @@
 > requirements §7.5 / §14 阶段 5。
 
 - [x] **P5.T1 [MUST]** 迁移：`duplicate_groups`、`duplicate_group_items`
-- [ ] **P5.T2 [MUST]** `image_hash` 任务：SHA256 + pHash + dHash
-- [ ] **P5.T3 [MUST]** `Dedup_Engine.exact`：file_hash 相等聚合
-- [ ] **P5.T4 [MUST]** `Dedup_Engine.similar`：pHash 海明距离 ≤ 阈值聚合（同 Trip 内）
-- [ ] **P5.T5 [MUST]** Duplicate Group API（§9.4 全部）
-- [ ] **P5.T6 [MUST]** 前端重复组列表 + 详情（§10.5）
-- [ ] **P5.T7 [MUST]** 用户切换推荐图，写入 `user_confirmed`，自动流程不再覆盖
-- [ ] **P5.T8 [MUST]** 阶段验收：§7.5 验收 7 条
+- [x] **P5.T2 [MUST]** `image_hash` 任务：SHA256 + pHash + dHash
+- [x] **P5.T3 [MUST]** `Dedup_Engine.exact`：file_hash 相等聚合
+- [x] **P5.T4 [MUST]** `Dedup_Engine.similar`：pHash 海明距离 ≤ 阈值聚合（同 Trip 内）
+- [x] **P5.T5 [MUST]** Duplicate Group API（§9.4 全部）
+- [x] **P5.T6 [MUST]** 前端重复组列表 + 详情（§10.5）
+- [x] **P5.T7 [MUST]** 用户切换推荐图，写入 `user_confirmed`，自动流程不再覆盖
+- [x] **P5.T8 [MUST]** 阶段验收：§7.5 验收 7 条（2026-05-18 完成，详见 `docs/progress.md`）
 
 ---
 
