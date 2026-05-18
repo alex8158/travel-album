@@ -8,6 +8,7 @@ import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
+import { DedupEngine, DedupService, DuplicateGroupsRepository } from "./dedup/index.js";
 import {
   IMAGE_HASH_JOB_TYPE,
   JobQueue,
@@ -170,6 +171,9 @@ async function main(): Promise<void> {
   });
   const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo);
   const jobService = new JobService(jobRepo);
+  const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
+  const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
+  const dedupService = new DedupService(dedupEngine, tripService);
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel
@@ -234,6 +238,7 @@ async function main(): Promise<void> {
     mediaService,
     mediaRepo,
     jobService,
+    dedupService,
     debugRoutes: config.nodeEnv !== "production",
   });
 

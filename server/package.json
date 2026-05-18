@@ -36,7 +36,8 @@
     "smoke:duplicate-groups-repository": "tsx src/scripts/duplicate-groups-repository-smoke.ts",
     "smoke:image-hash": "tsx src/scripts/image-hash-smoke.ts",
     "smoke:dedup-exact": "tsx src/scripts/dedup-exact-smoke.ts",
-    "smoke:dedup-similar": "tsx src/scripts/dedup-similar-smoke.ts"
+    "smoke:dedup-similar": "tsx src/scripts/dedup-similar-smoke.ts",
+    "smoke:dedup-api": "tsx src/scripts/dedup-api-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

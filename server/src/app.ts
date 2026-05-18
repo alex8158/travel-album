@@ -17,6 +17,7 @@
 // routes exist if no longer needed.
 
 import express, { type Express } from "express";
+import type { DedupService } from "./dedup/index.js";
 import { AppError } from "./errors/AppError.js";
 import { ERROR_CODES } from "./errors/errorCodes.js";
 import type { JobService } from "./jobs/index.js";
@@ -25,6 +26,7 @@ import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js"
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
 import type { MediaRepository, MediaService } from "./media/index.js";
+import { makeDedupRouter } from "./routes/dedup.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeJobsRouter } from "./routes/jobs.js";
 import { makeMediaRouter } from "./routes/media.js";
@@ -51,6 +53,8 @@ export interface CreateAppOptions {
   readonly mediaRepo: MediaRepository;
   /** Job domain service powering /api/jobs (P4.T4). */
   readonly jobService: JobService;
+  /** Dedup domain service powering /api/trips/:tripId/dedup/* (P5.T5). */
+  readonly dedupService: DedupService;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -68,6 +72,7 @@ export function createApp(opts: CreateAppOptions): Express {
     mediaService,
     mediaRepo,
     jobService,
+    dedupService,
     debugRoutes,
   } = opts;
 
@@ -100,6 +105,12 @@ export function createApp(opts: CreateAppOptions): Express {
   // cancel. Retry / cancel are pure DB mutations; the JobQueue
   // picks up retrying rows on its next tick.
   app.use("/api/jobs", makeJobsRouter({ service: jobService }));
+
+  // Dedup API (P5.T5). Mounted at /api so the routes live under
+  // `/api/trips/:tripId/dedup/*` alongside the Media upload /
+  // reprocess endpoints. Synchronous execution; each call is bound
+  // to a single tripId from the URL path.
+  app.use("/api", makeDedupRouter({ service: dedupService }));
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file
