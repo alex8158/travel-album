@@ -188,17 +188,17 @@
 
 > requirements §7.6 / §7.7 / §7.8（曝光/色彩属 SHOULD）/ §14 阶段 6。
 
-- [ ] **P6.T1 [MUST]** 迁移：`media_analysis`
-- [ ] **P6.T2 [MUST]** `image_quality.blur`：Laplacian variance（缩放归一化），写 `blur_score / sharpness_score / is_blurry`，三档（clear / maybe_blurry / blurry）
-- [ ] **P6.T3 [SHOULD]** `image_quality.exposure`：直方图判过曝/欠曝
-- [ ] **P6.T4 [SHOULD]** `image_quality.color`：偏色检测
-- [ ] **P6.T5 [MUST]** `Quality_Selector`：组内排序、生成 `recommended_media_id` 与 `reason`，跳过已被 `user_confirmed` 的组
-- [ ] **P6.T6 [MUST]** 前端：模糊徽章、推荐徽章、推荐原因展示
-- [ ] **P6.T7 [MUST]** 启用自动最佳封面选择
+- [x] **P6.T1 [MUST]** 迁移：`media_analysis`
+- [x] **P6.T2 [MUST]** `image_quality.blur`：Laplacian variance（缩放归一化），写 `blur_score / sharpness_score / is_blurry`，三档（clear / maybe_blurry / blurry）
+- [x] **P6.T3 [SHOULD]** `image_quality.exposure`：直方图判过曝/欠曝
+- [x] **P6.T4 [SHOULD]** `image_quality.color`：偏色检测
+- [x] **P6.T5 [MUST]** `Quality_Selector`：组内排序、生成 `recommended_media_id` 与 `reason`，跳过已被 `user_confirmed` 的组
+- [x] **P6.T6 [MUST]** 前端：模糊徽章、推荐徽章、推荐原因展示
+- [x] **P6.T7 [MUST]** 启用自动最佳封面选择
   - 策略：当用户未手动指定（`trips.cover_media_id` 为 `NULL` 或先前由系统写入）时，取该 Trip 中 quality_score 最高、未被软删除的图片，**写入** `trips.cover_media_id`。
   - 用户曾手动设置（通过 `POST /api/trips/:id/cover`）的 Trip 不得被自动覆盖；区分方式建议加 `trips.cover_set_by_user`（迁移补字段，或用单独标志位）。
   - 自动选择应在质量评分完成后异步触发（例如新增 `trip_cover_refresh` 任务），避免阻塞主流程；P3.T8 的响应层临时封面在 `cover_media_id` 写入后自动失效。
-- [ ] **P6.T8 [MUST]** 阶段验收：§7.6 / §7.7 验收；上传足够图片后 Trip 封面会自动收敛到 quality_score 最高的图片，且用户手动设置不被覆盖。
+- [x] **P6.T8 [MUST]** 阶段验收：§7.6 / §7.7 验收；上传足够图片后 Trip 封面会自动收敛到 quality_score 最高的图片，且用户手动设置不被覆盖。（2026-05-20 完成，详见 `docs/progress.md`）
 
 ---
 

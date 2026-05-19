@@ -505,9 +505,14 @@ async function main(): Promise<void> {
     const stage2 = openDatabase(dbPath);
     try {
       const result = runMigrations(stage2.db);
+      // Future-tolerant: 008 must be the first applied file in this
+      // upgrade run, but we permit additional newer migrations to
+      // ride along (e.g. 009 added in P6.T7). Mirrors the 007 smoke
+      // fix that landed when 008 itself was introduced.
       record(
-        "upgrade: appliedNow contains exactly [008]",
-        result.appliedNow.length === 1 && result.appliedNow[0] === "008_create_media_analysis.sql",
+        "upgrade: appliedNow includes 008 as the first new migration",
+        result.appliedNow[0] === "008_create_media_analysis.sql" &&
+          result.appliedNow.includes("008_create_media_analysis.sql"),
         `appliedNow=${JSON.stringify(result.appliedNow)}`,
       );
 

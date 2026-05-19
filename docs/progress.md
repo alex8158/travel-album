@@ -1130,11 +1130,169 @@ P5 建立了图片去重的端到端闭环：
 
 ---
 
+## 阶段 P6：图片质量评分
+
+- 状态：**已完成**
+- 任务范围：P6.T1 – P6.T8（8 / 8；P6.T5 拆为"合成 quality_score"+"Quality_Selector 推荐写入"+"自动触发接入"三个相邻 commit）
+- 提交范围：`474e2e5` … `a674e7d`（P6.T8 验收仅 `docs/progress.md` + `docs/tasks.md` + 一处 smoke 兼容性微调，零业务代码改动）
+- 完成日期：2026-05-20
+
+### P6 阶段完成内容
+
+| Task | Commit | 主要交付 |
+|---|---|---|
+| **P6.T1** | `474e2e5` | `009`(待 P6.T7) 之前的 `008_create_media_analysis.sql` —— 1:1 STRICT 表，requirements §8.3 所有列就位；UNIQUE(media_id) + FK ON DELETE CASCADE；smoke:migration-008 34/34 |
+| **P6.T2** | `152d590` | `image_quality_blur` worker —— sharp 灰度 + 3×3 Laplacian + Welford 单遍方差；阈值 50/120 三档（blurry / maybe-blurry / sharp）；`MediaAnalysisRepository.upsertBlurAnalysis` + `raw_result.$.blur` 子键写入；smoke:image-quality-blur 46/46 |
+| **P6.T3** | `912b918` | `image_quality_exposure` worker —— 灰度均值 + 暗/亮像素比；4 类（well-exposed / underexposed / overexposed / mixed-exposure）；与 `$.blur` 共存于同 row；新增 dimension-vocab `mergeDimensionLabels` 共享 helper；smoke:image-quality-exposure 62/62 |
+| **P6.T4** | `d042591` | `image_quality_color` worker —— HSV + 通道平衡 + 亮度 std；三轴正交 sub-classification（saturation / cast / contrast），all-normal → `color-balanced`；`$.color` 子键写入；smoke:image-quality-color 65/65 |
+| **P6.T5（合成）** | `1892919` | `image_quality_finalize` worker —— 加权 0.45/0.35/0.20，color tempering `floor + (1-floor)*color` 让 color 不主宰，缺失维度 renormalize；写 `quality_score` + composite reason + `raw_result.$.final_quality`；smoke:image-quality-finalize 43/43 |
+| **P6.T5（推荐）** | `8c5d1dd` | `QualitySelectorService.selectForGroup / selectForTrip` —— 按 quality_score DESC + 7 级 tie-break 排序；`DuplicateGroupsRepository.applyRecommendation` 事务原子写 `recommended_media_id` + per-item `recommendation`/`reason`；不动 `user_decision`、跳过 `user_confirmed=1`；smoke:quality-selector 41/41 |
+| **P6.T5（触发）** | `63debdd` | `quality_selector_run` job_type + `makeQualitySelectorHandler` —— finalize 成功后入队 trip-scope payload；defence check：`applyRecommendation` 在事务内校验 winner 必须是组成员；smoke:quality-selector-trigger 33/33 |
+| **P6.T6** | `9a24b09` | 前端徽章 + 详情质量信息 —— Server `MediaRepository` LEFT JOIN `media_analysis` 暴露 `MediaItem.analysis`；客户端 `MediaCard` 加 `quality-pill`（推荐 / 不推荐 / 待分析 / 模糊 / 疑似模糊）+ 详情页 `QualityAnalysisSection`；reason 作为 hover tooltip；零回归 |
+| **P6.T7** | `a674e7d` | 自动最佳封面 —— migration 009 加 `cover_set_by_user` flag；`MediaRepository.findBestCoverCandidate` 过滤 deleted/failed/video/无 thumbnail/blurry/无 quality_score；新 `coverSelector.autoSelectCoverForTrip` 模块；POST `/cover` flip flag、POST `/cover/reset` 释放并 auto-pick；quality_selector_run handler trip-scope 之后 best-effort 刷新封面；客户端 "Set as cover" 按钮；smoke:trip-cover-auto 26/26 |
+| **P6.T8** | （本任务） | 阶段验收 + 文档收口；最小 fix：放宽 `smoke:migration-008` 中的"applied 恰好 [008]"断言到"008 在首位 + included"，让 009 一起跑也通过 |
+
+### P6.T8 验收结果
+
+| 验收项 | 结果 |
+|---|---|
+| requirements §7.6 自动选择最佳质量图（组内、全 trip） | **PASS** — `QualitySelectorService.selectForGroup` 按 quality_score DESC + 7 级 tie-break 选最佳；`autoSelectCoverForTrip` 用 `findBestCoverCandidate`（过滤 deleted/failed/video/无 thumbnail/blurry/无 quality_score）选 trip 最佳；smoke:quality-selector 41/41 + smoke:trip-cover-auto 26/26 + smoke:quality-selector-trigger 33/33 全 PASS |
+| §7.6 推荐保留原因可解释 | **PASS** — `image_quality_finalize` 写 composite reason 包含 `blur=[sharp, variance=…] | exposure=[mixed-exposure, mean=…] | color=[balanced, labels=…] | weights blur=0.45→0.45 …`；`Quality_Selector` 写 per-item reason `recommended — quality_score=0.92 (best of 3 member(s))` / `quality_score 0.65 < winner 0.92`；前端详情页 `QualityAnalysisSection` 展示 + gallery card pill tooltip |
+| §7.7 模糊检测 + 三档分类 | **PASS** — blur worker 写 `is_blurry ∈ {0, 1, NULL}` + label `sharp / maybe-blurry / blurry`，NULL 显式表示"未评估 / borderline"；前端 `MediaCard.buildQualityBadges` 把 `模糊`/`疑似模糊` 当独立警示徽章；smoke:image-quality-blur 46/46 实证 |
+| §7.8 SHOULD 曝光 / 色彩分析 | **PASS** — 曝光 4 类（well/under/over/mixed）+ 色彩 saturation/cast/contrast 三轴；finalize 加权合成 |
+| 上传足够图片后封面自动收敛到 quality_score 最高 | **PASS** — smoke:trip-cover-auto CASE 11 端到端验证：seed trip + 重复组 + media_analysis → quality_selector_run job → handler 跑完 `trips.cover_media_id` 写入 quality_score 最高 media；CASE 6 验证 6 种过滤（blurry / video / deleted / failed / 无 thumbnail / 无 quality_score）全部被排除 |
+| 用户手动设置封面后不被自动覆盖 | **PASS** — `cover_set_by_user` flag + `setAutoCover WHERE cover_set_by_user = 0` SQL 兜底；CASE 4 验证 `setCoverByUser` flip flag 后即便存在更高质量候选，`autoSelectCoverForTrip` 返回 `skipped-user-pinned`，cover 保留用户选择；CASE 5 验证 `clearUserCoverFlag` 释放后自动流程可重新选 |
+| 没有合适图片不报错 | **PASS** — `findBestCoverCandidate` 无候选时返回 `null`，`autoSelectCoverForTrip` 返回 typed outcome `skipped-no-candidate`，cover 保留；CASE 7 全 blurry trip 实证；CASE 8 不存在的 trip 返回 `missing-trip` 不抛异常 |
+| 现有上传 / 处理 / 去重 / 视频流程不回归 | **PASS** — 全部 31 个 smoke 套件 **951/951** 通过（含 P5 全套 + P3/P4 全套 + P6 七项 + 新增 trip-cover-auto） |
+| 前端旧数据兼容 | **PASS** — `MediaItem.analysis?: ... \| null`（optional），`Trip.coverSetByUser?: boolean`（optional），所有展示路径都有 `?? null` 兜底；`待分析` 占位徽章覆盖 analysis 为 NULL 的旧行 |
+
+### 阶段 P6 验证命令
+
+后端（`server/`）共 31 个 smoke：
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm run build
+npm run format:check
+npm run smoke:storage                       # 19/19
+npm run smoke:trips                         # 22/22
+npm run smoke:classify                      # 37/37
+npm run smoke:upload                        # 30/30
+npm run smoke:media                         # 26/26
+npm run smoke:storage-route                 # 14/14
+npm run smoke:image-channel-executor        # 26/26
+npm run smoke:media-versions                # 24/24
+npm run smoke:image-thumbnail               # 22/22
+npm run smoke:migration-006                 # 18/18
+npm run smoke:image-metadata                # 23/23
+npm run smoke:media-reprocess               # 21/21
+npm run smoke:trip-cover-url                # 13/13
+npm run smoke:job-queue                     # 55/55
+npm run smoke:jobs-api                      # 28/28
+npm run smoke:media-status-sync             # 18/18
+npm run smoke:migration-007                 # 37/37
+npm run smoke:duplicate-groups-repository   # 30/30
+npm run smoke:image-hash                    # 25/25
+npm run smoke:dedup-exact                   # 26/26
+npm run smoke:dedup-similar                 # 40/40
+npm run smoke:dedup-api                     # 27/27
+npm run smoke:duplicate-group-confirm       # 20/20
+npm run smoke:migration-008                 # 34/34（P6.T1，本节放宽 "applied exactly" 断言到 "008 在首位 + included"）
+npm run smoke:image-quality-blur            # 46/46（P6.T2）
+npm run smoke:image-quality-exposure        # 62/62（P6.T3）
+npm run smoke:image-quality-color           # 65/65（P6.T4）
+npm run smoke:image-quality-finalize        # 43/43（P6.T5 合成）
+npm run smoke:quality-selector              # 41/41（P6.T5 推荐）
+npm run smoke:quality-selector-trigger      # 33/33（P6.T5 触发）
+npm run smoke:trip-cover-auto               # 26/26（P6.T7）
+```
+
+后端 smoke 总计 **951 / 951**（既有 P5 收口 601 + 阶段 P6 新增 350），零回归。
+
+前端（`client/`）：
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm run build
+npm run format:check
+```
+
+均一次过。Vite gzip JS 65.15 KB / CSS 3.76 KB（含 P6.T6 的 QualityAnalysisSection + `.quality-pill` 4 种 tone + P6.T7 的 "Set as cover" 按钮 + setTripCover / resetTripCover API helpers）。
+
+新增依赖：**无**（P6 全程零新增 npm 依赖；HSV / Laplacian / Welford / DCT 均自实现）。
+
+### 阶段 P6 最终能力
+
+P6 建立了图片质量评分 + 自动推荐 + 自动封面的端到端闭环：
+
+1. **图片质量评分**：`media_analysis` 1:1 表存 blur_score / sharpness_score / exposure_score / brightness_score / color_score / quality_score（composite 0..1）+ is_blurry + labels + reason + raw_result（每 dimension 子键）。
+2. **模糊 / 曝光 / 色彩分析**：三个独立 worker（`image_quality_blur` / `_exposure` / `_color`），各自写入对应列 + raw_result 子键 + 共享 `labels` 数组（dimension-vocab 合并）。
+3. **合成 quality_score**：`image_quality_finalize` 加权 0.45/0.35/0.20 + color tempering + 缺失 dimension renormalize；composite reason 留 explanation。
+4. **推荐保留 / 不推荐**：`Quality_Selector` 在重复组内按 quality_score DESC + tie-break 选最佳，写 `recommended_media_id` + per-item `recommendation`/`reason`；跳过 `user_confirmed=1` 组；finalize 成功后自动入队 `quality_selector_run`。
+5. **前端质量展示**：gallery 卡片显示 推荐 / 不推荐 / 模糊 / 疑似模糊 / 待分析 徽章；详情页 `QualityAnalysisSection` 显示 quality / sharpness / exposure / color / blur verdict / labels / reason 全字段。
+6. **自动最佳封面**：`coverSelector.autoSelectCoverForTrip` 过滤 deleted/failed/video/no-thumbnail/blurry/no-quality_score，按 quality_score DESC 写 `trips.cover_media_id`；trip-scope selector handler 完成后 best-effort 刷新。
+7. **用户手动封面保护**：`cover_set_by_user` flag + `setAutoCover WHERE cover_set_by_user = 0` SQL 兜底；POST `/cover` flip flag；POST `/cover/reset` 释放 + 立即 auto-pick；客户端 "Set as cover" 按钮。
+
+### 阶段 P6 PARTIAL 项与依赖
+
+| 项 | 何时完成 |
+|---|---|
+| 视频质量评分（视频封面 / 视频质量分） | P9 视频处理上线时评估；现 worker 全部 `media.type !== "image"` 拒绝 |
+| 美学评分（aesthetic_score 列已就绪但不写入） | P10 AI 扩展（CLIP / VLM）；规则型评分不覆盖审美维度 |
+| `media_analysis.is_recommended` 列在 schema 但无 worker 写入（推荐落 `duplicate_group_items.recommendation`） | 该列保留给未来"无重复组也想标推荐"用例；当前仍 NULL |
+| upload chain 自动入队 `image_quality_*` jobs | 当前需手动 INSERT 触发；P7 / P8 评估上传链路扩展（与 R-41 同源） |
+| `quality_score` 阈值与权重的真实数据校准 | 真实数据上线后调；当前 0.75/0.5 + 0.45/0.35/0.20 是设计层默认 |
+| trip 封面变更的 client cache 失效（"Set as cover"后 list 页不会自动刷新） | SWR / TanStack Query 引入时统一处理 |
+
+### 阶段 P6 PARTIAL 已消化
+
+| 编号 | 描述 | 消化点 |
+|---|---|---|
+| §7.5 #3 自动按 quality_score 推荐保留图 | P5.T8 标 PARTIAL，留 P6.T5；本阶段 `8c5d1dd` 完成 `Quality_Selector` + `63debdd` 完成自动触发 |
+| P5 后置：`duplicate_group_items.quality_score` 字段被写入 | `Quality_Selector` 通过 `applyRecommendation` 写入 per-item reason；quality_score 列由 dedup engine 写在 group 建立时（P5）+ 由 finalize 写在 media 级 |
+| P3 后置：自动最佳封面（按 quality_score 写 `cover_media_id`） | P6.T7 落地；`deriveCoverUrl` 优先级 1 自动接管，placeholder 渐退 |
+
+### 阶段 P6 剩余风险
+
+承自前期：R-01 ~ R-12（P0）、R-14 / R-15 / R-16 / R-17 / R-18 / R-19 / R-20 / R-23 / R-24（P1）、R-29 / R-30 / R-31 / R-35 / R-36 / R-37 / R-38 / R-39（P2）、R-41 / R-43 / R-44（P3）、R-45 / R-46 / R-47（P4）、R-48 / R-49 / R-50 / R-51（P5）继续延续。
+
+**P6 新增**：
+
+| 编号 | 风险 | 何时跟进 |
+|---|---|---|
+| R-52 | 质量评分为规则型（Laplacian 方差 + 直方图 + HSV channel balance），不是基于真实摄影偏好训练的模型。审美 / 构图 / 主体性等"软"维度不纳入；用户审美偏好与 worker 偏好可能错位 | P10 AI 扩展引入 CLIP / VLM 时补 aesthetic_score；规则型评分作为兜底层保留 |
+| R-53 | finalize 权重 0.45/0.35/0.20 + color tempering floor=0.5 是设计层默认，未做真实数据集校准；某些场景（高对比黑白片）可能在 color 维度上被过度温和处理 | 真实数据上线后观察分布，必要时调权重 / floor 或新增 config preset |
+| R-54 | "Set as cover" 按钮点击后 trip list 页缓存不会自动失效；用户需要刷新才能看到新封面。功能上无 bug，UX 上不流畅 | SWR / TanStack Query 引入后统一处理 |
+| R-55 | `cover_set_by_user` flag 在 SQLite 层无 `CHECK IN (0, 1)`（ALTER TABLE ADD COLUMN 加 CHECK 需要表重建）。Repository 层只写 0/1，但绕过 repo 的原生 SQL 写入可越界 | 下次有正当理由做 trips 表重建时（如 P7 软删除约束扩展）顺手加上 |
+| R-56 | `findBestCoverCandidate` 过滤 `is_blurry IS NULL OR is_blurry != 1`，"maybe-blurry"（NULL + label）仍算候选；某些 trip 全部图片都被分类为 maybe-blurry 时可能选中 | 真实数据观察后决定是否收紧到 `is_blurry = 0` |
+| R-57 | `autoSelectCoverForTrip` 在 selector handler 中是同步执行；trip 内 media 极多时可能略增 handler 用时（V1 trip 远不至于触发）| 性能成为问题时拆为独立 job_type |
+| R-58 | upload chain 仍未自动入队 `image_quality_*` jobs，需要手动 reprocess；与 R-41 同源 | P7 / P8 评估上传链路扩展 |
+| R-59 | `media_analysis.is_recommended` 列存在但无 worker 写入；前端展示路径目前不读取该列（用 quality_score 阈值判断）| 该列保留给未来需求，当前为冗余 |
+
+### P7 前置条件
+
+- P6.T1 ~ P6.T8 全部完成 ✅
+- P6 验收通过（9 项验收 + 31 个 smoke 套件 951/951）✅
+- 工作区干净 ✅
+- P6 阶段文档已收口 ✅（本节）
+- `media_analysis.is_blurry` / `quality_score` / labels 已能驱动"模糊 / 不推荐 / 低质"的过滤判断 —— P7 删除路径可基于这些信号给出 UX 提示
+- `duplicate_group_items.recommendation = 'remove'` 信号已就绪 —— P7.T1 软删除路径可以读取并提示用户"这是 dedup 建议删除的图"
+- `trips.cover_media_id` ON DELETE SET NULL 已 schema 兜底；P7 软删除 / 永久删除路径无需特别处理（FK 自动清空）
+- 前端 MediaDetailPage 已具备状态展示能力 —— P7 加 "Delete" / "Restore" 按钮无需重写页面
+- 无 schema / migration 改动等待 —— 当前 000 ~ 009 全部就位；P7.T1 软删除路径主要走业务逻辑，不一定需要新 migration
+- Trip / Media / Upload / Storage / Jobs / Dedup / Quality 契约不变
+
+---
+
 ## 下一阶段入口
 
-进入阶段 6（图片质量评分）的第一项任务：
+进入阶段 7（安全删除与恢复）的第一项任务：
 
-- **P6.T1 [MUST]**：迁移 / 扩展 —— 评估是否需要新增列（如 `media_analysis.blur_score` 等）或新表 `media_analysis`，落 schema 后再写 worker / Service / API。注意 P5 已就绪的 `duplicate_group_items.quality_score`（0..1 nullable）由 P6.T5 `Quality_Selector` 写入，是 P5 → P6 的关键交接点。
+- **P7.T1 [MUST]**：软删除路径 —— `DELETE /api/media/:id` 写 `deleted_at`；事务内先重置 `duplicate_groups.recommended_media_id`（若该 media 是组的 recommended），清/翻 `duplicate_group_items.user_decision`；保证不破坏 FK / 不留下指向已软删除 media 的悬挂引用；前端走"二次确认"提示但不真删文件（design.md §4.3 软删除主路径）。
 
 阶段完成后回填本文件对应小节（状态、commit 范围、每个任务的成果与验证、阶段剩余风险）。
 
