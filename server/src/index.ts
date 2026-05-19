@@ -14,6 +14,7 @@ import {
   IMAGE_QUALITY_BLUR_JOB_TYPE,
   IMAGE_QUALITY_COLOR_JOB_TYPE,
   IMAGE_QUALITY_EXPOSURE_JOB_TYPE,
+  IMAGE_QUALITY_FINALIZE_JOB_TYPE,
   JobQueue,
   JobRepository,
   JobService,
@@ -22,6 +23,7 @@ import {
   makeImageQualityBlurHandler,
   makeImageQualityColorHandler,
   makeImageQualityExposureHandler,
+  makeImageQualityFinalizeHandler,
   makeImageThumbnailHandler,
   type JobHandler,
   type JobQueueChannelConfig,
@@ -262,6 +264,21 @@ async function main(): Promise<void> {
         castThreshold: config.quality.color.castThreshold,
         lowContrastThreshold: config.quality.color.lowContrastThreshold,
         workerVersion: config.quality.color.workerVersion,
+      },
+      logger,
+    }),
+  );
+  imageHandlers.set(
+    IMAGE_QUALITY_FINALIZE_JOB_TYPE,
+    makeImageQualityFinalizeHandler({
+      mediaRepo,
+      mediaAnalysisRepo,
+      settings: {
+        blurWeight: config.quality.finalize.blurWeight,
+        exposureWeight: config.quality.finalize.exposureWeight,
+        colorWeight: config.quality.finalize.colorWeight,
+        colorFloor: config.quality.finalize.colorFloor,
+        workerVersion: config.quality.finalize.workerVersion,
       },
       logger,
     }),

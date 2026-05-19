@@ -1,7 +1,7 @@
 // MediaAnalysisRepository — data-access layer for `media_analysis`
 // (migration 008, P6.T1).
 //
-// Scope (P6.T2 + P6.T3 + P6.T4 consumers so far):
+// Scope (P6.T2 + P6.T3 + P6.T4 + P6.T5 consumers so far):
 //   * `upsertBlurAnalysis` — write blur-related columns for one media.
 //   * `upsertExposureAnalysis` — write exposure-related columns for one
 //     media (P6.T3). Mirrors the blur shape: idempotent UPSERT keyed on
@@ -10,6 +10,13 @@
 //   * `upsertColorAnalysis` — write color-related columns (P6.T4).
 //     Same shape; merges into `raw_result.$.color` so blur / exposure
 //     siblings survive.
+//   * `upsertFinalQuality` — write the composite `quality_score` +
+//     composite `reason` (P6.T5). DOES touch the top-level `reason`
+//     column because it is intentionally the "final word"; per-
+//     dimension reasons are still kept inside their own
+//     `raw_result.$.<dim>` sub-trees. DOES NOT touch the `labels`
+//     column — those are already merged across dimensions by the
+//     per-dimension upserts.
 //   * `findByMediaId` — convenience reader for the smoke / future
 //     callers (P6.T6 frontend badges).
 //
@@ -191,6 +198,38 @@ export interface UpsertExposureAnalysisInput {
 }
 
 /**
+ * Argument bag for `upsertFinalQuality` (P6.T5). Different from the
+ * per-dimension upserts:
+ *   * Writes the composite `quality_score` column (CHECK 0..1).
+ *   * Writes the composite `reason` column — intentionally the final
+ *     word; per-dimension reasons remain inside their own
+ *     `raw_result.$.<dim>` sub-trees.
+ *   * Does NOT touch `labels` — those are already merged across
+ *     dimensions by the per-dimension upserts.
+ */
+export interface UpsertFinalQualityInput {
+  readonly id: string;
+  readonly mediaId: string;
+  /** Composite quality in [0, 1]. Subject to the schema CHECK. */
+  readonly qualityScore: number;
+  /**
+   * Composite reason. Includes per-dimension snippets and the final
+   * weighted aggregation; the writer is the source of truth for what
+   * ends up in this column.
+   */
+  readonly reason: string;
+  /**
+   * JSON-stringified payload for `raw_result.$.final_quality`. Holds
+   * the algorithm name, version, per-dimension contributions,
+   * skipped dimensions, configured weights, and the colour floor.
+   * Sibling sub-trees (`$.blur`, `$.exposure`, `$.color`) survive
+   * via `json_set` (same pattern as the per-dimension upserts).
+   */
+  readonly rawFinalJson: string;
+  readonly updatedAt: string;
+}
+
+/**
  * Argument bag for `upsertColorAnalysis` (P6.T4). Same shape as the
  * blur / exposure inputs:
  *   * One scalar score column (`color_score`).
@@ -345,6 +384,7 @@ export class MediaAnalysisRepository {
   private readonly upsertBlurStmt;
   private readonly upsertExposureStmt;
   private readonly upsertColorStmt;
+  private readonly upsertFinalQualityStmt;
   private readonly selectLabelsStmt;
   private readonly findByMediaIdStmt;
 
@@ -419,6 +459,25 @@ export class MediaAnalysisRepository {
         reason      = excluded.reason,
         raw_result  = json_set(COALESCE(raw_result, '{}'), '$.color', json(@rawColorJson)),
         updated_at  = excluded.updated_at
+    `);
+
+    this.upsertFinalQualityStmt = db.prepare(`
+      INSERT INTO media_analysis (
+        id, media_id,
+        quality_score,
+        reason, raw_result,
+        created_at, updated_at
+      ) VALUES (
+        @id, @mediaId,
+        @qualityScore,
+        @reason, json_object('final_quality', json(@rawFinalJson)),
+        @updatedAt, @updatedAt
+      )
+      ON CONFLICT(media_id) DO UPDATE SET
+        quality_score = excluded.quality_score,
+        reason        = excluded.reason,
+        raw_result    = json_set(COALESCE(raw_result, '{}'), '$.final_quality', json(@rawFinalJson)),
+        updated_at    = excluded.updated_at
     `);
 
     // Tiny SELECT used inside the upsert transactions to fetch the
@@ -540,6 +599,31 @@ export class MediaAnalysisRepository {
       return info.changes;
     });
     return tx(input);
+  }
+
+  /**
+   * Write the composite `quality_score` + final `reason` for one
+   * media row (P6.T5). Unlike the per-dimension upserts this one
+   * intentionally OVERWRITES the top-level `reason` column — finalize
+   * is the source of truth for the human-readable "final word" on
+   * quality. Per-dimension human-readable details remain inside their
+   * own `raw_result.$.<dim>` sub-trees + a structured snapshot inside
+   * `raw_result.$.final_quality`.
+   *
+   * Does NOT touch the `labels` column; per-dimension upserts have
+   * already merged labels across all dimensions. Idempotent over the
+   * same inputs.
+   */
+  upsertFinalQuality(input: UpsertFinalQualityInput): number {
+    const info = this.upsertFinalQualityStmt.run({
+      id: input.id,
+      mediaId: input.mediaId,
+      qualityScore: input.qualityScore,
+      reason: input.reason,
+      rawFinalJson: input.rawFinalJson,
+      updatedAt: input.updatedAt,
+    });
+    return info.changes;
   }
 
   /** Null when no analysis row exists for the given media. */

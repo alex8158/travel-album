@@ -91,5 +91,16 @@ export {
   type ImageQualityColorHandlerDeps,
   type SaturationClass,
 } from "./imageQualityColorWorker.js";
+export {
+  IMAGE_QUALITY_FINALIZE_JOB_TYPE,
+  aggregateQuality,
+  makeImageQualityFinalizeHandler,
+  temperColor,
+  type FinalizeAggregateResult,
+  type FinalizeDimensionName,
+  type FinalizeQualitySettings,
+  type FinalizeUsedDimension,
+  type ImageQualityFinalizeHandlerDeps,
+} from "./imageQualityFinalizeWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

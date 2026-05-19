@@ -181,6 +181,24 @@ const schema = z
     COLOR_CAST_THRESHOLD: numNonNeg(30),
     COLOR_LOW_CONTRAST_THRESHOLD: numNonNeg(30),
     IMAGE_QUALITY_COLOR_WORKER_VERSION: strDefault("1.0"),
+    // P6.T5 image_quality.finalize worker — weighted aggregation of
+    // the three per-dimension scores into the composite quality_score.
+    // The defaults follow the P6.T5 prompt's recommendation: blur is
+    // the loudest signal, exposure is secondary, colour is a soft
+    // penalty that doesn't dominate. Separate from `QUALITY_WEIGHT_*`
+    // which still includes a resolution slot (no per-row column for
+    // that yet; left for P6.T7 / P9 to fill in).
+    //   * COLOR_FLOOR caps how far the colour dimension can drag the
+    //     composite down: effective_color = floor + (1 - floor) ×
+    //     color_score, so even color_score = 0 contributes `floor`
+    //     to the weighted sum. Default 0.5 keeps "low-saturation
+    //     high-contrast" stylistic images near the top of the band
+    //     when blur + exposure are clean.
+    IMAGE_QUALITY_FINALIZE_BLUR_WEIGHT: numNonNeg(0.45),
+    IMAGE_QUALITY_FINALIZE_EXPOSURE_WEIGHT: numNonNeg(0.35),
+    IMAGE_QUALITY_FINALIZE_COLOR_WEIGHT: numNonNeg(0.2),
+    IMAGE_QUALITY_FINALIZE_COLOR_FLOOR: numNonNeg(0.5),
+    IMAGE_QUALITY_FINALIZE_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -259,6 +277,25 @@ const schema = z
           message: `${key} (${value}) must be ≤ 255; channel means / luminance are on the 0..255 scale.`,
         });
       }
+    }
+
+    const finalizeSum =
+      cfg.IMAGE_QUALITY_FINALIZE_BLUR_WEIGHT +
+      cfg.IMAGE_QUALITY_FINALIZE_EXPOSURE_WEIGHT +
+      cfg.IMAGE_QUALITY_FINALIZE_COLOR_WEIGHT;
+    if (finalizeSum <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_QUALITY_FINALIZE_BLUR_WEIGHT"],
+        message: `Finalize weights sum to ${finalizeSum}; at least one dimension must have a positive weight.`,
+      });
+    }
+    if (cfg.IMAGE_QUALITY_FINALIZE_COLOR_FLOOR > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_QUALITY_FINALIZE_COLOR_FLOOR"],
+        message: `IMAGE_QUALITY_FINALIZE_COLOR_FLOOR (${cfg.IMAGE_QUALITY_FINALIZE_COLOR_FLOOR}) must be in [0, 1]; it's the lower-bound for the tempered colour contribution.`,
+      });
     }
 
     const weightSum =
@@ -355,6 +392,14 @@ export interface Config {
       lowContrastThreshold: number;
       workerVersion: string;
     };
+    /** P6.T5 image_quality.finalize aggregator knobs. */
+    finalize: {
+      blurWeight: number;
+      exposureWeight: number;
+      colorWeight: number;
+      colorFloor: number;
+      workerVersion: string;
+    };
     pHashDistanceMax: number;
     weights: {
       resolution: number;
@@ -435,6 +480,13 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         castThreshold: raw.COLOR_CAST_THRESHOLD,
         lowContrastThreshold: raw.COLOR_LOW_CONTRAST_THRESHOLD,
         workerVersion: raw.IMAGE_QUALITY_COLOR_WORKER_VERSION,
+      },
+      finalize: {
+        blurWeight: raw.IMAGE_QUALITY_FINALIZE_BLUR_WEIGHT,
+        exposureWeight: raw.IMAGE_QUALITY_FINALIZE_EXPOSURE_WEIGHT,
+        colorWeight: raw.IMAGE_QUALITY_FINALIZE_COLOR_WEIGHT,
+        colorFloor: raw.IMAGE_QUALITY_FINALIZE_COLOR_FLOOR,
+        workerVersion: raw.IMAGE_QUALITY_FINALIZE_WORKER_VERSION,
       },
       pHashDistanceMax: raw.PHASH_DISTANCE_MAX,
       weights: {

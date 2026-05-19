@@ -24,6 +24,7 @@ export {
   type UpsertBlurAnalysisInput,
   type UpsertColorAnalysisInput,
   type UpsertExposureAnalysisInput,
+  type UpsertFinalQualityInput,
 } from "./mediaAnalysisRepository.js";
 
 export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";
