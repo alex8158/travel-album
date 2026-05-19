@@ -178,6 +178,39 @@ export interface MediaItem {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
+  /**
+   * P6.T6: per-media quality analysis projection joined from the
+   * `media_analysis` table. `null` when no analysis row exists yet
+   * (the per-dimension workers haven't run on this media). Optional
+   * on the wire because older clients / cached responses may not
+   * carry it; readers treat `undefined` the same as `null`.
+   */
+  readonly analysis?: MediaAnalysisProjection | null;
+}
+
+/**
+ * Quality / blur / colour signals surfaced to the gallery + detail
+ * UI. Mirrors `MediaAnalysisProjection` in
+ * `server/src/media/mediaTypes.ts`. All fields are optional /
+ * nullable because the workers populate them progressively:
+ *   - blur worker fills `sharpnessScore` + `isBlurry` (P6.T2)
+ *   - exposure worker fills `exposureScore` (P6.T3)
+ *   - colour worker fills `colorScore` + may add tags to `labels`
+ *     (P6.T4)
+ *   - finalize worker fills `qualityScore` + the composite `reason`
+ *     (P6.T5 first half)
+ * `isRecommended` is in the schema but no worker writes to it yet —
+ * the per-group recommendation lives on `duplicate_group_items`.
+ */
+export interface MediaAnalysisProjection {
+  readonly qualityScore: number | null;
+  readonly sharpnessScore: number | null;
+  readonly exposureScore: number | null;
+  readonly colorScore: number | null;
+  readonly isBlurry: 0 | 1 | null;
+  readonly isRecommended: 0 | 1 | null;
+  readonly labels: readonly string[] | null;
+  readonly reason: string | null;
 }
 
 interface ListMediaResponse {

@@ -34,7 +34,13 @@
 // how to translate them.
 
 import type { SqliteDatabase } from "../db/connection.js";
-import type { ListMediaOptions, MediaItem, MediaStatus, MediaUserDecision } from "./mediaTypes.js";
+import type {
+  ListMediaOptions,
+  MediaAnalysisProjection,
+  MediaItem,
+  MediaStatus,
+  MediaUserDecision,
+} from "./mediaTypes.js";
 import type { MediaInsertData, MediaType } from "./mediaTypes.js";
 
 const DEFAULT_STATUS = "uploaded";
@@ -43,8 +49,11 @@ const DEFAULT_USER_DECISION = "undecided";
 const DEFAULT_LIMIT = 50;
 
 /**
- * Internal row shape returned by `SELECT ... FROM media_items`.
- * Snake_case columns map to camelCase on the way out via `rowToItem`.
+ * Internal row shape returned by `SELECT ... FROM media_items LEFT JOIN
+ * media_analysis ...`. Snake_case columns map to camelCase on the way
+ * out via `rowToItem`. `analysis_*` columns come from the LEFT JOIN
+ * and stay NULL when the per-media analysis row hasn't been written
+ * yet (i.e. P6.T2–P6.T5 workers haven't run on this media).
  */
 interface MediaRow {
   id: string;
@@ -64,30 +73,73 @@ interface MediaRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  // P6.T6 LEFT JOIN media_analysis projection. Every column nullable
+  // because (a) the JOIN is LEFT, and (b) the per-dimension workers
+  // fill columns progressively.
+  analysis_id: string | null;
+  analysis_quality_score: number | null;
+  analysis_sharpness_score: number | null;
+  analysis_exposure_score: number | null;
+  analysis_color_score: number | null;
+  analysis_is_blurry: number | null;
+  analysis_is_recommended: number | null;
+  analysis_labels: string | null;
+  analysis_reason: string | null;
 }
 
 /**
  * Read projection. file_hash / perceptual_hash are NOT included — they
  * are dedup internals (P5) and not useful to the frontend.
+ *
+ * P6.T6 extends the projection with a LEFT JOIN on `media_analysis`
+ * so the gallery / detail UI can render quality / blur / recommendation
+ * signals without a second round-trip. The JOIN is left because the
+ * per-dimension workers populate `media_analysis` progressively — an
+ * uploaded-but-not-yet-analysed image has no row in `media_analysis`
+ * and its `analysis_*` columns come back NULL.
+ *
+ * Columns are aliased with the `m.` / `ma.` prefix because the
+ * upcoming JOIN requires explicit table qualification (both tables
+ * have `id`, `created_at`, `updated_at`).
  */
-const SELECT_COLUMNS = `
-  id,
-  trip_id,
-  type,
-  original_path,
-  preview_path,
-  thumbnail_path,
-  file_size,
-  mime_type,
-  extension,
-  width,
-  height,
-  duration,
-  status,
-  user_decision,
-  created_at,
-  updated_at,
-  deleted_at
+const MEDIA_TABLE_COLUMNS = `
+  m.id              AS id,
+  m.trip_id         AS trip_id,
+  m.type            AS type,
+  m.original_path   AS original_path,
+  m.preview_path    AS preview_path,
+  m.thumbnail_path  AS thumbnail_path,
+  m.file_size       AS file_size,
+  m.mime_type       AS mime_type,
+  m.extension       AS extension,
+  m.width           AS width,
+  m.height          AS height,
+  m.duration        AS duration,
+  m.status          AS status,
+  m.user_decision   AS user_decision,
+  m.created_at      AS created_at,
+  m.updated_at      AS updated_at,
+  m.deleted_at      AS deleted_at
+`;
+
+const ANALYSIS_JOIN_COLUMNS = `
+  ma.id              AS analysis_id,
+  ma.quality_score   AS analysis_quality_score,
+  ma.sharpness_score AS analysis_sharpness_score,
+  ma.exposure_score  AS analysis_exposure_score,
+  ma.color_score     AS analysis_color_score,
+  ma.is_blurry       AS analysis_is_blurry,
+  ma.is_recommended  AS analysis_is_recommended,
+  ma.labels          AS analysis_labels,
+  ma.reason          AS analysis_reason
+`;
+
+const SELECT_FROM_MEDIA = `
+  SELECT
+    ${MEDIA_TABLE_COLUMNS},
+    ${ANALYSIS_JOIN_COLUMNS}
+  FROM media_items m
+  LEFT JOIN media_analysis ma ON ma.media_id = m.id
 `;
 
 export class MediaRepository {
@@ -118,33 +170,29 @@ export class MediaRepository {
     `);
 
     this.findByIdActiveStmt = db.prepare(`
-      SELECT ${SELECT_COLUMNS}
-      FROM media_items
-      WHERE id = ? AND deleted_at IS NULL
+      ${SELECT_FROM_MEDIA}
+      WHERE m.id = ? AND m.deleted_at IS NULL
     `);
 
     this.findByIdAnyStmt = db.prepare(`
-      SELECT ${SELECT_COLUMNS}
-      FROM media_items
-      WHERE id = ?
+      ${SELECT_FROM_MEDIA}
+      WHERE m.id = ?
     `);
 
     // Newest-first ordering mirrors TripRepository: the Gallery (P2.T7)
     // wants most recent uploads at the top. Tie-break on id keeps the
     // page boundaries deterministic across paginated requests.
     this.listByTripActiveStmt = db.prepare(`
-      SELECT ${SELECT_COLUMNS}
-      FROM media_items
-      WHERE trip_id = ? AND deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
+      ${SELECT_FROM_MEDIA}
+      WHERE m.trip_id = ? AND m.deleted_at IS NULL
+      ORDER BY m.created_at DESC, m.id DESC
       LIMIT ? OFFSET ?
     `);
 
     this.listByTripAllStmt = db.prepare(`
-      SELECT ${SELECT_COLUMNS}
-      FROM media_items
-      WHERE trip_id = ?
-      ORDER BY created_at DESC, id DESC
+      ${SELECT_FROM_MEDIA}
+      WHERE m.trip_id = ?
+      ORDER BY m.created_at DESC, m.id DESC
       LIMIT ? OFFSET ?
     `);
 
@@ -422,10 +470,9 @@ export class MediaRepository {
     if (ids.length === 0) return out;
     const placeholders = ids.map(() => "?").join(", ");
     const sql = `
-      SELECT ${SELECT_COLUMNS}
-      FROM media_items
-      WHERE id IN (${placeholders})
-        AND deleted_at IS NULL
+      ${SELECT_FROM_MEDIA}
+      WHERE m.id IN (${placeholders})
+        AND m.deleted_at IS NULL
     `;
     const rows = this.db.prepare(sql).all(...ids) as MediaRow[];
     for (const row of rows) {
@@ -454,5 +501,53 @@ function rowToItem(row: MediaRow): MediaItem {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    analysis: rowToAnalysisProjection(row),
   };
+}
+
+/**
+ * Build the {@link MediaAnalysisProjection} from the LEFT-joined
+ * columns. Returns `null` when there is no `media_analysis` row for
+ * this media (LEFT JOIN sentinel: `analysis_id` is null).
+ *
+ * Note: `analysis_id` is the most reliable "row exists" signal — a
+ * media that's been touched by ONLY the blur worker will have
+ * `analysis_quality_score = NULL` even though the row exists.
+ */
+function rowToAnalysisProjection(row: MediaRow): MediaAnalysisProjection | null {
+  if (row.analysis_id === null) return null;
+  return {
+    qualityScore: row.analysis_quality_score,
+    sharpnessScore: row.analysis_sharpness_score,
+    exposureScore: row.analysis_exposure_score,
+    colorScore: row.analysis_color_score,
+    isBlurry: normaliseBoolColumn(row.analysis_is_blurry),
+    isRecommended: normaliseBoolColumn(row.analysis_is_recommended),
+    labels: parseLabelsColumn(row.analysis_labels),
+    reason: row.analysis_reason,
+  };
+}
+
+function normaliseBoolColumn(value: number | null): 0 | 1 | null {
+  if (value === null) return null;
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Decode the `labels` column (TEXT JSON array) into a `string[]`. A
+ * malformed value or anything that isn't a JSON array of strings
+ * decodes to `null` — readers treat that the same as "no labels yet"
+ * rather than crashing.
+ */
+function parseLabelsColumn(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+      return parsed as string[];
+    }
+  } catch {
+    /* malformed JSON */
+  }
+  return null;
 }

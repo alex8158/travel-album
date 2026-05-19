@@ -35,6 +35,7 @@ import { Link, useParams } from "react-router-dom";
 
 import {
   reprocessMedia,
+  type MediaAnalysisProjection,
   type MediaItem,
   type MediaVersion,
   type ReprocessResult,
@@ -200,6 +201,8 @@ export default function MediaDetailPage(): JSX.Element {
         </dl>
       </section>
 
+      {media.type === "image" ? <QualityAnalysisSection media={media} /> : null}
+
       <section className="trip-detail-section">
         <h2>Versions ({versions.length})</h2>
         {versions.length === 0 ? (
@@ -279,6 +282,88 @@ function Field({ label, value }: { label: string; value: React.ReactNode }): JSX
       <dd>{value}</dd>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Quality analysis section (P6.T6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders the `media_analysis` projection. Always renders (so users
+ * can see "待分析" for media that hasn't been processed yet) but
+ * tolerates every sub-field being null. Each sub-score is shown
+ * with two decimal places when present and a dash otherwise.
+ */
+function QualityAnalysisSection({ media }: { media: MediaItem }): JSX.Element {
+  const a = media.analysis ?? null;
+  const verdict = computeVerdict(a);
+  return (
+    <section className="trip-detail-section">
+      <h2>Quality analysis</h2>
+      {a === null ? (
+        <p className="status-text">
+          No analysis yet. The per-dimension workers (blur / exposure / colour) populate this once
+          they finish on the image channel.
+        </p>
+      ) : (
+        <>
+          <p className="media-detail-quality-verdict">
+            <span className="quality-pill" data-tone={verdict.tone}>
+              {verdict.label}
+            </span>
+            {a.reason !== null ? (
+              <span className="media-detail-quality-reason">{a.reason}</span>
+            ) : null}
+          </p>
+          <dl className="media-detail-info">
+            <Field label="Quality score" value={formatScore(a.qualityScore)} />
+            <Field label="Sharpness" value={formatScore(a.sharpnessScore)} />
+            <Field label="Exposure" value={formatScore(a.exposureScore)} />
+            <Field label="Colour" value={formatScore(a.colorScore)} />
+            <Field label="Blur verdict" value={describeBlurry(a.isBlurry, a.labels)} />
+            <Field label="Labels" value={describeLabels(a.labels)} />
+          </dl>
+        </>
+      )}
+    </section>
+  );
+}
+
+interface QualityVerdict {
+  readonly label: string;
+  readonly tone: "positive" | "neutral" | "warning" | "negative";
+}
+
+/**
+ * Map the composite quality_score onto one of four UI buckets. Thresholds
+ * mirror the gallery-card pill (TripDetailPage). Returning a neutral
+ * "待判断" for the middle band keeps the verdict honest — the worker
+ * didn't flag the photo either way.
+ */
+function computeVerdict(a: MediaAnalysisProjection | null): QualityVerdict {
+  if (a === null || a.qualityScore === null) {
+    return { label: "待分析", tone: "neutral" };
+  }
+  if (a.qualityScore >= 0.75) return { label: "推荐保留", tone: "positive" };
+  if (a.qualityScore < 0.5) return { label: "建议删除", tone: "negative" };
+  return { label: "待判断", tone: "neutral" };
+}
+
+function formatScore(v: number | null): string {
+  if (v === null) return "—";
+  return v.toFixed(3);
+}
+
+function describeBlurry(isBlurry: 0 | 1 | null, labels: readonly string[] | null): string {
+  if (isBlurry === 1) return "模糊";
+  if (isBlurry === 0) return "清晰";
+  if (labels !== null && labels.includes("maybe-blurry")) return "疑似模糊";
+  return "—";
+}
+
+function describeLabels(labels: readonly string[] | null): React.ReactNode {
+  if (labels === null || labels.length === 0) return "—";
+  return labels.join("，");
 }
 
 // ---------------------------------------------------------------------------

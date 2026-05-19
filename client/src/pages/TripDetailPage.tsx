@@ -389,6 +389,10 @@ function MediaCard({ item }: { item: MediaItem }): JSX.Element {
   const filename = filenameFromPath(item.originalPath);
   const typeLabel = item.type === "image" ? "Image" : item.type === "video" ? "Video" : "Unknown";
   const thumbSrc = item.thumbnailPath !== null ? `/storage/${item.thumbnailPath}` : null;
+  // Only surface quality badges for images — videos have no
+  // `media_analysis` writer yet, so showing "待分析" forever would be
+  // misleading.
+  const qualityBadges = item.type === "image" ? buildQualityBadges(item) : [];
   return (
     <li className="media-card" data-type={item.type} data-status={item.status}>
       <Link to={`/media/${item.id}`} className="media-card-link">
@@ -410,6 +414,20 @@ function MediaCard({ item }: { item: MediaItem }): JSX.Element {
               {item.status}
             </span>
           </div>
+          {qualityBadges.length > 0 ? (
+            <div className="media-card-quality">
+              {qualityBadges.map((b) => (
+                <span
+                  key={b.key}
+                  className="quality-pill"
+                  data-tone={b.tone}
+                  title={b.tooltip ?? undefined}
+                >
+                  {b.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <dl className="media-card-meta">
             <div>
               <dt>File</dt>
@@ -434,6 +452,76 @@ function MediaCard({ item }: { item: MediaItem }): JSX.Element {
       </Link>
     </li>
   );
+}
+
+/**
+ * Thresholds for the gallery-card recommendation pill. Quality_score
+ * is composed by the finalize worker into [0, 1]; we route the band
+ * into three high-level audiences:
+ *   * ≥ 0.75 → "推荐"   (sharp + well-exposed + balanced colour)
+ *   * < 0.50 → "不推荐" (probably wants removing — blurry / bad
+ *                       exposure / wildly out-of-balance colour)
+ *   * 0.50..0.75 → no recommendation pill — the photo is "fine" and
+ *                  doesn't need a UI nudge either way.
+ *
+ * `null` quality_score (analysis row missing or finalize not yet
+ * run) shows the muted "待分析" placeholder instead, so the user can
+ * tell "not yet analysed" apart from "analysed and middling".
+ */
+const QUALITY_RECOMMEND_THRESHOLD = 0.75;
+const QUALITY_DISCOURAGE_THRESHOLD = 0.5;
+
+interface QualityBadge {
+  readonly key: string;
+  readonly label: string;
+  /** Drives the colour via `[data-tone=...]` in index.css. */
+  readonly tone: "positive" | "neutral" | "warning" | "negative";
+  readonly tooltip?: string | null;
+}
+
+/**
+ * Materialise the badge set for one media card from its
+ * `media_analysis` projection. Order in the returned array is the
+ * render order, left-to-right:
+ *   1. recommendation pill (推荐 / 不推荐 / 待分析)
+ *   2. blur pill (模糊 / 疑似模糊)
+ *
+ * Returns an empty array for a fully-clean processed image (e.g.
+ * quality 0.55 + sharp) — we deliberately keep the card visually
+ * quiet for the "nothing notable" case.
+ */
+function buildQualityBadges(item: MediaItem): QualityBadge[] {
+  const out: QualityBadge[] = [];
+  const a = item.analysis ?? null;
+  const reason = a?.reason ?? null;
+  if (a === null) {
+    // No analysis row at all — the per-dimension workers haven't run.
+    out.push({ key: "pending", label: "待分析", tone: "neutral" });
+  } else if (a.qualityScore !== null) {
+    if (a.qualityScore >= QUALITY_RECOMMEND_THRESHOLD) {
+      out.push({ key: "recommend", label: "推荐", tone: "positive", tooltip: reason });
+    } else if (a.qualityScore < QUALITY_DISCOURAGE_THRESHOLD) {
+      out.push({ key: "discourage", label: "不推荐", tone: "negative", tooltip: reason });
+    }
+  } else {
+    // analysis row exists but finalize hasn't run → still "待分析"
+    // (we have signals but no composite verdict yet).
+    out.push({ key: "pending", label: "待分析", tone: "neutral" });
+  }
+
+  // Blur signal is independent of the composite recommendation —
+  // a "推荐" photo never gets a "模糊" badge in practice, but the
+  // boolean check is cheap and the rendering rules are simpler when
+  // the two axes are independent.
+  if (a !== null) {
+    if (a.isBlurry === 1) {
+      out.push({ key: "blurry", label: "模糊", tone: "warning", tooltip: reason });
+    } else if (a.isBlurry === null && a.labels !== null && a.labels.includes("maybe-blurry")) {
+      out.push({ key: "maybe-blurry", label: "疑似模糊", tone: "warning", tooltip: reason });
+    }
+  }
+
+  return out;
 }
 
 function filenameFromPath(p: string | null): string | null {

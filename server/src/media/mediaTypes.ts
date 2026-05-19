@@ -89,6 +89,43 @@ export interface MediaItem {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
+  /**
+   * P6.T6: per-media analysis projection joined from `media_analysis`.
+   * `null` when no analysis row exists yet (i.e. the per-dimension
+   * workers haven't run on this media). The projection intentionally
+   * exposes only the fields the gallery + detail UI need — not the
+   * raw_result blob nor the per-axis means (those stay in the audit
+   * trail inside the DB).
+   */
+  readonly analysis: MediaAnalysisProjection | null;
+}
+
+/**
+ * Subset of `media_analysis` surfaced to the read endpoints. Mirrors
+ * the columns P6.T2–P6.T5 actually populate. Optional / nullable
+ * everywhere because workers fill them progressively:
+ *   - blur worker writes sharpness + isBlurry (P6.T2)
+ *   - exposure worker writes exposureScore (P6.T3)
+ *   - colour worker writes colorScore + labels + isBlurry-orthogonal
+ *     entries in `labels` (P6.T4)
+ *   - finalize worker writes qualityScore + the composite reason
+ *     (P6.T5 first half)
+ * `isRecommended` is in the schema but no worker writes it yet —
+ * the per-group recommendation lives on `duplicate_group_items`
+ * (Quality_Selector, P6.T5 second half).
+ *
+ * `labels` is the parsed JSON-array form of the DB column; readers
+ * never have to JSON.parse themselves.
+ */
+export interface MediaAnalysisProjection {
+  readonly qualityScore: number | null;
+  readonly sharpnessScore: number | null;
+  readonly exposureScore: number | null;
+  readonly colorScore: number | null;
+  readonly isBlurry: 0 | 1 | null;
+  readonly isRecommended: 0 | 1 | null;
+  readonly labels: readonly string[] | null;
+  readonly reason: string | null;
 }
 
 /**

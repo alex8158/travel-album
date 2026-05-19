@@ -946,14 +946,22 @@ async function main(): Promise<void> {
             },
           ],
         );
-        // Enqueue the full chain.
+        // Enqueue the per-dimension workers first and DRAIN them
+        // before inserting finalize. Inserting all four at once would
+        // be flaky: their `created_at` timestamps collide at the
+        // millisecond, and the claim order falls back to `id ASC`
+        // (UUID lexicographic), so finalize might race ahead of the
+        // dimension jobs and fail with "no dimensions available".
         insertJob(dbHandle.db, onlyId, IMAGE_QUALITY_BLUR_JOB_TYPE);
         insertJob(dbHandle.db, onlyId, IMAGE_QUALITY_EXPOSURE_JOB_TYPE);
         insertJob(dbHandle.db, onlyId, IMAGE_QUALITY_COLOR_JOB_TYPE);
+        for (let i = 0; i < 8; i += 1) {
+          const r = await runOneImageJob();
+          if (r.jobId === null) break;
+        }
+        // Now finalize; its success will auto-enqueue the selector.
         insertJob(dbHandle.db, onlyId, IMAGE_QUALITY_FINALIZE_JOB_TYPE);
-        // Drain everything until idle (including the auto-enqueued
-        // selector). 32 ticks is plenty for 4 explicit + 1 auto.
-        for (let i = 0; i < 32; i += 1) {
+        for (let i = 0; i < 8; i += 1) {
           const r = await runOneImageJob();
           if (r.jobId === null) break;
         }

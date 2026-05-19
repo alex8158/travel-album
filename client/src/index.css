@@ -1320,6 +1320,58 @@ a {
   box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.18);
 }
 
+/* P6.T6 — quality / blur / recommendation pills on the gallery card +
+   verdict banner on the media detail page. Tone is driven by the
+   `data-tone` attribute so the renderer can stay generic. */
+
+.quality-pill {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+.quality-pill[data-tone="positive"] {
+  background: #dafbe1;
+  color: #1a7f37;
+}
+.quality-pill[data-tone="neutral"] {
+  background: #eaeef2;
+  color: #57606a;
+}
+.quality-pill[data-tone="warning"] {
+  background: #fff8c5;
+  color: #7d4e00;
+}
+.quality-pill[data-tone="negative"] {
+  background: #ffebe9;
+  color: #cf222e;
+}
+
+.media-card-quality {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.2rem;
+}
+
+.media-detail-quality-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.2rem 0 0.8rem;
+}
+
+.media-detail-quality-reason {
+  color: #57606a;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 .duplicate-detail-member-actions {
   display: flex;
   gap: 0.5rem;
