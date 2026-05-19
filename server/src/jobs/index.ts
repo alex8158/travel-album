@@ -48,5 +48,16 @@ export {
   makeImageHashHandler,
   type ImageHashHandlerDeps,
 } from "./imageHashWorker.js";
+export {
+  IMAGE_QUALITY_BLUR_JOB_TYPE,
+  classifyBlur,
+  computeLaplacianStats,
+  makeImageQualityBlurHandler,
+  normaliseSharpness,
+  type BlurAnalysisSettings,
+  type BlurClassification,
+  type ImageQualityBlurHandlerDeps,
+  type LaplacianStats,
+} from "./imageQualityBlurWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

@@ -14,6 +14,11 @@ export {
   type ReprocessResult,
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
+export {
+  MediaAnalysisRepository,
+  type MediaAnalysisRow,
+  type UpsertBlurAnalysisInput,
+} from "./mediaAnalysisRepository.js";
 
 export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";
 

@@ -11,17 +11,24 @@ import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { DedupEngine, DedupService, DuplicateGroupsRepository } from "./dedup/index.js";
 import {
   IMAGE_HASH_JOB_TYPE,
+  IMAGE_QUALITY_BLUR_JOB_TYPE,
   JobQueue,
   JobRepository,
   JobService,
   makeImageHashHandler,
   makeImageMetadataHandler,
+  makeImageQualityBlurHandler,
   makeImageThumbnailHandler,
   type JobHandler,
   type JobQueueChannelConfig,
 } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
-import { MediaRepository, MediaService, MediaVersionsRepository } from "./media/index.js";
+import {
+  MediaAnalysisRepository,
+  MediaRepository,
+  MediaService,
+  MediaVersionsRepository,
+} from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
@@ -155,6 +162,7 @@ async function main(): Promise<void> {
   const tripService = new TripService(new TripRepository(dbHandle.db));
   const mediaRepo = new MediaRepository(dbHandle.db);
   const mediaVersionsRepo = new MediaVersionsRepository(dbHandle.db);
+  const mediaAnalysisRepo = new MediaAnalysisRepository(dbHandle.db);
   const jobRepo = new JobRepository(dbHandle.db);
   const uploadService = new UploadService({
     db: dbHandle.db,
@@ -205,6 +213,21 @@ async function main(): Promise<void> {
     makeImageMetadataHandler({ storage, mediaRepo, mediaVersionsRepo, logger }),
   );
   imageHandlers.set(IMAGE_HASH_JOB_TYPE, makeImageHashHandler({ storage, mediaRepo, logger }));
+  imageHandlers.set(
+    IMAGE_QUALITY_BLUR_JOB_TYPE,
+    makeImageQualityBlurHandler({
+      storage,
+      mediaRepo,
+      mediaAnalysisRepo,
+      settings: {
+        blurThresholdBlurry: config.quality.blurThresholdBlurry,
+        blurThresholdMaybe: config.quality.blurThresholdMaybe,
+        maxEdge: config.quality.blur.maxEdge,
+        workerVersion: config.quality.blur.workerVersion,
+      },
+      logger,
+    }),
+  );
   const channels: JobQueueChannelConfig[] = [
     { name: "image", concurrency: config.workers.imageConcurrency, handlers: imageHandlers },
     { name: "video", concurrency: config.workers.videoConcurrency, handlers: new Map() },

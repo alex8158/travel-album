@@ -119,6 +119,19 @@ const schema = z
     // Image quality thresholds (design §11.1)
     BLUR_THRESHOLD_BLURRY: numNonNeg(50),
     BLUR_THRESHOLD_MAYBE: numNonNeg(120),
+    // P6.T2 image_quality.blur worker — operational knobs. Both have
+    // safe defaults so the worker is usable on a fresh checkout.
+    //   * MAX_EDGE controls the resize target before Laplacian variance
+    //     compute: smaller = faster + less memory but loses fine detail.
+    //     512 is the project default; matches roughly the "preview"
+    //     resolution and gives stable variance numbers in the 0..300
+    //     range over real photos.
+    //   * WORKER_VERSION is stamped into `media_analysis.raw_result`
+    //     so a later re-run can be told apart from older results; bump
+    //     when the algorithm changes (different kernel, different
+    //     normalisation, etc).
+    IMAGE_QUALITY_BLUR_MAX_EDGE: intPositive(512),
+    IMAGE_QUALITY_BLUR_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -211,6 +224,11 @@ export interface Config {
   quality: {
     blurThresholdBlurry: number;
     blurThresholdMaybe: number;
+    /** P6.T2 image_quality.blur worker knobs. */
+    blur: {
+      maxEdge: number;
+      workerVersion: string;
+    };
     pHashDistanceMax: number;
     weights: {
       resolution: number;
@@ -272,6 +290,10 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
     quality: {
       blurThresholdBlurry: raw.BLUR_THRESHOLD_BLURRY,
       blurThresholdMaybe: raw.BLUR_THRESHOLD_MAYBE,
+      blur: {
+        maxEdge: raw.IMAGE_QUALITY_BLUR_MAX_EDGE,
+        workerVersion: raw.IMAGE_QUALITY_BLUR_WORKER_VERSION,
+      },
       pHashDistanceMax: raw.PHASH_DISTANCE_MAX,
       weights: {
         resolution: raw.QUALITY_WEIGHT_RESOLUTION,
