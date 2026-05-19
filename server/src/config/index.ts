@@ -157,6 +157,30 @@ const schema = z
     EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD: numNonNeg(0.5),
     EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD: numNonNeg(0.5),
     IMAGE_QUALITY_EXPOSURE_WORKER_VERSION: strDefault("1.0"),
+    // P6.T4 image_quality.color worker — operational knobs.
+    //   * MAX_EDGE: resize target before HSV / channel-balance compute.
+    //     512 matches blur / exposure for consistency.
+    //   * LOW_SATURATION_THRESHOLD: meanSaturation (0..1) below this →
+    //     classify `color-low-saturation`. 0.10 catches near-greyscale
+    //     content while leaving low-key but still colourful photos alone.
+    //   * HIGH_SATURATION_THRESHOLD: meanSaturation (0..1) above this →
+    //     `color-high-saturation`. 0.75 covers overly punchy edits or
+    //     stylised filters.
+    //   * COLOR_CAST_THRESHOLD: when max(meanR, meanG, meanB) -
+    //     min(...) exceeds this (in 0..255 channel-mean units), the
+    //     image is flagged with the dominant cast direction. 30 ≈ a
+    //     visually obvious tint without being trigger-happy on warm
+    //     sunset scenes etc.
+    //   * LOW_CONTRAST_THRESHOLD: luminance standard deviation below
+    //     this (0..255 scale) → `color-low-contrast`. 30 ≈ a hazy /
+    //     muddy scene.
+    //   * WORKER_VERSION: stamped into raw_result.$.color for traceability.
+    IMAGE_QUALITY_COLOR_MAX_EDGE: intPositive(512),
+    COLOR_LOW_SATURATION_THRESHOLD: numNonNeg(0.1),
+    COLOR_HIGH_SATURATION_THRESHOLD: numNonNeg(0.75),
+    COLOR_CAST_THRESHOLD: numNonNeg(30),
+    COLOR_LOW_CONTRAST_THRESHOLD: numNonNeg(30),
+    IMAGE_QUALITY_COLOR_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -203,6 +227,38 @@ const schema = z
         path: ["EXPOSURE_OVER_MEAN_THRESHOLD"],
         message: `EXPOSURE_OVER_MEAN_THRESHOLD (${cfg.EXPOSURE_OVER_MEAN_THRESHOLD}) must be ≤ 255; the luminance scale tops out there.`,
       });
+    }
+
+    if (cfg.COLOR_LOW_SATURATION_THRESHOLD >= cfg.COLOR_HIGH_SATURATION_THRESHOLD) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["COLOR_HIGH_SATURATION_THRESHOLD"],
+        message: `COLOR_HIGH_SATURATION_THRESHOLD (${cfg.COLOR_HIGH_SATURATION_THRESHOLD}) must be greater than COLOR_LOW_SATURATION_THRESHOLD (${cfg.COLOR_LOW_SATURATION_THRESHOLD}); they bracket the "normal" saturation band.`,
+      });
+    }
+    for (const [key, value] of [
+      ["COLOR_LOW_SATURATION_THRESHOLD", cfg.COLOR_LOW_SATURATION_THRESHOLD],
+      ["COLOR_HIGH_SATURATION_THRESHOLD", cfg.COLOR_HIGH_SATURATION_THRESHOLD],
+    ] as const) {
+      if (value > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be in [0, 1]; HSV saturation is normalised.`,
+        });
+      }
+    }
+    for (const [key, value] of [
+      ["COLOR_CAST_THRESHOLD", cfg.COLOR_CAST_THRESHOLD],
+      ["COLOR_LOW_CONTRAST_THRESHOLD", cfg.COLOR_LOW_CONTRAST_THRESHOLD],
+    ] as const) {
+      if (value > 255) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be ≤ 255; channel means / luminance are on the 0..255 scale.`,
+        });
+      }
     }
 
     const weightSum =
@@ -290,6 +346,15 @@ export interface Config {
       brightPixelRatioThreshold: number;
       workerVersion: string;
     };
+    /** P6.T4 image_quality.color worker knobs. */
+    color: {
+      maxEdge: number;
+      lowSaturationThreshold: number;
+      highSaturationThreshold: number;
+      castThreshold: number;
+      lowContrastThreshold: number;
+      workerVersion: string;
+    };
     pHashDistanceMax: number;
     weights: {
       resolution: number;
@@ -362,6 +427,14 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         darkPixelRatioThreshold: raw.EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD,
         brightPixelRatioThreshold: raw.EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD,
         workerVersion: raw.IMAGE_QUALITY_EXPOSURE_WORKER_VERSION,
+      },
+      color: {
+        maxEdge: raw.IMAGE_QUALITY_COLOR_MAX_EDGE,
+        lowSaturationThreshold: raw.COLOR_LOW_SATURATION_THRESHOLD,
+        highSaturationThreshold: raw.COLOR_HIGH_SATURATION_THRESHOLD,
+        castThreshold: raw.COLOR_CAST_THRESHOLD,
+        lowContrastThreshold: raw.COLOR_LOW_CONTRAST_THRESHOLD,
+        workerVersion: raw.IMAGE_QUALITY_COLOR_WORKER_VERSION,
       },
       pHashDistanceMax: raw.PHASH_DISTANCE_MAX,
       weights: {

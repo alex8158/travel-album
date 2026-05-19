@@ -41,7 +41,8 @@
     "smoke:duplicate-group-confirm": "tsx src/scripts/duplicate-group-confirm-smoke.ts",
     "smoke:migration-008": "tsx src/scripts/migration-008-smoke.ts",
     "smoke:image-quality-blur": "tsx src/scripts/image-quality-blur-smoke.ts",
-    "smoke:image-quality-exposure": "tsx src/scripts/image-quality-exposure-smoke.ts"
+    "smoke:image-quality-exposure": "tsx src/scripts/image-quality-exposure-smoke.ts",
+    "smoke:image-quality-color": "tsx src/scripts/image-quality-color-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

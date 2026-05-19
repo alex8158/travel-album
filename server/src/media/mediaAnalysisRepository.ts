@@ -1,12 +1,15 @@
 // MediaAnalysisRepository — data-access layer for `media_analysis`
 // (migration 008, P6.T1).
 //
-// Scope (P6.T2 + P6.T3 consumers so far):
+// Scope (P6.T2 + P6.T3 + P6.T4 consumers so far):
 //   * `upsertBlurAnalysis` — write blur-related columns for one media.
 //   * `upsertExposureAnalysis` — write exposure-related columns for one
 //     media (P6.T3). Mirrors the blur shape: idempotent UPSERT keyed on
 //     UNIQUE(media_id) with the per-dimension JSON merged into
 //     `raw_result.$.exposure` so blur's `$.blur` is preserved.
+//   * `upsertColorAnalysis` — write color-related columns (P6.T4).
+//     Same shape; merges into `raw_result.$.color` so blur / exposure
+//     siblings survive.
 //   * `findByMediaId` — convenience reader for the smoke / future
 //     callers (P6.T6 frontend badges).
 //
@@ -68,6 +71,32 @@ export const EXPOSURE_DIMENSION_LABELS = [
   "underexposed",
   "overexposed",
   "mixed-exposure",
+] as const;
+
+/**
+ * Vocabulary owned by the `image_quality_color` worker (P6.T4).
+ *
+ * The colour worker reports up to three orthogonal sub-classifications
+ * (saturation level, channel-balance cast direction, contrast level)
+ * so a single run may emit multiple labels — e.g. `["color-warm-cast",
+ * "color-low-saturation"]`. The "balanced" label is emitted ONLY when
+ * none of the issue labels apply, so its presence acts as the
+ * "explicitly checked + nothing wrong" marker.
+ *
+ * All entries are namespaced with the `color-` prefix to keep this
+ * dimension's tags visually distinguishable from blur (`sharp` /
+ * `blurry`) and exposure (`well-exposed` / `underexposed`) labels.
+ */
+export const COLOR_DIMENSION_LABELS = [
+  "color-balanced",
+  "color-low-saturation",
+  "color-high-saturation",
+  "color-warm-cast",
+  "color-cool-cast",
+  "color-green-cast",
+  "color-magenta-cast",
+  "color-low-contrast",
+  "color-high-contrast",
 ] as const;
 
 /**
@@ -158,6 +187,41 @@ export interface UpsertExposureAnalysisInput {
    * `$.color`, …) are preserved on update via `json_set`.
    */
   readonly rawExposureJson: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Argument bag for `upsertColorAnalysis` (P6.T4). Same shape as the
+ * blur / exposure inputs:
+ *   * One scalar score column (`color_score`).
+ *   * A dimension-scoped labels list (multi-element — colour reports
+ *     orthogonal sub-classifications, see {@link COLOR_DIMENSION_LABELS}).
+ *   * A JSON fragment for the `$.color` sub-key of `raw_result`.
+ */
+export interface UpsertColorAnalysisInput {
+  readonly id: string;
+  readonly mediaId: string;
+  /**
+   * Composite "how colour-healthy" confidence in [0, 1]. Worker
+   * formula is documented in the worker header (`min` of saturation /
+   * cast / contrast sub-scores).
+   */
+  readonly colorScore: number;
+  /**
+   * Colour dimension's labels for this run. May contain ZERO entries
+   * (when the worker has nothing to flag — though in practice it
+   * emits `color-balanced` instead), ONE entry, or several when
+   * orthogonal sub-classifications fire (e.g. low saturation AND a
+   * green cast).
+   */
+  readonly colorLabels: readonly string[];
+  readonly reason: string;
+  /**
+   * JSON-stringified colour-specific raw output. Becomes the
+   * `$.color` sub-key of `raw_result`; siblings (`$.blur`,
+   * `$.exposure`, …) are preserved on update via `json_set`.
+   */
+  readonly rawColorJson: string;
   readonly updatedAt: string;
 }
 
@@ -280,6 +344,7 @@ export function mergeDimensionLabels(
 export class MediaAnalysisRepository {
   private readonly upsertBlurStmt;
   private readonly upsertExposureStmt;
+  private readonly upsertColorStmt;
   private readonly selectLabelsStmt;
   private readonly findByMediaIdStmt;
 
@@ -336,6 +401,26 @@ export class MediaAnalysisRepository {
         updated_at       = excluded.updated_at
     `);
 
+    this.upsertColorStmt = db.prepare(`
+      INSERT INTO media_analysis (
+        id, media_id,
+        color_score,
+        labels, reason, raw_result,
+        created_at, updated_at
+      ) VALUES (
+        @id, @mediaId,
+        @colorScore,
+        @labels, @reason, json_object('color', json(@rawColorJson)),
+        @updatedAt, @updatedAt
+      )
+      ON CONFLICT(media_id) DO UPDATE SET
+        color_score = excluded.color_score,
+        labels      = excluded.labels,
+        reason      = excluded.reason,
+        raw_result  = json_set(COALESCE(raw_result, '{}'), '$.color', json(@rawColorJson)),
+        updated_at  = excluded.updated_at
+    `);
+
     // Tiny SELECT used inside the upsert transactions to fetch the
     // current `labels` value for the dimension-vocab merge. A separate
     // statement (instead of reusing findByMediaIdStmt) avoids hauling
@@ -387,6 +472,37 @@ export class MediaAnalysisRepository {
         labels,
         reason: data.reason,
         rawBlurJson: data.rawBlurJson,
+        updatedAt: data.updatedAt,
+      });
+      return info.changes;
+    });
+    return tx(input);
+  }
+
+  /**
+   * Write the colour-analysis fields for one media row (P6.T4).
+   * Mirror of {@link upsertBlurAnalysis}: idempotent, atomic labels
+   * merge against {@link COLOR_DIMENSION_LABELS}, JSON fragment
+   * spliced into `raw_result.$.color` so blur / exposure siblings
+   * survive untouched.
+   */
+  upsertColorAnalysis(input: UpsertColorAnalysisInput): number {
+    const tx = this.db.transaction((data: UpsertColorAnalysisInput): number => {
+      const existing = this.selectLabelsStmt.get(data.mediaId) as
+        | { labels: string | null }
+        | undefined;
+      const labels = mergeDimensionLabels(
+        existing?.labels ?? null,
+        COLOR_DIMENSION_LABELS,
+        data.colorLabels,
+      );
+      const info = this.upsertColorStmt.run({
+        id: data.id,
+        mediaId: data.mediaId,
+        colorScore: data.colorScore,
+        labels,
+        reason: data.reason,
+        rawColorJson: data.rawColorJson,
         updatedAt: data.updatedAt,
       });
       return info.changes;

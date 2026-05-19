@@ -74,5 +74,22 @@ export {
   type ExposureLabel,
   type ImageQualityExposureHandlerDeps,
 } from "./imageQualityExposureWorker.js";
+export {
+  HIGH_CONTRAST_CUTOFF,
+  HIGH_SATURATION_PIXEL_CUTOFF,
+  IMAGE_QUALITY_COLOR_JOB_TYPE,
+  LOW_SATURATION_PIXEL_CUTOFF,
+  classifyColor,
+  computeColorStats,
+  makeImageQualityColorHandler,
+  scoreColor,
+  type ColorAnalysisSettings,
+  type ColorCast,
+  type ColorClassification,
+  type ColorStats,
+  type ContrastClass,
+  type ImageQualityColorHandlerDeps,
+  type SaturationClass,
+} from "./imageQualityColorWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";
