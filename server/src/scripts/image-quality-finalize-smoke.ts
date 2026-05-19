@@ -273,7 +273,7 @@ async function main(): Promise<void> {
     const registry = new JobHandlerRegistry();
     registry.register(
       IMAGE_QUALITY_FINALIZE_JOB_TYPE,
-      makeImageQualityFinalizeHandler({ mediaRepo, mediaAnalysisRepo, settings, logger }),
+      makeImageQualityFinalizeHandler({ mediaRepo, mediaAnalysisRepo, jobRepo, settings, logger }),
     );
     registry.register(
       IMAGE_QUALITY_BLUR_JOB_TYPE,
@@ -860,7 +860,13 @@ async function main(): Promise<void> {
       const handlers = new Map<string, JobHandler>();
       handlers.set(
         IMAGE_QUALITY_FINALIZE_JOB_TYPE,
-        makeImageQualityFinalizeHandler({ mediaRepo, mediaAnalysisRepo, settings, logger }),
+        makeImageQualityFinalizeHandler({
+          mediaRepo,
+          mediaAnalysisRepo,
+          jobRepo,
+          settings,
+          logger,
+        }),
       );
       const queue = new JobQueue({
         jobRepo,

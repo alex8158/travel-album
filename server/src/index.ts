@@ -30,6 +30,11 @@ import {
 } from "./jobs/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import {
+  QUALITY_SELECTOR_JOB_TYPE,
+  QualitySelectorService,
+  makeQualitySelectorHandler,
+} from "./quality/index.js";
+import {
   MediaAnalysisRepository,
   MediaRepository,
   MediaService,
@@ -273,6 +278,11 @@ async function main(): Promise<void> {
     makeImageQualityFinalizeHandler({
       mediaRepo,
       mediaAnalysisRepo,
+      // The finalize handler enqueues a `quality_selector_run`
+      // follow-up on success — passing the same JobRepository the
+      // executor is reading from keeps the writes inside the same
+      // SQLite handle, no extra connection plumbing.
+      jobRepo,
       settings: {
         blurWeight: config.quality.finalize.blurWeight,
         exposureWeight: config.quality.finalize.exposureWeight,
@@ -280,6 +290,23 @@ async function main(): Promise<void> {
         colorFloor: config.quality.finalize.colorFloor,
         workerVersion: config.quality.finalize.workerVersion,
       },
+      logger,
+    }),
+  );
+  // P6.T5 follow-up: Quality_Selector runs as a job too, so the
+  // recommendation writeback rides the same multi-channel scheduler
+  // (and surfaces in the Job API with status / retry behaviour).
+  const qualitySelectorService = new QualitySelectorService({
+    duplicateGroupsRepo,
+    mediaAnalysisRepo,
+    mediaRepo,
+    logger,
+  });
+  imageHandlers.set(
+    QUALITY_SELECTOR_JOB_TYPE,
+    makeQualitySelectorHandler({
+      service: qualitySelectorService,
+      mediaRepo,
       logger,
     }),
   );

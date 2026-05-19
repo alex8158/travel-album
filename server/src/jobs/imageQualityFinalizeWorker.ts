@@ -42,11 +42,13 @@
 // Scope per docs/tasks.md P6.T5 (this iteration):
 //   * Aggregate the three per-dimension scores into the composite
 //     `quality_score` + reason + final_quality JSON.
+//   * Enqueue the downstream `quality_selector_run` job (P6.T5
+//     follow-up) so the Quality_Selector re-ranks every duplicate
+//     group containing this media. The selector itself runs in its
+//     own handler on the image channel; here we only INSERT the
+//     pending row after the upsert succeeds so a failed finalize
+//     never enqueues a stale follow-up.
 // Explicitly NOT in scope here:
-//   * Intra-`duplicate_groups` ranking + writing
-//     `recommended_media_id` / `duplicate_group_items.recommendation`.
-//     That's the second half of P6.T5 and rides on this score; it
-//     lands in a follow-up.
 //   * Triggering this job from upload — today the row is created by
 //     reprocess / manual seed and picked up by JobQueue.
 //   * Frontend badges (P6.T6).
@@ -64,8 +66,13 @@ import { randomUUID } from "node:crypto";
 
 import type { Logger } from "../logger.js";
 import type { MediaAnalysisRepository, MediaAnalysisRow, MediaRepository } from "../media/index.js";
+import {
+  QUALITY_SELECTOR_JOB_TYPE,
+  encodeQualitySelectorPayload,
+} from "../quality/qualitySelectorWorker.js";
 
 import type { JobHandler } from "./handlerRegistry.js";
+import type { JobRepository } from "./jobRepository.js";
 
 /** Closed job_type token. Registered by `server/src/index.ts` boot. */
 export const IMAGE_QUALITY_FINALIZE_JOB_TYPE = "image_quality_finalize";
@@ -87,6 +94,11 @@ export interface FinalizeQualitySettings {
 export interface ImageQualityFinalizeHandlerDeps {
   readonly mediaRepo: MediaRepository;
   readonly mediaAnalysisRepo: MediaAnalysisRepository;
+  /**
+   * Used to enqueue the downstream `quality_selector_run` job on
+   * success. Insert-only; the handler never claims / updates jobs.
+   */
+  readonly jobRepo: JobRepository;
   readonly settings: FinalizeQualitySettings;
   readonly logger: Logger;
 }
@@ -213,6 +225,48 @@ export function makeImageQualityFinalizeHandler(deps: ImageQualityFinalizeHandle
       },
       "image_quality_finalize: composite quality_score persisted",
     );
+
+    // ---- 6. Enqueue Quality_Selector follow-up -------------------------
+    // Strictly post-success so a failed finalize doesn't drop a stale
+    // selector job into the queue. Scope = trip (re-rank every group
+    // containing this media). No dedup on the enqueue path — the
+    // selector itself is idempotent (smoke verified) and `applyRecommendation`
+    // refuses to overwrite `user_confirmed = 1` groups.
+    //
+    // We pass `media.id` as the FK target on `processing_jobs.media_id`
+    // (NOT NULL), but the selector handler decodes the `payload` and
+    // runs `selectForTrip(media.tripId)`. If a flood of finalize
+    // jobs for the same trip lands at once, multiple identical
+    // selector rows may queue up; idempotency saves correctness, the
+    // cost is just redundant DB UPDATEs.
+    const enqueuedAt = new Date().toISOString();
+    try {
+      deps.jobRepo.insert({
+        id: randomUUID(),
+        mediaId: media.id,
+        jobType: QUALITY_SELECTOR_JOB_TYPE,
+        payload: encodeQualitySelectorPayload({ scope: "trip", tripId: media.tripId }),
+        createdAt: enqueuedAt,
+        updatedAt: enqueuedAt,
+      });
+      deps.logger.info(
+        { ...correlation, tripId: media.tripId },
+        "image_quality_finalize: quality_selector_run enqueued",
+      );
+    } catch (err) {
+      // FK / unique / SQL errors on the enqueue path must NOT cause
+      // the finalize itself to fail (the quality_score is already
+      // persisted). Log + swallow so the handler still resolves
+      // success.
+      deps.logger.warn(
+        {
+          ...correlation,
+          tripId: media.tripId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "image_quality_finalize: failed to enqueue quality_selector_run (finalize itself succeeded)",
+      );
+    }
   };
 }
 

@@ -545,6 +545,14 @@ export class DuplicateGroupsRepository {
    *
    * Returns the number of rows updated on the group header (0 if the
    * group vanished mid-transaction; otherwise 1).
+   *
+   * Defense in depth: throws `winnerMediaId is not a member of group ...`
+   * if the winner is NOT a member of the group. The Service layer
+   * already constructs the winner from members it just read, but the
+   * check guarantees that bypassing the Service (e.g. a future
+   * direct repo caller) cannot leave `recommended_media_id` pointing
+   * at a media that isn't in the group. The check runs inside the
+   * same transaction so any partial write is rolled back.
    */
   applyRecommendation(args: {
     readonly groupId: string;
@@ -562,6 +570,12 @@ export class DuplicateGroupsRepository {
         perItem: ReadonlyMap<string, { recommendation: DuplicateDecision; reason: string }>,
         ts: string,
       ): number => {
+        const member = this.groupContainsMediaStmt.get(gid, mid) as { n: number };
+        if (member.n === 0) {
+          throw new Error(
+            `winnerMediaId ${mid} is not a member of group ${gid}; refusing to apply recommendation`,
+          );
+        }
         const header = this.setGroupRecommendedOnlyStmt.run(mid, ts, gid);
         if (header.changes === 0) return 0;
         for (const [mediaId, decision] of perItem.entries()) {
