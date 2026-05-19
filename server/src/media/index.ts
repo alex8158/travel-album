@@ -15,9 +15,13 @@ export {
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 export {
+  BLUR_DIMENSION_LABELS,
+  EXPOSURE_DIMENSION_LABELS,
   MediaAnalysisRepository,
+  mergeDimensionLabels,
   type MediaAnalysisRow,
   type UpsertBlurAnalysisInput,
+  type UpsertExposureAnalysisInput,
 } from "./mediaAnalysisRepository.js";
 
 export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";

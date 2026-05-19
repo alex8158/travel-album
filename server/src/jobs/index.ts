@@ -59,5 +59,20 @@ export {
   type ImageQualityBlurHandlerDeps,
   type LaplacianStats,
 } from "./imageQualityBlurWorker.js";
+export {
+  BRIGHT_PIXEL_CUTOFF,
+  DARK_PIXEL_CUTOFF,
+  IMAGE_QUALITY_EXPOSURE_JOB_TYPE,
+  MIXED_RATIO_FLOOR,
+  classifyExposure,
+  computeBrightnessStats,
+  makeImageQualityExposureHandler,
+  scoreExposure,
+  type BrightnessStats,
+  type ExposureAnalysisSettings,
+  type ExposureClassification,
+  type ExposureLabel,
+  type ImageQualityExposureHandlerDeps,
+} from "./imageQualityExposureWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

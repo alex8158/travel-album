@@ -12,12 +12,14 @@ import { DedupEngine, DedupService, DuplicateGroupsRepository } from "./dedup/in
 import {
   IMAGE_HASH_JOB_TYPE,
   IMAGE_QUALITY_BLUR_JOB_TYPE,
+  IMAGE_QUALITY_EXPOSURE_JOB_TYPE,
   JobQueue,
   JobRepository,
   JobService,
   makeImageHashHandler,
   makeImageMetadataHandler,
   makeImageQualityBlurHandler,
+  makeImageQualityExposureHandler,
   makeImageThumbnailHandler,
   type JobHandler,
   type JobQueueChannelConfig,
@@ -224,6 +226,23 @@ async function main(): Promise<void> {
         blurThresholdMaybe: config.quality.blurThresholdMaybe,
         maxEdge: config.quality.blur.maxEdge,
         workerVersion: config.quality.blur.workerVersion,
+      },
+      logger,
+    }),
+  );
+  imageHandlers.set(
+    IMAGE_QUALITY_EXPOSURE_JOB_TYPE,
+    makeImageQualityExposureHandler({
+      storage,
+      mediaRepo,
+      mediaAnalysisRepo,
+      settings: {
+        maxEdge: config.quality.exposure.maxEdge,
+        underMeanThreshold: config.quality.exposure.underMeanThreshold,
+        overMeanThreshold: config.quality.exposure.overMeanThreshold,
+        darkRatioThreshold: config.quality.exposure.darkPixelRatioThreshold,
+        brightRatioThreshold: config.quality.exposure.brightPixelRatioThreshold,
+        workerVersion: config.quality.exposure.workerVersion,
       },
       logger,
     }),

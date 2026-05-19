@@ -132,6 +132,31 @@ const schema = z
     //     normalisation, etc).
     IMAGE_QUALITY_BLUR_MAX_EDGE: intPositive(512),
     IMAGE_QUALITY_BLUR_WORKER_VERSION: strDefault("1.0"),
+    // P6.T3 image_quality.exposure worker — operational knobs.
+    //   * MAX_EDGE: resize target before histogram compute. Smaller =
+    //     faster, less RAM, but slightly coarser ratios. 512 matches
+    //     blur for consistency.
+    //   * UNDER_MEAN_THRESHOLD / OVER_MEAN_THRESHOLD: classify by
+    //     mean luminance (0..255). Anything below 70 / above 185 is
+    //     a candidate for under / over even before pixel ratios are
+    //     considered. Defaults sit close to the photographic
+    //     "Zone 3" / "Zone 7" rules of thumb.
+    //   * DARK_PIXEL_RATIO_THRESHOLD / BRIGHT_PIXEL_RATIO_THRESHOLD:
+    //     fraction of pixels below "dark cutoff" (≤30) / above
+    //     "bright cutoff" (≥225). When EITHER passes its threshold,
+    //     the image is also flagged under / over regardless of mean.
+    //     The cutoffs themselves (30 / 225) are algorithm internals
+    //     baked into the worker — they describe "what counts as a
+    //     shadow / highlight pixel" and changing them changes the
+    //     algorithm shape rather than its threshold tuning.
+    //   * WORKER_VERSION: stamped into raw_result.$.exposure for
+    //     traceability across algorithm bumps.
+    IMAGE_QUALITY_EXPOSURE_MAX_EDGE: intPositive(512),
+    EXPOSURE_UNDER_MEAN_THRESHOLD: numNonNeg(70),
+    EXPOSURE_OVER_MEAN_THRESHOLD: numNonNeg(185),
+    EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD: numNonNeg(0.5),
+    EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD: numNonNeg(0.5),
+    IMAGE_QUALITY_EXPOSURE_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -150,6 +175,33 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ["BLUR_THRESHOLD_MAYBE"],
         message: `BLUR_THRESHOLD_MAYBE (${cfg.BLUR_THRESHOLD_MAYBE}) must be greater than BLUR_THRESHOLD_BLURRY (${cfg.BLUR_THRESHOLD_BLURRY}); higher Laplacian variance means a sharper image.`,
+      });
+    }
+
+    if (cfg.EXPOSURE_UNDER_MEAN_THRESHOLD >= cfg.EXPOSURE_OVER_MEAN_THRESHOLD) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["EXPOSURE_OVER_MEAN_THRESHOLD"],
+        message: `EXPOSURE_OVER_MEAN_THRESHOLD (${cfg.EXPOSURE_OVER_MEAN_THRESHOLD}) must be greater than EXPOSURE_UNDER_MEAN_THRESHOLD (${cfg.EXPOSURE_UNDER_MEAN_THRESHOLD}); brightness goes 0..255 with under-exposure at the dark end.`,
+      });
+    }
+    for (const [key, value] of [
+      ["EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD", cfg.EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD],
+      ["EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD", cfg.EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD],
+    ] as const) {
+      if (value > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be in [0, 1]; it is a pixel-fraction threshold.`,
+        });
+      }
+    }
+    if (cfg.EXPOSURE_OVER_MEAN_THRESHOLD > 255) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["EXPOSURE_OVER_MEAN_THRESHOLD"],
+        message: `EXPOSURE_OVER_MEAN_THRESHOLD (${cfg.EXPOSURE_OVER_MEAN_THRESHOLD}) must be ≤ 255; the luminance scale tops out there.`,
       });
     }
 
@@ -229,6 +281,15 @@ export interface Config {
       maxEdge: number;
       workerVersion: string;
     };
+    /** P6.T3 image_quality.exposure worker knobs. */
+    exposure: {
+      maxEdge: number;
+      underMeanThreshold: number;
+      overMeanThreshold: number;
+      darkPixelRatioThreshold: number;
+      brightPixelRatioThreshold: number;
+      workerVersion: string;
+    };
     pHashDistanceMax: number;
     weights: {
       resolution: number;
@@ -293,6 +354,14 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
       blur: {
         maxEdge: raw.IMAGE_QUALITY_BLUR_MAX_EDGE,
         workerVersion: raw.IMAGE_QUALITY_BLUR_WORKER_VERSION,
+      },
+      exposure: {
+        maxEdge: raw.IMAGE_QUALITY_EXPOSURE_MAX_EDGE,
+        underMeanThreshold: raw.EXPOSURE_UNDER_MEAN_THRESHOLD,
+        overMeanThreshold: raw.EXPOSURE_OVER_MEAN_THRESHOLD,
+        darkPixelRatioThreshold: raw.EXPOSURE_DARK_PIXEL_RATIO_THRESHOLD,
+        brightPixelRatioThreshold: raw.EXPOSURE_BRIGHT_PIXEL_RATIO_THRESHOLD,
+        workerVersion: raw.IMAGE_QUALITY_EXPOSURE_WORKER_VERSION,
       },
       pHashDistanceMax: raw.PHASH_DISTANCE_MAX,
       weights: {

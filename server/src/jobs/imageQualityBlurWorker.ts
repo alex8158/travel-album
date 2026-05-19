@@ -175,7 +175,10 @@ export function makeImageQualityBlurHandler(deps: ImageQualityBlurHandlerDeps): 
       blurScore: stats.variance,
       sharpnessScore,
       isBlurry: classification.isBlurry,
-      labels: JSON.stringify([classification.label]),
+      // The repository merges this against existing labels using the
+      // closed BLUR_DIMENSION_LABELS vocabulary — sibling dimension
+      // labels (e.g. "underexposed" from P6.T3) survive a blur re-run.
+      blurLabels: [classification.label],
       reason: classification.reason,
       rawBlurJson,
       updatedAt: now,
