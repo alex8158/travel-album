@@ -28,6 +28,17 @@ export interface Trip {
   readonly startDate: string | null;
   readonly endDate: string | null;
   readonly coverMediaId: string | null;
+  /**
+   * P6.T7: `true` when the cover was pinned by a user-facing action
+   * (POST /api/trips/:id/cover). The auto-cover selector triggered
+   * after Quality_Selector refuses to overwrite a user-pinned cover,
+   * mirroring CLAUDE.md §3.9 "user choice dominates the system
+   * recommendation". Existing rows backfill to `false` because the
+   * pre-migration schema had no flag — semantically those covers
+   * were either manually set (rare in V1) or unset, and the
+   * auto-selector will simply re-confirm them on the next run.
+   */
+  readonly coverSetByUser: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;

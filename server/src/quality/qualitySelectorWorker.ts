@@ -37,6 +37,7 @@
 
 import type { Logger } from "../logger.js";
 import type { MediaRepository } from "../media/index.js";
+import { autoSelectCoverForTrip, type TripRepository } from "../trips/index.js";
 
 import type { JobHandler } from "../jobs/handlerRegistry.js";
 import type { QualitySelectorService, SelectGroupOutcome } from "./qualitySelectorService.js";
@@ -47,6 +48,16 @@ export const QUALITY_SELECTOR_JOB_TYPE = "quality_selector_run";
 export interface QualitySelectorHandlerDeps {
   readonly service: QualitySelectorService;
   readonly mediaRepo: MediaRepository;
+  /**
+   * P6.T7 — after the selector finishes ranking duplicate groups
+   * inside a trip, we run `autoSelectCoverForTrip` so the trip's
+   * cover keeps pace with the freshest quality_score data. The
+   * cover update is best-effort: any thrown error is logged but
+   * does NOT fail the selector job (the recommendation writeback is
+   * what the job exists for; cover is downstream signal). The trip
+   * repository is read+written directly by the cover selector.
+   */
+  readonly tripRepo: TripRepository;
   readonly logger: Logger;
 }
 
@@ -95,12 +106,17 @@ export function makeQualitySelectorHandler(deps: QualitySelectorHandlerDeps): Jo
 
     let outcomes: SelectGroupOutcome[];
     let scopeForLog: string;
+    let tripIdForCover: string | null = null;
     if (parsed?.scope === "group") {
       outcomes = [deps.service.selectForGroup(parsed.groupId)];
       scopeForLog = `group:${parsed.groupId}`;
+      // Intentional: group-scope runs are ad-hoc per-group recomputes
+      // (e.g. a manual API trigger). They don't need to disturb the
+      // trip-level cover. Trip-scope runs do.
     } else if (parsed?.scope === "trip") {
       outcomes = deps.service.selectForTrip(parsed.tripId);
       scopeForLog = `trip:${parsed.tripId}`;
+      tripIdForCover = parsed.tripId;
     } else {
       // Fallback: resolve the trip from the media row attached to
       // this job. Throws on missing / soft-deleted media so the
@@ -114,6 +130,7 @@ export function makeQualitySelectorHandler(deps: QualitySelectorHandlerDeps): Jo
       }
       outcomes = deps.service.selectForTrip(media.tripId);
       scopeForLog = `trip-from-media:${media.tripId}`;
+      tripIdForCover = media.tripId;
     }
 
     const summary = summariseOutcomes(outcomes);
@@ -121,6 +138,34 @@ export function makeQualitySelectorHandler(deps: QualitySelectorHandlerDeps): Jo
       { ...correlation, scope: scopeForLog, ...summary },
       "quality_selector_run: completed",
     );
+
+    // P6.T7 auto-cover refresh. Trip-scope only — see comment above
+    // on the group branch. Best-effort: any thrown error is logged
+    // but does NOT fail the job (the selector did its job; cover
+    // is downstream signal). The cover selector itself never throws
+    // on the operational paths (missing trip / no candidate /
+    // user-pinned); only DB errors during the UPDATE can bubble up.
+    if (tripIdForCover !== null) {
+      try {
+        const coverOutcome = autoSelectCoverForTrip(
+          { tripRepo: deps.tripRepo, mediaRepo: deps.mediaRepo, logger: deps.logger },
+          tripIdForCover,
+        );
+        deps.logger.info(
+          { ...correlation, tripId: tripIdForCover, coverOutcome: coverOutcome.status },
+          "quality_selector_run: auto cover refreshed",
+        );
+      } catch (err) {
+        deps.logger.warn(
+          {
+            ...correlation,
+            tripId: tripIdForCover,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "quality_selector_run: auto cover refresh failed (selector itself still succeeded)",
+        );
+      }
+    }
   };
 }
 

@@ -40,6 +40,7 @@ import {
   type MediaVersion,
   type ReprocessResult,
 } from "../api/media";
+import { setTripCover } from "../api/trips";
 import { useMediaDetail } from "../hooks/useMediaDetail";
 
 export default function MediaDetailPage(): JSX.Element {
@@ -52,6 +53,11 @@ export default function MediaDetailPage(): JSX.Element {
   // another action.
   const [reprocessing, setReprocessing] = useState(false);
   const [feedback, setFeedback] = useState<ReprocessFeedback | null>(null);
+  // P6.T7 — "Set as cover" affordance. Local state only; success
+  // shows a transient confirmation, error reuses the same banner
+  // shape so the user always sees an aria-live message.
+  const [pinningCover, setPinningCover] = useState(false);
+  const [coverFeedback, setCoverFeedback] = useState<CoverFeedback | null>(null);
 
   async function handleReprocess(): Promise<void> {
     if (id === undefined || reprocessing) return;
@@ -68,6 +74,21 @@ export default function MediaDetailPage(): JSX.Element {
       setFeedback({ kind: "error", message });
     } finally {
       setReprocessing(false);
+    }
+  }
+
+  async function handleSetAsCover(): Promise<void> {
+    if (id === undefined || detail === null || pinningCover) return;
+    setPinningCover(true);
+    setCoverFeedback(null);
+    try {
+      await setTripCover(detail.media.tripId, id);
+      setCoverFeedback({ kind: "success" });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setCoverFeedback({ kind: "error", message });
+    } finally {
+      setPinningCover(false);
     }
   }
 
@@ -121,6 +142,21 @@ export default function MediaDetailPage(): JSX.Element {
             type="button"
             className="btn-secondary"
             onClick={() => {
+              void handleSetAsCover();
+            }}
+            disabled={pinningCover || media.type !== "image"}
+            title={
+              media.type !== "image"
+                ? "Only image media can serve as a trip cover"
+                : "Pin this image as the trip's cover (auto-cover stops overwriting it)"
+            }
+          >
+            {pinningCover ? "Setting…" : "Set as cover"}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
               void handleReprocess();
             }}
             disabled={reprocessing || media.type !== "image"}
@@ -135,6 +171,7 @@ export default function MediaDetailPage(): JSX.Element {
         </div>
       </header>
 
+      {coverFeedback !== null && <CoverFeedbackBanner feedback={coverFeedback} />}
       {feedback !== null && <FeedbackBanner feedback={feedback} />}
 
       <section className="media-detail-hero" data-type={media.type}>
@@ -389,6 +426,29 @@ function FeedbackBanner({ feedback }: { feedback: ReprocessFeedback }): JSX.Elem
     <p className="status-text" aria-live="polite">
       Reprocess queued — {summary}. The image-channel worker picks them up on its next tick; refresh
       the page after a moment to see updated statuses.
+    </p>
+  );
+}
+
+// P6.T7 — "Set as cover" feedback. Mirrors the FeedbackBanner shape
+// so the user always sees an aria-live confirmation; the success
+// case has no result payload (the server returns the updated trip
+// but the user doesn't need it on this page).
+type CoverFeedback =
+  | { readonly kind: "success" }
+  | { readonly kind: "error"; readonly message: string };
+
+function CoverFeedbackBanner({ feedback }: { feedback: CoverFeedback }): JSX.Element {
+  if (feedback.kind === "error") {
+    return (
+      <p className="form-error" role="alert">
+        Could not set as cover: {feedback.message}
+      </p>
+    );
+  }
+  return (
+    <p className="status-text" aria-live="polite">
+      Set as cover — this image is now pinned. The auto-cover selector won&apos;t overwrite it.
     </p>
   );
 }

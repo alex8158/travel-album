@@ -1,0 +1,34 @@
+-- 009_add_trips_cover_set_by_user.sql
+--
+-- P6.T7: distinguish auto-selected covers from user-pinned covers.
+-- Adds `trips.cover_set_by_user` (INTEGER 0/1) so the auto-cover
+-- selector (post-Quality_Selector) can refuse to overwrite a cover
+-- the user explicitly chose.
+--
+-- Migration shape:
+--   * `ALTER TABLE trips ADD COLUMN cover_set_by_user INTEGER NOT NULL
+--     DEFAULT 0` — works under SQLite STRICT without a table rebuild
+--     because the default is deterministic and the column has no FK.
+--   * Existing rows pick up the DEFAULT 0 silently → treated as "auto"
+--     (or, equivalently, "no user pin yet"), which mirrors the
+--     pre-migration semantic where there was no flag at all.
+--
+-- Why no CHECK on the column:
+--   * SQLite cannot add a CHECK via ALTER TABLE without a full table
+--     rebuild (the 003 cover_media_id FK migration shows the
+--     CREATE/INSERT/DROP/RENAME pattern). For a tightly-controlled
+--     INTEGER flag we keep the type-side guard inside the repository
+--     (which writes only 0 or 1, sourced from TypeScript booleans)
+--     rather than burning a table rebuild on a single column.
+--
+-- Compatibility:
+--   * INSERT statements that omit `cover_set_by_user` continue to work
+--     — the DEFAULT 0 covers them. The existing
+--     `TripRepository.insertStmt` lists explicit columns and does
+--     NOT mention `cover_set_by_user`, which is correct: new trips
+--     start at 0 (auto-cover candidate).
+--   * Read paths must be extended in lock-step with this migration
+--     so SELECT * style callers see the new column. The migration
+--     itself does not touch any callers.
+
+ALTER TABLE trips ADD COLUMN cover_set_by_user INTEGER NOT NULL DEFAULT 0;

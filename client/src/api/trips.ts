@@ -15,6 +15,13 @@ export interface Trip {
   readonly startDate: string | null;
   readonly endDate: string | null;
   readonly coverMediaId: string | null;
+  /**
+   * P6.T7 — `true` when the cover was pinned by a user action
+   * (POST /api/trips/:id/cover). The server's auto-cover selector
+   * refuses to overwrite a user-pinned cover. Optional on the wire
+   * because older cached responses pre-date the flag.
+   */
+  readonly coverSetByUser?: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
@@ -159,6 +166,56 @@ export async function updateTrip(id: string, patch: UpdateTripInput): Promise<Tr
   }
   const body = (await res.json()) as SingleTripResponse;
   return body.trip;
+}
+
+/**
+ * P6.T7 — pin a media as the trip's cover (POST /api/trips/:id/cover).
+ * Server flips `cover_set_by_user = true` so the auto-cover selector
+ * after Quality_Selector refuses to overwrite this pin.
+ */
+export async function setTripCover(tripId: string, coverMediaId: string): Promise<Trip> {
+  const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/cover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ coverMediaId }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as SingleTripResponse;
+  return body.trip;
+}
+
+/**
+ * P6.T7 — release the user pin and immediately recompute the auto
+ * cover. The server's response is `{ trip, outcome }`; we return the
+ * trip and surface the outcome status as a tagged enum so callers
+ * can distinguish "we picked a new cover" from "no eligible
+ * candidate" etc.
+ */
+export interface ResetTripCoverResult {
+  readonly trip: Trip;
+  readonly outcomeStatus:
+    | "applied"
+    | "unchanged"
+    | "skipped-user-pinned"
+    | "skipped-no-candidate"
+    | "missing-trip";
+}
+
+export async function resetTripCover(tripId: string): Promise<ResetTripCoverResult> {
+  const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/cover/reset`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  const body = (await res.json()) as {
+    trip: Trip;
+    outcome: { status: ResetTripCoverResult["outcomeStatus"] };
+  };
+  return { trip: body.trip, outcomeStatus: body.outcome.status };
 }
 
 /**

@@ -25,6 +25,8 @@ interface TripRow {
   start_date: string | null;
   end_date: string | null;
   cover_media_id: string | null;
+  /** P6.T7 — INTEGER 0/1 (SQLite STRICT has no BOOLEAN). */
+  cover_set_by_user: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -40,6 +42,7 @@ const SELECT_COLUMNS = `
   start_date,
   end_date,
   cover_media_id,
+  cover_set_by_user,
   created_at,
   updated_at,
   deleted_at
@@ -52,6 +55,10 @@ export class TripRepository {
   private readonly listActiveStmt;
   private readonly listAllStmt;
   private readonly softDeleteStmt;
+  // P6.T7 — auto-cover writeback primitives
+  private readonly setAutoCoverStmt;
+  private readonly markCoverSetByUserStmt;
+  private readonly clearCoverSetByUserFlagStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -96,6 +103,34 @@ export class TripRepository {
     this.softDeleteStmt = db.prepare(`
       UPDATE trips
       SET deleted_at = ?, updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL
+    `);
+
+    // P6.T7 auto-cover write. Only fires when `cover_set_by_user = 0`
+    // — the guard makes user-pinned covers immune to the auto-
+    // selector even if a concurrent caller manages to slip a manual
+    // pin in between the service's "is user-pinned?" read and this
+    // UPDATE. Active rows only (`deleted_at IS NULL`).
+    this.setAutoCoverStmt = db.prepare(`
+      UPDATE trips
+      SET cover_media_id = ?, updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND cover_set_by_user = 0
+    `);
+    // P6.T7 user pin: flips both the cover and the flag in one shot.
+    // CLAUDE.md §3.9 — explicit user choice; the auto-selector is
+    // expected to honour the flag on its next run.
+    this.markCoverSetByUserStmt = db.prepare(`
+      UPDATE trips
+      SET cover_media_id = ?, cover_set_by_user = 1, updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL
+    `);
+    // P6.T7 reset flag (leave cover_media_id alone). After this the
+    // auto-selector can replace the cover on its next run.
+    this.clearCoverSetByUserFlagStmt = db.prepare(`
+      UPDATE trips
+      SET cover_set_by_user = 0, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL
     `);
   }
@@ -209,6 +244,44 @@ export class TripRepository {
     const info = this.softDeleteStmt.run(deletedAt, deletedAt, id);
     return info.changes > 0;
   }
+
+  /**
+   * P6.T7 — set the cover IF AND ONLY IF the user has not pinned one.
+   * The `cover_set_by_user = 0` guard lives in the WHERE clause so a
+   * concurrent user pin between read and write cannot be silently
+   * overwritten. Returns the number of rows touched: 0 means either
+   * "trip missing / soft-deleted" or "user has already pinned" — the
+   * caller (Service) cannot distinguish the two without a separate
+   * read but does not need to: both outcomes are "no auto-cover
+   * write happened", which is the correct behaviour.
+   */
+  setAutoCover(tripId: string, coverMediaId: string | null, updatedAt: string): number {
+    const info = this.setAutoCoverStmt.run(coverMediaId, updatedAt, tripId);
+    return info.changes;
+  }
+
+  /**
+   * P6.T7 — record a user-initiated cover pin: writes both
+   * `cover_media_id` and `cover_set_by_user = 1` atomically. Returns
+   * the number of rows touched (0 when trip is missing /
+   * soft-deleted).
+   */
+  markCoverSetByUser(tripId: string, coverMediaId: string, updatedAt: string): number {
+    const info = this.markCoverSetByUserStmt.run(coverMediaId, updatedAt, tripId);
+    return info.changes;
+  }
+
+  /**
+   * P6.T7 — clear the "user pinned" flag without touching the
+   * `cover_media_id` itself. Caller (Service) typically follows up
+   * with `autoSelectCoverForTrip(tripId)` so the auto-selector
+   * immediately re-picks the best available image. Returns the
+   * number of rows touched.
+   */
+  clearCoverSetByUserFlag(tripId: string, updatedAt: string): number {
+    const info = this.clearCoverSetByUserFlagStmt.run(updatedAt, tripId);
+    return info.changes;
+  }
 }
 
 function rowToTrip(row: TripRow): Trip {
@@ -220,6 +293,7 @@ function rowToTrip(row: TripRow): Trip {
     startDate: row.start_date,
     endDate: row.end_date,
     coverMediaId: row.cover_media_id,
+    coverSetByUser: row.cover_set_by_user === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,

@@ -170,7 +170,8 @@ async function main(): Promise<void> {
   // handle; UploadService composes media + job repositories and the
   // storage / classifier dependencies. Future services follow the
   // same pattern.
-  const tripService = new TripService(new TripRepository(dbHandle.db));
+  const tripRepo = new TripRepository(dbHandle.db);
+  const tripService = new TripService(tripRepo);
   const mediaRepo = new MediaRepository(dbHandle.db);
   const mediaVersionsRepo = new MediaVersionsRepository(dbHandle.db);
   const mediaAnalysisRepo = new MediaAnalysisRepository(dbHandle.db);
@@ -307,6 +308,10 @@ async function main(): Promise<void> {
     makeQualitySelectorHandler({
       service: qualitySelectorService,
       mediaRepo,
+      // P6.T7 — handler refreshes trip cover after the selector
+      // finishes ranking. Shared TripRepository instance keeps all
+      // trip writes on one SQLite handle.
+      tripRepo,
       logger,
     }),
   );
@@ -339,6 +344,7 @@ async function main(): Promise<void> {
     capabilities,
     storage,
     tripService,
+    tripRepo,
     uploadService,
     mediaService,
     mediaRepo,

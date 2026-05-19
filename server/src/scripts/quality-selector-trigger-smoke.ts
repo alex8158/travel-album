@@ -234,7 +234,8 @@ async function main(): Promise<void> {
 
     const storage = LocalStorageProvider.create(storageRoot);
     const logger = createLogger({ nodeEnv: "test" });
-    const tripService = new TripService(new TripRepository(dbHandle.db));
+    const tripRepo = new TripRepository(dbHandle.db);
+    const tripService = new TripService(tripRepo);
     const mediaRepo = new MediaRepository(dbHandle.db);
     const mediaAnalysisRepo = new MediaAnalysisRepository(dbHandle.db);
     const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
@@ -317,7 +318,7 @@ async function main(): Promise<void> {
     );
     imageHandlers.set(
       QUALITY_SELECTOR_JOB_TYPE,
-      makeQualitySelectorHandler({ service: qualitySelectorService, mediaRepo, logger }),
+      makeQualitySelectorHandler({ service: qualitySelectorService, mediaRepo, tripRepo, logger }),
     );
 
     // 60s pollInterval keeps the auto-polling silent during the test;

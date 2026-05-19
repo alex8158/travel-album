@@ -34,7 +34,7 @@ import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
-import type { TripService } from "./trips/index.js";
+import type { TripRepository, TripService } from "./trips/index.js";
 import type { UploadService } from "./upload/index.js";
 
 export interface CreateAppOptions {
@@ -45,6 +45,12 @@ export interface CreateAppOptions {
   readonly storage: LocalStorageProvider;
   /** Trip domain service powering /api/trips (P1.T3). */
   readonly tripService: TripService;
+  /**
+   * Trip repository — needed by the trips route for P6.T7
+   * `autoSelectCoverForTrip` (the auto-cover selector reads + writes
+   * `trips.cover_media_id` outside of TripService's zod-input layer).
+   */
+  readonly tripRepo: TripRepository;
   /** Upload_Manager powering POST /api/trips/:tripId/media/upload (P2.T4). */
   readonly uploadService: UploadService;
   /** Media read service powering GET /api/(trips/:tripId/)?media[/:id] (P2.T5). */
@@ -68,6 +74,7 @@ export function createApp(opts: CreateAppOptions): Express {
     capabilities,
     storage,
     tripService,
+    tripRepo,
     uploadService,
     mediaService,
     mediaRepo,
@@ -94,7 +101,7 @@ export function createApp(opts: CreateAppOptions): Express {
   app.use("/api/health", makeHealthRouter({ capabilities, storage }));
 
   // Trip CRUD (P1.T3) + derived cover_url (P3.T8).
-  app.use("/api/trips", makeTripsRouter({ service: tripService, mediaRepo }));
+  app.use("/api/trips", makeTripsRouter({ service: tripService, tripRepo, mediaRepo, logger }));
 
   // Media routes (P2.T4 upload + P2.T5 read). Mounted at /api so this
   // router can own paths like /trips/:tripId/media/upload and

@@ -153,6 +153,8 @@ export class MediaRepository {
   private readonly findFirstThumbnailPathStmt;
   private readonly findActiveImageHashesByTripIdStmt;
   private readonly findActiveImagePerceptualHashesByTripIdStmt;
+  // P6.T7 — best image for a trip's auto-selected cover.
+  private readonly findBestCoverCandidateStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -275,6 +277,43 @@ export class MediaRepository {
         AND deleted_at IS NULL
         AND perceptual_hash IS NOT NULL
       ORDER BY created_at ASC, id ASC
+    `);
+
+    // P6.T7 cover candidate selection. Picks the single best image in
+    // a trip by composite quality_score, after filtering out anything
+    // a user wouldn't want as a thumbnail:
+    //   * `deleted_at IS NULL` — no soft-deleted rows.
+    //   * `type = 'image'` — videos don't have thumbnails today and
+    //     the quality_score column is image-side only.
+    //   * `status != 'failed'` — failed uploads / processing failures
+    //     should never become the cover; they almost never have a
+    //     usable thumbnail anyway.
+    //   * `thumbnail_path IS NOT NULL` — the cover URL chain relies
+    //     on the cached thumbnail path. Without it the cover would
+    //     show a placeholder, which defeats the auto-pick.
+    //   * `ma.quality_score IS NOT NULL` — we only auto-select once
+    //     finalize has produced a verdict.
+    //   * `(ma.is_blurry IS NOT 1)` — the auto-selector intentionally
+    //     skips images flagged as definitively blurry; using
+    //     `IS NOT 1` lets NULLs through (borderline / maybe-blurry).
+    // ORDER BY quality DESC, then earliest created_at as a soft
+    // "older photos are typical of the trip's start" tie-break, then
+    // id ASC for determinism.
+    this.findBestCoverCandidateStmt = db.prepare(`
+      SELECT
+        m.id              AS media_id,
+        ma.quality_score  AS quality_score
+      FROM media_items m
+      JOIN media_analysis ma ON ma.media_id = m.id
+      WHERE m.trip_id = ?
+        AND m.deleted_at IS NULL
+        AND m.type = 'image'
+        AND m.status != 'failed'
+        AND m.thumbnail_path IS NOT NULL
+        AND ma.quality_score IS NOT NULL
+        AND (ma.is_blurry IS NULL OR ma.is_blurry != 1)
+      ORDER BY ma.quality_score DESC, m.created_at ASC, m.id ASC
+      LIMIT 1
     `);
   }
 
@@ -465,6 +504,27 @@ export class MediaRepository {
    * is negligible compared to the SELECT itself at V1 scale (< 100
    * media per dedup view).
    */
+  /**
+   * P6.T7 — pick the single best image in a trip for auto-cover
+   * selection, or `null` when the trip has no eligible candidate.
+   * Selection rules are described in detail on the prepared
+   * statement; in short: highest quality_score among active,
+   * non-failed, non-blurry images with a thumbnail.
+   *
+   * Returns just `{ mediaId, qualityScore }` — the caller (cover
+   * selector) only needs the id to write into
+   * `trips.cover_media_id`, and the score helps with logging.
+   */
+  findBestCoverCandidate(
+    tripId: string,
+  ): { readonly mediaId: string; readonly qualityScore: number } | null {
+    const row = this.findBestCoverCandidateStmt.get(tripId) as
+      | { media_id: string; quality_score: number }
+      | undefined;
+    if (row === undefined) return null;
+    return { mediaId: row.media_id, qualityScore: row.quality_score };
+  }
+
   findByIds(ids: readonly string[]): Map<string, MediaItem> {
     const out = new Map<string, MediaItem>();
     if (ids.length === 0) return out;

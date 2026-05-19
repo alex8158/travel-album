@@ -97,6 +97,62 @@ export class TripService {
       throw new NotFoundError(`Trip not found: ${safeId}`, { id: safeId });
     }
   }
+
+  /**
+   * P6.T7 — record a user-initiated cover pin (POST
+   * /api/trips/:id/cover). Sets `cover_media_id` AND flips
+   * `cover_set_by_user = 1` in one statement so the auto-cover
+   * selector that runs after Quality_Selector will skip the trip on
+   * its next pass.
+   *
+   * Throws NotFoundError when the trip is missing / soft-deleted.
+   *
+   * NB: this method does NOT verify that `coverMediaId` references
+   * an active, eligible image — the validation is left to the
+   * `entityIdSchema` parse and the FK constraint
+   * (cover_media_id → media_items, ON DELETE SET NULL). The route
+   * layer's `setCoverBodySchema` already enforces the id shape.
+   */
+  setCoverByUser(id: unknown, coverMediaId: unknown): Trip {
+    const safeId = parseOrThrow(entityIdSchema, id);
+    const safeMediaId = parseOrThrow(entityIdSchema, coverMediaId);
+    let changed: number;
+    try {
+      changed = this.repo.markCoverSetByUser(safeId, safeMediaId, nowIso());
+    } catch (err) {
+      throw translateDbConstraintError(err);
+    }
+    if (changed === 0) {
+      throw new NotFoundError(`Trip not found: ${safeId}`, { id: safeId });
+    }
+    const updated = this.repo.findById(safeId);
+    if (!updated) {
+      throw new NotFoundError(`Trip not found: ${safeId}`, { id: safeId });
+    }
+    return updated;
+  }
+
+  /**
+   * P6.T7 — release a user-pinned cover. Clears the
+   * `cover_set_by_user` flag without touching `cover_media_id`
+   * itself; the route handler typically follows up with
+   * `autoSelectCoverForTrip` so the cover is replaced immediately
+   * with the best auto candidate.
+   *
+   * Throws NotFoundError when the trip is missing / soft-deleted.
+   */
+  clearUserCoverFlag(id: unknown): Trip {
+    const safeId = parseOrThrow(entityIdSchema, id);
+    const changed = this.repo.clearCoverSetByUserFlag(safeId, nowIso());
+    if (changed === 0) {
+      throw new NotFoundError(`Trip not found: ${safeId}`, { id: safeId });
+    }
+    const updated = this.repo.findById(safeId);
+    if (!updated) {
+      throw new NotFoundError(`Trip not found: ${safeId}`, { id: safeId });
+    }
+    return updated;
+  }
 }
 
 // ---------------------------------------------------------------------------

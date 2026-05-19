@@ -45,7 +45,8 @@
     "smoke:image-quality-color": "tsx src/scripts/image-quality-color-smoke.ts",
     "smoke:image-quality-finalize": "tsx src/scripts/image-quality-finalize-smoke.ts",
     "smoke:quality-selector": "tsx src/scripts/quality-selector-smoke.ts",
-    "smoke:quality-selector-trigger": "tsx src/scripts/quality-selector-trigger-smoke.ts"
+    "smoke:quality-selector-trigger": "tsx src/scripts/quality-selector-trigger-smoke.ts",
+    "smoke:trip-cover-auto": "tsx src/scripts/trip-cover-auto-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

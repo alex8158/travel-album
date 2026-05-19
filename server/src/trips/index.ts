@@ -9,6 +9,11 @@ export type { ListTripsOptions, Trip, TripCreateData, TripUpdateData } from "./t
 export { TripRepository } from "./tripRepository.js";
 export { TripService } from "./tripService.js";
 export { deriveCoverUrl, PLACEHOLDER_COVER_URL } from "./coverUrl.js";
+export {
+  autoSelectCoverForTrip,
+  type AutoCoverOutcome,
+  type CoverSelectorDeps,
+} from "./coverSelector.js";
 
 export {
   createTripSchema,

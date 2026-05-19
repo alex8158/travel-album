@@ -16,9 +16,17 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { ValidationError } from "../errors/AppError.js";
+import type { Logger } from "../logger.js";
 import type { MediaRepository } from "../media/index.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { deriveCoverUrl, entityIdSchema, type Trip, type TripService } from "../trips/index.js";
+import {
+  autoSelectCoverForTrip,
+  deriveCoverUrl,
+  entityIdSchema,
+  type Trip,
+  type TripRepository,
+  type TripService,
+} from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
 export interface TripsRouterDeps {
@@ -26,9 +34,19 @@ export interface TripsRouterDeps {
   /**
    * Needed by `deriveCoverUrl` (P3.T8) to look up the pinned cover
    * media's thumbnail and to find the oldest thumbnailed image in
-   * the trip when no pin is set. Read-only from the route layer.
+   * the trip when no pin is set + P6.T7 `findBestCoverCandidate`.
+   * Read-only from the route layer.
    */
   readonly mediaRepo: MediaRepository;
+  /**
+   * P6.T7 — `autoSelectCoverForTrip` works against the trip
+   * repository directly (read trip + write cover), bypassing the
+   * Service's zod-input layer. Service does not own a TripRepository
+   * field publicly, so the route is wired with a separate
+   * TripRepository handle.
+   */
+  readonly tripRepo: TripRepository;
+  readonly logger: Logger;
 }
 
 const setCoverBodySchema = z
@@ -61,7 +79,7 @@ const listQuerySchema = z.object({
 
 export function makeTripsRouter(deps: TripsRouterDeps): Router {
   const router = Router();
-  const { service, mediaRepo } = deps;
+  const { service, mediaRepo, tripRepo, logger } = deps;
 
   // P3.T8: shallow response wrapper that adds the derived `coverUrl`
   // field to a trip object. POST / PATCH / DELETE / cover responses
@@ -124,15 +142,41 @@ export function makeTripsRouter(deps: TripsRouterDeps): Router {
     }),
   );
 
-  // POST /api/trips/:id/cover — set the cover_media_id (format-only check)
+  // POST /api/trips/:id/cover — user-initiated cover pin.
+  // P6.T7: flips `cover_set_by_user = 1` alongside the cover
+  // assignment so the auto-cover selector after Quality_Selector
+  // skips this trip on its next run. Manual covers via the legacy
+  // PATCH /api/trips/:id path (which does NOT flip the flag) are
+  // still possible for admin / script callers.
   router.post(
     "/:id/cover",
     asyncHandler((req, res) => {
       const body = parseOrThrow(setCoverBodySchema, req.body, "cover request body");
-      const trip = service.updateTrip(getIdParam(req.params), {
-        coverMediaId: body.coverMediaId,
-      });
+      const trip = service.setCoverByUser(getIdParam(req.params), body.coverMediaId);
       res.json({ trip });
+    }),
+  );
+
+  // POST /api/trips/:id/cover/reset — release the user-pin and
+  // immediately recompute the auto cover (P6.T7). Composition of two
+  // ops:
+  //   1. clearUserCoverFlag → sets cover_set_by_user = 0 (still keeps
+  //      whatever cover is currently there).
+  //   2. autoSelectCoverForTrip → picks the best candidate (highest
+  //      quality_score, non-blurry, has thumbnail) and writes it.
+  // The response carries the FINAL trip state (post auto-select)
+  // plus an `outcome` field describing what the auto-selector did so
+  // callers can tell the difference between "we picked a new one",
+  // "kept the existing one", and "no eligible candidate".
+  router.post(
+    "/:id/cover/reset",
+    asyncHandler((req, res) => {
+      const id = getIdParam(req.params);
+      service.clearUserCoverFlag(id);
+      const outcome = autoSelectCoverForTrip({ tripRepo, mediaRepo, logger }, id);
+      // Re-read so the response shows the post-auto state.
+      const trip = service.getTripById(id);
+      res.json({ trip, outcome });
     }),
   );
 
