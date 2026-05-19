@@ -122,6 +122,9 @@ export class DuplicateGroupsRepository {
   private readonly confirmGroupHeaderStmt;
   private readonly markItemKeepStmt;
   private readonly markOtherItemsRemoveStmt;
+  // P6.T5 (second half) — Quality_Selector recommendation writeback
+  private readonly setGroupRecommendedOnlyStmt;
+  private readonly setItemRecommendationStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     // Insert one duplicate_groups row. `user_confirmed` is the only
@@ -260,6 +263,23 @@ export class DuplicateGroupsRepository {
       UPDATE duplicate_group_items
       SET user_decision = 'remove', recommendation = 'remove', updated_at = ?
       WHERE group_id = ? AND media_id != ?
+    `);
+
+    // P6.T5 (second half) Quality_Selector primitives. Distinct from
+    // the P5.T7 confirm path because they DO NOT touch `user_decision`
+    // (that remains the user's territory) and DO NOT flip
+    // `user_confirmed` (caller filters out already-confirmed groups
+    // before invoking). Per-item statement is bound row-by-row inside
+    // the transaction so the reason text can differ per member.
+    this.setGroupRecommendedOnlyStmt = db.prepare(`
+      UPDATE duplicate_groups
+      SET recommended_media_id = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    this.setItemRecommendationStmt = db.prepare(`
+      UPDATE duplicate_group_items
+      SET recommendation = ?, reason = ?, updated_at = ?
+      WHERE group_id = ? AND media_id = ?
     `);
   }
 
@@ -498,6 +518,65 @@ export class DuplicateGroupsRepository {
       return header.changes;
     });
     return tx(groupId, recommendedMediaId, now);
+  }
+
+  /**
+   * P6.T5 (second half) Quality_Selector writeback: atomically apply
+   * a system-derived recommendation to one duplicate group + each of
+   * its items.
+   *
+   * Inside one `db.transaction`:
+   *   1. duplicate_groups SET recommended_media_id, updated_at WHERE id
+   *   2. for each (mediaId, {recommendation, reason}):
+   *        duplicate_group_items SET recommendation, reason, updated_at
+   *          WHERE group_id = ? AND media_id = ?
+   *
+   * Crucially differs from `confirmGroupRecommendation` in two ways:
+   *   * Does NOT flip `user_confirmed` to 1. The caller is the
+   *     Quality_Selector, not the user.
+   *   * Does NOT touch `user_decision`. That column is the user's
+   *     manual override (CLAUDE.md §3.9) and survives a re-rank.
+   *
+   * The caller MUST already have filtered out `user_confirmed=1`
+   * groups (this method does not double-check) and MUST guarantee
+   * every key in `perItemReasons` is an actual member of the group
+   * (statement is a no-op for non-members; bad input becomes a
+   * silently-ignored UPDATE).
+   *
+   * Returns the number of rows updated on the group header (0 if the
+   * group vanished mid-transaction; otherwise 1).
+   */
+  applyRecommendation(args: {
+    readonly groupId: string;
+    readonly winnerMediaId: string;
+    readonly perItemReasons: ReadonlyMap<
+      string,
+      { readonly recommendation: DuplicateDecision; readonly reason: string }
+    >;
+    readonly updatedAt: string;
+  }): number {
+    const tx = this.db.transaction(
+      (
+        gid: string,
+        mid: string,
+        perItem: ReadonlyMap<string, { recommendation: DuplicateDecision; reason: string }>,
+        ts: string,
+      ): number => {
+        const header = this.setGroupRecommendedOnlyStmt.run(mid, ts, gid);
+        if (header.changes === 0) return 0;
+        for (const [mediaId, decision] of perItem.entries()) {
+          this.setItemRecommendationStmt.run(
+            decision.recommendation,
+            decision.reason,
+            ts,
+            gid,
+            mediaId,
+          );
+        }
+        return header.changes;
+      },
+    );
+    return tx(args.groupId, args.winnerMediaId, args.perItemReasons, args.updatedAt);
   }
 }
 
