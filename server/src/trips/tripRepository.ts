@@ -59,6 +59,8 @@ export class TripRepository {
   private readonly setAutoCoverStmt;
   private readonly markCoverSetByUserStmt;
   private readonly clearCoverSetByUserFlagStmt;
+  // P7.T1 — cross-table cleanup when a media is soft-deleted.
+  private readonly clearCoverForMediaStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -104,6 +106,34 @@ export class TripRepository {
       UPDATE trips
       SET deleted_at = ?, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL
+    `);
+
+    // P7.T1 — clear the cover reference for any trip that pinned
+    // (auto or user) the given media. Used by media soft-delete to
+    // avoid leaving `cover_media_id` pointing at a now-hidden row
+    // (the FK's `ON DELETE SET NULL` only fires on hard delete).
+    //
+    // We also release the user pin (`cover_set_by_user = 0`) so the
+    // post-delete auto-cover refresh can immediately replace the
+    // cover; otherwise the user would be stuck with a NULL cover
+    // until they manually re-pin one. UX rationale: the user picked
+    // an image as cover, that image is now soft-deleted; releasing
+    // the pin lets the system find them a substitute. Restoring
+    // the media (P7.T2) can re-pin if the user wants.
+    //
+    // Active rows only — soft-deleted trips don't need their cover
+    // touched.
+    //
+    // Uses RETURNING to surface the affected trip ids back to the
+    // caller in one round-trip, so MediaService can trigger
+    // `autoSelectCoverForTrip` for each.
+    this.clearCoverForMediaStmt = db.prepare(`
+      UPDATE trips
+      SET cover_media_id = NULL,
+          cover_set_by_user = 0,
+          updated_at = ?
+      WHERE cover_media_id = ? AND deleted_at IS NULL
+      RETURNING id
     `);
 
     // P6.T7 auto-cover write. Only fires when `cover_set_by_user = 0`
@@ -269,6 +299,24 @@ export class TripRepository {
   markCoverSetByUser(tripId: string, coverMediaId: string, updatedAt: string): number {
     const info = this.markCoverSetByUserStmt.run(coverMediaId, updatedAt, tripId);
     return info.changes;
+  }
+
+  /**
+   * P7.T1 — release the trip cover for any trip whose
+   * `cover_media_id` points at the given media. Also releases the
+   * user-pin so the post-delete auto-cover refresh can immediately
+   * pick a substitute (see prepared-statement comment for the
+   * rationale).
+   *
+   * Returns the list of affected trip IDs so the caller (MediaService)
+   * can trigger `autoSelectCoverForTrip` for each — typically 0 or 1
+   * trips (a media belongs to exactly one trip and only its own
+   * trip's cover can point at it), but the API doesn't enforce that
+   * here.
+   */
+  clearCoverForMedia(mediaId: string, updatedAt: string): string[] {
+    const rows = this.clearCoverForMediaStmt.all(updatedAt, mediaId) as { id: string }[];
+    return rows.map((r) => r.id);
   }
 
   /**

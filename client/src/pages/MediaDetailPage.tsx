@@ -31,10 +31,11 @@
 //     identification, and the preview already serves that purpose.
 
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
   reprocessMedia,
+  softDeleteMedia,
   type MediaAnalysisProjection,
   type MediaItem,
   type MediaVersion,
@@ -45,6 +46,7 @@ import { useMediaDetail } from "../hooks/useMediaDetail";
 
 export default function MediaDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { detail, loading, error, refetch } = useMediaDetail(id);
 
   // P3.T7 reprocess state — local to the page, never persisted.
@@ -58,6 +60,39 @@ export default function MediaDetailPage(): JSX.Element {
   // shape so the user always sees an aria-live message.
   const [pinningCover, setPinningCover] = useState(false);
   const [coverFeedback, setCoverFeedback] = useState<CoverFeedback | null>(null);
+
+  // P7.T1 — soft-delete affordance. Modal-confirm flow mirrors the
+  // trip soft-delete modal in TripDetailPage so the wording /
+  // styling stays consistent. On success we navigate back to the
+  // owning trip with `replace: true` so a Back tap doesn't
+  // resurrect a now-404 detail page.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  function openDelete(): void {
+    setDeleteError(null);
+    setDeleteOpen(true);
+  }
+
+  function closeDelete(): void {
+    if (deleting) return;
+    setDeleteOpen(false);
+    setDeleteError(null);
+  }
+
+  async function confirmDelete(): Promise<void> {
+    if (id === undefined || detail === null || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await softDeleteMedia(id);
+      navigate(`/trips/${detail.media.tripId}`, { replace: true });
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
+    }
+  }
 
   async function handleReprocess(): Promise<void> {
     if (id === undefined || reprocessing) return;
@@ -167,6 +202,15 @@ export default function MediaDetailPage(): JSX.Element {
             }
           >
             {reprocessing ? "Reprocessing…" : "Reprocess"}
+          </button>
+          <button
+            type="button"
+            className="btn-danger"
+            onClick={openDelete}
+            disabled={deleting}
+            title="Soft-delete this media (move to trash; files stay on disk)"
+          >
+            Delete
           </button>
         </div>
       </header>
@@ -304,6 +348,54 @@ export default function MediaDetailPage(): JSX.Element {
           </dl>
         )}
       </section>
+
+      {deleteOpen && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-media-title"
+          aria-describedby="delete-media-body"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDelete();
+          }}
+        >
+          <div className="modal-card">
+            <h2 id="delete-media-title">Delete this photo?</h2>
+            <p id="delete-media-body">
+              This photo will be moved to the trash. The first version of the app does only soft
+              delete, so the original file stays on disk and the photo can be restored later. The
+              trip&apos;s cover will be auto-updated if needed.
+            </p>
+            {deleteError !== null && (
+              <p className="form-error" role="alert">
+                {deleteError}
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={closeDelete}
+                disabled={deleting}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() => {
+                  void confirmDelete();
+                }}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting…" : "Delete photo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

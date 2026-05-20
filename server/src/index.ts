@@ -189,9 +189,18 @@ async function main(): Promise<void> {
     maxFileSize: config.upload.maxFileSize,
     logger,
   });
-  const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo);
   const jobService = new JobService(jobRepo);
   const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
+  // MediaService takes the P7.T1 soft-delete bundle last; pulling
+  // duplicateGroupsRepo out before instantiation so the dep is
+  // available here. The bundle is optional on the type so smokes /
+  // tests can still build a minimal service.
+  const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo, {
+    db: dbHandle.db,
+    tripRepo,
+    duplicateGroupsRepo,
+    logger,
+  });
   const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
   const dedupService = new DedupService(dedupEngine, tripService, duplicateGroupsRepo, mediaRepo);
 

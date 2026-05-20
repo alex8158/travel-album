@@ -9,9 +9,11 @@
 export { MediaRepository } from "./mediaRepository.js";
 export {
   MediaService,
+  type MediaSoftDeleteDeps,
   type ReprocessJobResult,
   type ReprocessOutcome,
   type ReprocessResult,
+  type SoftDeleteMediaResult,
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 export {

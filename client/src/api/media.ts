@@ -347,3 +347,34 @@ export async function reprocessMedia(id: string): Promise<ReprocessResult> {
   }
   return (await res.json()) as ReprocessResult;
 }
+
+/**
+ * P7.T1 — soft-delete one media. Server flips `deleted_at` +
+ * `status = 'deleted'`, clears any `duplicate_groups.recommended_media_id`
+ * pointing at this media, and clears any `trips.cover_media_id`
+ * pointing at it (releasing the user-pin so auto-cover can pick a
+ * substitute). Original / preview / thumbnail files on disk are
+ * NOT removed.
+ *
+ * Idempotent: re-deleting an already-soft-deleted media returns
+ * `alreadyDeleted: true` with no further side effects. 404 only
+ * when the media row is genuinely missing.
+ */
+export interface SoftDeleteMediaResult {
+  readonly mediaId: string;
+  readonly deleted: boolean;
+  readonly alreadyDeleted: boolean;
+  readonly clearedRecommendedGroups: readonly string[];
+  readonly clearedCoverTrips: readonly string[];
+}
+
+export async function softDeleteMedia(id: string): Promise<SoftDeleteMediaResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as SoftDeleteMediaResult;
+}

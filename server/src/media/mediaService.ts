@@ -18,15 +18,67 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { SqliteDatabase } from "../db/connection.js";
+import type { DuplicateGroupsRepository } from "../dedup/index.js";
 import { BadRequestError, NotFoundError } from "../errors/AppError.js";
 import type { JobRepository } from "../jobs/index.js";
-import { entityIdSchema, type TripService } from "../trips/index.js";
+import type { Logger } from "../logger.js";
+import {
+  autoSelectCoverForTrip,
+  entityIdSchema,
+  type TripRepository,
+  type TripService,
+} from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
 import { MediaRepository } from "./mediaRepository.js";
 import { listMediaOptionsSchema } from "./mediaSchemas.js";
 import { MediaVersionsRepository } from "./mediaVersionsRepository.js";
 import type { MediaDetail, MediaItem } from "./mediaTypes.js";
+
+/**
+ * Cross-domain dependencies needed by {@link MediaService.softDeleteMedia}.
+ * Grouped into one optional object so existing test harnesses can
+ * still build a minimal `MediaService` without wiring P7 — the
+ * soft-delete entry point throws when the bundle is missing.
+ */
+export interface MediaSoftDeleteDeps {
+  /** Shared SQLite handle — needed for the cross-table transaction. */
+  readonly db: SqliteDatabase;
+  /** Cleared cover_media_id + cover_set_by_user when a media goes away. */
+  readonly tripRepo: TripRepository;
+  /**
+   * Cleared duplicate_groups.recommended_media_id when the
+   * soft-deleted media was a group's auto-recommendation. Items
+   * themselves stay put (design.md §4.3 allows "保留记录"; the UI
+   * already renders soft-deleted members as missing).
+   */
+  readonly duplicateGroupsRepo: DuplicateGroupsRepository;
+  /** Logged auto-cover refresh outcomes; warnings on swallowed errors. */
+  readonly logger: Logger;
+}
+
+/**
+ * Outcome of a {@link MediaService.softDeleteMedia} call. Carries
+ * enough information for diagnostics and for the route layer to
+ * shape the HTTP response (e.g. the list of trips whose cover was
+ * cleared).
+ */
+export interface SoftDeleteMediaResult {
+  readonly mediaId: string;
+  /** `true` when the row was active at call time. */
+  readonly deleted: boolean;
+  /**
+   * `true` when the row was already soft-deleted before the call —
+   * the response is idempotent-success rather than 404, since the
+   * end state ("this media is gone") was already there.
+   */
+  readonly alreadyDeleted: boolean;
+  /** Duplicate groups whose `recommended_media_id` was cleared. */
+  readonly clearedRecommendedGroups: readonly string[];
+  /** Trips whose `cover_media_id` was cleared (typically 0 or 1). */
+  readonly clearedCoverTrips: readonly string[];
+}
 
 /** Outcome of one job-type slot during reprocess (P3.T7). */
 export type ReprocessOutcome = "created" | "reset" | "skipped";
@@ -67,6 +119,13 @@ export class MediaService {
      * throws if it's missing.
      */
     private readonly jobRepo?: JobRepository,
+    /**
+     * Optional cross-domain bundle for {@link softDeleteMedia} (P7.T1).
+     * When omitted, the soft-delete entry point throws — existing
+     * smokes that don't exercise soft-delete continue to work
+     * unchanged.
+     */
+    private readonly softDeleteDeps?: MediaSoftDeleteDeps,
   ) {}
 
   /**
@@ -217,5 +276,134 @@ export class MediaService {
     this.tripService.getTripById(safeTripId);
     const opts = parseOrThrow(listMediaOptionsSchema, options, "list options");
     return this.repo.list(safeTripId, opts);
+  }
+
+  /**
+   * P7.T1 — soft-delete one media row + clean up the references that
+   * would otherwise dangle:
+   *
+   *   1. Inside a single `db.transaction`:
+   *      a. `media_items.deleted_at = now()`, `status = 'deleted'`
+   *      b. `duplicate_groups.recommended_media_id = NULL` for any
+   *         group recommending this media (the FK's SET NULL is for
+   *         hard delete only; soft delete needs the explicit reset).
+   *      c. `trips.cover_media_id = NULL`, `cover_set_by_user = 0`
+   *         for any trip pinning this media as cover.
+   *   2. After the transaction commits, best-effort
+   *      `autoSelectCoverForTrip(tripId)` for each cleared cover —
+   *      lets the system immediately replace a cover the user just
+   *      removed, instead of leaving the trip with a placeholder
+   *      until the next finalize → selector pass.
+   *
+   * Idempotent: a re-DELETE on an already-soft-deleted media returns
+   * `{ deleted: true, alreadyDeleted: true }` with no further DB
+   * writes. A DELETE on a missing media throws NotFoundError.
+   *
+   * Side effects deliberately NOT in scope (per task):
+   *   * No file removal — originals / thumbnails / previews stay on
+   *     disk (design.md §4.3 + CLAUDE.md §2.4).
+   *   * No `duplicate_group_items.user_decision` flip — the row
+   *     stays put; the UI projects `media: null` for soft-deleted
+   *     members, preserving the user's original decision for
+   *     P7.T2 restore.
+   *   * No automatic Quality_Selector re-run on the affected
+   *     duplicate groups — groups simply lose their recommendation
+   *     until the next regular Quality_Selector cycle (which may
+   *     run as part of P6.T7's finalize-triggered chain).
+   */
+  softDeleteMedia(idInput: unknown): SoftDeleteMediaResult {
+    const mediaId = parseOrThrow(entityIdSchema, idInput, "id");
+    if (this.softDeleteDeps === undefined) {
+      throw new BadRequestError(
+        "MediaService.softDeleteMedia called without softDeleteDeps; service not fully wired",
+      );
+    }
+    const deps = this.softDeleteDeps;
+
+    // Existence + idempotency check — read with `includeDeleted` so
+    // we can tell "missing" (404) apart from "already soft-deleted"
+    // (200 no-op).
+    const existing = this.repo.findById(mediaId, { includeDeleted: true });
+    if (existing === null) {
+      throw new NotFoundError(`Media not found: ${mediaId}`, { id: mediaId });
+    }
+    if (existing.deletedAt !== null) {
+      return {
+        mediaId,
+        deleted: true,
+        alreadyDeleted: true,
+        clearedRecommendedGroups: [],
+        clearedCoverTrips: [],
+      };
+    }
+
+    const now = new Date().toISOString();
+    let clearedRecommendedGroups: readonly string[] = [];
+    let clearedCoverTrips: readonly string[] = [];
+
+    const tx = deps.db.transaction((): void => {
+      // 1. Flip the media row to soft-deleted.
+      const changed = this.repo.softDelete(mediaId, now);
+      if (changed === 0) {
+        // Race: another writer soft-deleted between our existence
+        // check and the UPDATE. Tx rollback ensures atomicity but
+        // is harmless either way (end state = soft-deleted).
+        return;
+      }
+      // 2. Release any duplicate-group recommendation that pinned
+      //    this media.
+      clearedRecommendedGroups = deps.duplicateGroupsRepo.clearRecommendedMediaForMedia(
+        mediaId,
+        now,
+      );
+      // 3. Clear cover references + release user pins.
+      clearedCoverTrips = deps.tripRepo.clearCoverForMedia(mediaId, now);
+    });
+    tx();
+
+    // Best-effort auto-cover refresh post-commit. The cover selector
+    // itself is idempotent and never throws on operational paths
+    // (missing trip / no candidate); DB errors during the UPDATE
+    // bubble up and we log + swallow so the HTTP response still
+    // reports the successful soft-delete.
+    for (const tripId of clearedCoverTrips) {
+      try {
+        const outcome = autoSelectCoverForTrip(
+          { tripRepo: deps.tripRepo, mediaRepo: this.repo, logger: deps.logger },
+          tripId,
+        );
+        deps.logger.info(
+          { mediaId, tripId, coverOutcome: outcome.status },
+          "soft_delete_media: auto cover refreshed for trip",
+        );
+      } catch (err) {
+        deps.logger.warn(
+          {
+            mediaId,
+            tripId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "soft_delete_media: auto cover refresh failed (soft-delete itself still succeeded)",
+        );
+      }
+    }
+
+    deps.logger.info(
+      {
+        mediaId,
+        tripId: existing.tripId,
+        clearedRecommendedGroups,
+        clearedCoverTrips,
+      },
+      "soft_delete_media: media soft-deleted + references cleaned up",
+    );
+
+    return {
+      mediaId,
+      deleted: true,
+      alreadyDeleted: false,
+      clearedRecommendedGroups,
+      clearedCoverTrips,
+    };
   }
 }

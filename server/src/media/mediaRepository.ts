@@ -155,6 +155,8 @@ export class MediaRepository {
   private readonly findActiveImagePerceptualHashesByTripIdStmt;
   // P6.T7 — best image for a trip's auto-selected cover.
   private readonly findBestCoverCandidateStmt;
+  // P7.T1 — soft-delete writer.
+  private readonly softDeleteStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -210,6 +212,22 @@ export class MediaRepository {
           preview_path = @previewPath,
           thumbnail_path = @thumbnailPath,
           updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P7.T1 soft-delete writer. Active-row guard (`deleted_at IS
+    // NULL`) makes the UPDATE idempotent in the FIRST sense: a
+    // second call on an already-soft-deleted row reports 0 changes
+    // and the Service treats that as a no-op. Status is flipped to
+    // 'deleted' alongside `deleted_at` because design.md §4.3 lists
+    // both as the soft-delete signal; the read filter on
+    // `deleted_at IS NULL` is what actually hides the row, but
+    // status keeps reports / inspections consistent.
+    this.softDeleteStmt = db.prepare(`
+      UPDATE media_items
+      SET deleted_at = @deletedAt,
+          status = 'deleted',
+          updated_at = @deletedAt
       WHERE id = @mediaId AND deleted_at IS NULL
     `);
 
@@ -504,6 +522,27 @@ export class MediaRepository {
    * is negligible compared to the SELECT itself at V1 scale (< 100
    * media per dedup view).
    */
+  /**
+   * P7.T1 — soft-delete one media row: write `deleted_at` (and flip
+   * `status` to 'deleted'). Returns the number of rows touched:
+   *
+   *   * `1` — row was active and is now soft-deleted.
+   *   * `0` — row is either missing, OR already soft-deleted; both
+   *     cases look identical to default reads. The Service is
+   *     responsible for telling them apart via a prior
+   *     `findById(id, { includeDeleted: true })` call.
+   *
+   * NB: this method does NOT touch related rows in
+   * `duplicate_groups` / `duplicate_group_items` / `trips.cover_media_id`
+   * / files on disk. Those are explicitly out of scope here —
+   * `MediaService.softDeleteMedia` composes the cleanups inside a
+   * single transaction (design.md §4.3).
+   */
+  softDelete(mediaId: string, deletedAt: string): number {
+    const info = this.softDeleteStmt.run({ mediaId, deletedAt });
+    return info.changes;
+  }
+
   /**
    * P6.T7 — pick the single best image in a trip for auto-cover
    * selection, or `null` when the trip has no eligible candidate.

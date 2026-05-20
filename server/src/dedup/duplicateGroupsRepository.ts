@@ -125,6 +125,8 @@ export class DuplicateGroupsRepository {
   // P6.T5 (second half) — Quality_Selector recommendation writeback
   private readonly setGroupRecommendedOnlyStmt;
   private readonly setItemRecommendationStmt;
+  // P7.T1 — soft-delete cross-table cleanup.
+  private readonly clearRecommendedMediaForMediaStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     // Insert one duplicate_groups row. `user_confirmed` is the only
@@ -280,6 +282,25 @@ export class DuplicateGroupsRepository {
       UPDATE duplicate_group_items
       SET recommendation = ?, reason = ?, updated_at = ?
       WHERE group_id = ? AND media_id = ?
+    `);
+
+    // P7.T1 — release any duplicate-group recommendation that pinned
+    // the given media. The FK already has `ON DELETE SET NULL` for
+    // hard deletes, but soft delete bypasses the FK, so we have to
+    // null out `recommended_media_id` ourselves to avoid surfacing
+    // an invisible recommendation. Active media may still belong to
+    // the group via duplicate_group_items — those rows are left
+    // untouched (UI projects `media: null` for missing/deleted
+    // members; design.md §4.3 step 3 explicitly permits "保留记录").
+    //
+    // Returns the affected group ids via RETURNING so callers can
+    // log / re-queue a Quality_Selector run if desired (current
+    // P7.T1 scope: log only).
+    this.clearRecommendedMediaForMediaStmt = db.prepare(`
+      UPDATE duplicate_groups
+      SET recommended_media_id = NULL, updated_at = ?
+      WHERE recommended_media_id = ?
+      RETURNING id
     `);
   }
 
@@ -591,6 +612,20 @@ export class DuplicateGroupsRepository {
       },
     );
     return tx(args.groupId, args.winnerMediaId, args.perItemReasons, args.updatedAt);
+  }
+
+  /**
+   * P7.T1 — clear `recommended_media_id` on every duplicate group
+   * whose recommendation pointed at the now-soft-deleted media.
+   * Composable inside `MediaService.softDeleteMedia`'s transaction.
+   * Returns the affected group ids (used for diagnostics + caller
+   * decisions about re-queueing a Quality_Selector run).
+   */
+  clearRecommendedMediaForMedia(mediaId: string, updatedAt: string): string[] {
+    const rows = this.clearRecommendedMediaForMediaStmt.all(updatedAt, mediaId) as {
+      id: string;
+    }[];
+    return rows.map((r) => r.id);
   }
 }
 

@@ -6,10 +6,13 @@
 //   GET  /api/trips/:tripId/media            (P2.T5, requirements §9.2)
 //   GET  /api/media/:id                      (P2.T5, requirements §9.2)
 //
-// The soft-delete / restore / reprocess endpoints (DELETE /api/media/:id,
-// POST /api/media/:id/restore, POST /api/media/:id/process) land in
-// their respective phases (P7 / P4 follow-ups). Until then this
-// router is read-only beyond the single POST upload.
+// P7.T1 added soft-delete:
+//
+//   DELETE /api/media/:id                    (P7.T1, requirements §7.18)
+//
+// The restore endpoint (POST /api/media/:id/restore) lands in P7.T2.
+// Originals / thumbnails / previews stay on disk (CLAUDE.md §2.4 /
+// design.md §4.3).
 //
 // Path note: the canonical paths come from requirements §9.2 + design.md
 // §3.3. The Trip CRUD router is mounted at `/api/trips`, so this
@@ -127,6 +130,27 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     asyncHandler((req, res) => {
       const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
       const result = deps.mediaService.reprocess(id);
+      res.status(200).json(result);
+    }),
+  );
+
+  // DELETE /api/media/:id — soft delete (P7.T1).
+  //
+  // Writes `media_items.deleted_at` + flips `status` to 'deleted';
+  // clears any `duplicate_groups.recommended_media_id` pointing at
+  // this media; clears any `trips.cover_media_id` pointing at it
+  // and releases the user-pin so the auto-cover selector can
+  // immediately pick a substitute. Files on disk are NOT removed
+  // (CLAUDE.md §2.4 / design.md §4.3).
+  //
+  // Idempotent: 200 on already-soft-deleted media (with
+  // `alreadyDeleted: true`); 404 only when the row is genuinely
+  // missing.
+  router.delete(
+    "/media/:id",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.softDeleteMedia(id);
       res.status(200).json(result);
     }),
   );
