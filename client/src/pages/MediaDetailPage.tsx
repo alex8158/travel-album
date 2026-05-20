@@ -34,20 +34,43 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
+  enhanceMedia,
   reprocessMedia,
+  selectMediaVersion,
   softDeleteMedia,
+  type EnhanceMediaResult,
+  type MediaActiveVersionType,
   type MediaAnalysisProjection,
   type MediaItem,
   type MediaVersion,
+  type MediaVersionView,
+  type MediaVersionsView,
   type ReprocessResult,
+  type SelectVersionResult,
 } from "../api/media";
 import { setTripCover } from "../api/trips";
 import { useMediaDetail } from "../hooks/useMediaDetail";
+import { useMediaVersions } from "../hooks/useMediaVersions";
 
 export default function MediaDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { detail, loading, error, refetch } = useMediaDetail(id);
+  // P8.T5 — user-facing version list (original + enhanced + future
+  // ai_refined). Separate from `detail.versions` (the technical
+  // listing of ALL media_versions rows including thumbnail /
+  // preview / metadata). The two are kept in parallel: detail.versions
+  // for the technical "what files exist" section near the bottom of
+  // the page, and `versionsView` here for the user-facing "which one
+  // am I looking at" comparison block. The variable is named
+  // `versionsView` so it doesn't shadow `detail.versions` (which is
+  // destructured a few lines below as `versions`).
+  const {
+    data: versionsView,
+    loading: versionsLoading,
+    error: versionsError,
+    refetch: refetchVersions,
+  } = useMediaVersions(id);
 
   // P3.T7 reprocess state — local to the page, never persisted.
   // `feedback` carries the last call's outcome and is rendered as
@@ -69,6 +92,16 @@ export default function MediaDetailPage(): JSX.Element {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // P8.T5 — Enhancement section state. Three independent operations
+  // (Adopt / Use original / Re-enhance) each track their own pending
+  // flag so one in-flight call doesn't disable the others. A single
+  // `enhanceFeedback` banner carries the most recent action's
+  // outcome (success / error) until the next click — same shape as
+  // the existing Reprocess feedback above.
+  const [enhancePending, setEnhancePending] = useState(false);
+  const [selectPending, setSelectPending] = useState<MediaActiveVersionType | null>(null);
+  const [enhanceFeedback, setEnhanceFeedback] = useState<EnhanceFeedback | null>(null);
 
   function openDelete(): void {
     setDeleteError(null);
@@ -124,6 +157,49 @@ export default function MediaDetailPage(): JSX.Element {
       setCoverFeedback({ kind: "error", message });
     } finally {
       setPinningCover(false);
+    }
+  }
+
+  // P8.T5 — Re-trigger enhance (P8.T1 backend). Always idempotent
+  // on the server side; we just refresh feedback + versions after.
+  async function handleEnhance(): Promise<void> {
+    if (id === undefined || enhancePending) return;
+    setEnhancePending(true);
+    setEnhanceFeedback(null);
+    try {
+      const result = await enhanceMedia(id);
+      setEnhanceFeedback({ kind: "enhance-success", result });
+      // The job runs asynchronously; refetch versions after a beat
+      // so a newly-created enhanced row surfaces without a manual
+      // page reload. The hook's stale-while-revalidate keeps the
+      // previous list visible during the fetch.
+      refetchVersions();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setEnhanceFeedback({ kind: "error", op: "enhance", message });
+    } finally {
+      setEnhancePending(false);
+    }
+  }
+
+  // P8.T5 — Switch the active version (P8.T4 backend). Used by both
+  // "Adopt enhanced" and "Use original" buttons. After the write we
+  // refetch both the detail bundle (so `media.activeVersionType`
+  // updates) and the versions view (so `isActive` flags refresh).
+  async function handleSelectVersion(versionType: MediaActiveVersionType): Promise<void> {
+    if (id === undefined || selectPending !== null) return;
+    setSelectPending(versionType);
+    setEnhanceFeedback(null);
+    try {
+      const result = await selectMediaVersion(id, versionType);
+      setEnhanceFeedback({ kind: "select-success", result });
+      refetch();
+      refetchVersions();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setEnhanceFeedback({ kind: "error", op: "select", message });
+    } finally {
+      setSelectPending(null);
     }
   }
 
@@ -282,6 +358,24 @@ export default function MediaDetailPage(): JSX.Element {
         </dl>
       </section>
 
+      {media.type === "image" ? (
+        <EnhancementSection
+          media={media}
+          versions={versionsView}
+          versionsLoading={versionsLoading}
+          versionsError={versionsError}
+          enhancePending={enhancePending}
+          selectPending={selectPending}
+          feedback={enhanceFeedback}
+          onEnhance={() => {
+            void handleEnhance();
+          }}
+          onSelect={(t) => {
+            void handleSelectVersion(t);
+          }}
+        />
+      ) : null}
+
       {media.type === "image" ? <QualityAnalysisSection media={media} /> : null}
 
       <section className="trip-detail-section">
@@ -410,6 +504,280 @@ function Field({ label, value }: { label: string; value: React.ReactNode }): JSX
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Enhancement section (P8.T5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The P8.T5 "compare original vs enhanced + action buttons" block.
+ *
+ * Renders a small grid where each cell is one user-selectable
+ * version (original always present; enhanced shown when a
+ * media_versions row of that type exists). The currently-active
+ * cell is highlighted with a "✓ Active" pill. Three buttons live
+ * under the grid:
+ *   * Adopt enhanced  — visible only when enhanced exists; disabled
+ *                       when it's already active.
+ *   * Use original    — disabled when original is already active.
+ *   * Re-enhance      — always enabled (re-enqueues the worker;
+ *                       server outcome is created / reset / skipped).
+ *
+ * Lifecycle states (parallel to other sections on the page):
+ *   * versionsLoading + no data → "Loading versions…"
+ *   * versionsError              → inline error + Re-enhance still
+ *                                  available (manual retry)
+ *   * versions loaded            → grid + buttons
+ *
+ * Failure modes (per button):
+ *   * enhance / select calls bubble up as `feedback` banners; the
+ *     section itself never crashes on a thrown promise.
+ */
+interface EnhancementSectionProps {
+  readonly media: MediaItem;
+  readonly versions: MediaVersionsView | null;
+  readonly versionsLoading: boolean;
+  readonly versionsError: string | null;
+  readonly enhancePending: boolean;
+  readonly selectPending: MediaActiveVersionType | null;
+  readonly feedback: EnhanceFeedback | null;
+  readonly onEnhance: () => void;
+  readonly onSelect: (versionType: MediaActiveVersionType) => void;
+}
+
+function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
+  const {
+    media,
+    versions,
+    versionsLoading,
+    versionsError,
+    enhancePending,
+    selectPending,
+    feedback,
+    onEnhance,
+    onSelect,
+  } = props;
+
+  // Active version: prefer the dedicated versions endpoint's value
+  // (most recent server state); fall back to media.activeVersionType
+  // for the loading window before /versions returns; default to
+  // 'original' (the schema default) so an older server response
+  // missing the field still renders sensibly.
+  const active: MediaActiveVersionType =
+    versions?.activeVersionType ?? media.activeVersionType ?? "original";
+
+  const cells = versions?.versions ?? [];
+  const original = cells.find((v) => v.versionType === "original") ?? null;
+  const enhanced = cells.find((v) => v.versionType === "enhanced") ?? null;
+
+  return (
+    <section className="trip-detail-section media-enhance-section">
+      <h2>Versions</h2>
+      <p className="status-text">
+        Compare the original upload with the enhanced version (P8 sharp pipeline). Adopting a
+        version switches which one this media uses for downstream display; the original file is
+        always preserved on disk.
+      </p>
+
+      {feedback !== null && <EnhanceFeedbackBanner feedback={feedback} />}
+
+      {versionsLoading && versions === null ? (
+        <p className="status-text">Loading versions…</p>
+      ) : versionsError !== null ? (
+        <p className="status-text status-error" role="alert">
+          Failed to load versions: {versionsError}
+        </p>
+      ) : (
+        <div className="media-enhance-grid">
+          <VersionCell
+            label="Original"
+            cell={original}
+            active={active === "original"}
+            mediaType={media.type}
+          />
+          {enhanced !== null ? (
+            <VersionCell
+              label="Enhanced"
+              cell={enhanced}
+              active={active === "enhanced"}
+              mediaType={media.type}
+            />
+          ) : (
+            <div className="media-enhance-cell media-enhance-cell--empty">
+              <div className="media-enhance-cell-head">
+                <span className="media-enhance-cell-label">Enhanced</span>
+                <span className="quality-pill" data-tone="neutral">
+                  Not yet
+                </span>
+              </div>
+              <div className="media-enhance-cell-placeholder" aria-hidden="true">
+                ✨
+              </div>
+              <p className="status-text">
+                No enhanced version yet. Click <em>Enhance</em> below to run the sharp pipeline; the
+                output lands here when the image-channel worker finishes.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="media-enhance-actions">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => onSelect("enhanced")}
+          disabled={
+            enhanced === null || active === "enhanced" || selectPending !== null || enhancePending
+          }
+          title={
+            enhanced === null
+              ? "No enhanced version available yet"
+              : active === "enhanced"
+                ? "Already using the enhanced version"
+                : "Switch this media to use the enhanced version"
+          }
+        >
+          {selectPending === "enhanced" ? "Adopting…" : "Adopt enhanced"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => onSelect("original")}
+          disabled={active === "original" || selectPending !== null || enhancePending}
+          title={
+            active === "original"
+              ? "Already using the original"
+              : "Discard the enhanced selection and switch back to the original"
+          }
+        >
+          {selectPending === "original" ? "Switching…" : "Use original"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onEnhance}
+          disabled={enhancePending || selectPending !== null}
+          title="Re-enqueue the sharp pipeline for this media. Existing original file stays untouched."
+        >
+          {enhancePending ? "Submitting…" : enhanced === null ? "Enhance" : "Re-enhance"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+interface VersionCellProps {
+  readonly label: string;
+  readonly cell: MediaVersionView | null;
+  readonly active: boolean;
+  readonly mediaType: MediaItem["type"];
+}
+
+function VersionCell({ label, cell, active, mediaType }: VersionCellProps): JSX.Element {
+  // Synthesize a `/storage/...` URL when the cell has a non-empty
+  // file path. The 'original' cell of an unknown-typed media has
+  // filePath='' and no bytes on disk; show a placeholder instead of
+  // an `<img src="">` that would 404.
+  const src = cell !== null && cell.filePath.length > 0 ? `/storage/${cell.filePath}` : null;
+  const dimsLabel =
+    cell !== null && cell.width !== null && cell.height !== null
+      ? `${cell.width}×${cell.height}`
+      : "—";
+  const sizeLabel = cell !== null && cell.fileSize !== null ? formatBytes(cell.fileSize) : "—";
+  return (
+    <div className="media-enhance-cell" data-active={active ? "true" : "false"}>
+      <div className="media-enhance-cell-head">
+        <span className="media-enhance-cell-label">{label}</span>
+        {active ? (
+          <span className="quality-pill" data-tone="positive">
+            ✓ Active
+          </span>
+        ) : (
+          <span className="quality-pill" data-tone="neutral">
+            Inactive
+          </span>
+        )}
+      </div>
+      {src !== null ? (
+        <img
+          className="media-enhance-cell-img"
+          src={src}
+          alt={`${label} version preview`}
+          loading="lazy"
+        />
+      ) : (
+        <div className="media-enhance-cell-placeholder" aria-hidden="true">
+          {mediaType === "image" ? "🖼️" : mediaType === "video" ? "🎞️" : "📄"}
+        </div>
+      )}
+      <dl className="media-card-meta">
+        <div>
+          <dt>Dimensions</dt>
+          <dd>{dimsLabel}</dd>
+        </div>
+        <div>
+          <dt>Size</dt>
+          <dd>{sizeLabel}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * Three-shape feedback state for the Enhancement section:
+ *   * `enhance-success` — POST /enhance returned (job submitted /
+ *     reset / skipped); shown until the next action.
+ *   * `select-success`  — POST /select-version returned; carries the
+ *     previous + new versionType so the banner can say
+ *     "Switched from X to Y" (or "Already X" when idempotent).
+ *   * `error`           — banner with `op` discriminator so we can
+ *     prefix "Enhance failed" vs "Switch failed" properly.
+ */
+type EnhanceFeedback =
+  | { readonly kind: "enhance-success"; readonly result: EnhanceMediaResult }
+  | { readonly kind: "select-success"; readonly result: SelectVersionResult }
+  | { readonly kind: "error"; readonly op: "enhance" | "select"; readonly message: string };
+
+function EnhanceFeedbackBanner({ feedback }: { feedback: EnhanceFeedback }): JSX.Element {
+  if (feedback.kind === "error") {
+    const prefix = feedback.op === "enhance" ? "Enhance failed" : "Switch failed";
+    return (
+      <p className="form-error" role="alert">
+        {prefix}: {feedback.message}
+      </p>
+    );
+  }
+  if (feedback.kind === "enhance-success") {
+    const { outcome, reason } = feedback.result;
+    const human =
+      outcome === "created"
+        ? "Submitted — the sharp pipeline will run on the image channel."
+        : outcome === "reset"
+          ? "Resubmitted — the previous job will rerun on the image channel."
+          : `Skipped — ${reason ?? "an enhance job is already pending or running"}.`;
+    return (
+      <p className="status-text" aria-live="polite">
+        Enhance: {human} Refresh the page after a moment to see the result.
+      </p>
+    );
+  }
+  // select-success
+  const { previousVersionType, activeVersionType, alreadyActive } = feedback.result;
+  if (alreadyActive) {
+    return (
+      <p className="status-text" aria-live="polite">
+        Already using <strong>{activeVersionType}</strong> — no change.
+      </p>
+    );
+  }
+  return (
+    <p className="status-text" aria-live="polite">
+      Switched from <strong>{previousVersionType}</strong> to <strong>{activeVersionType}</strong>.
+    </p>
   );
 }
 

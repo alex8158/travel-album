@@ -155,6 +155,15 @@ export type MediaStatus =
 export type MediaUserDecision = "keep" | "remove" | "undecided";
 
 /**
+ * P8.T4 — closed set of user-selectable active versions. Mirrors the
+ * server-side `MediaActiveVersionType` (migration 010's CHECK enum
+ * on `media_items.active_version_type`). Operational version_types
+ * (`thumbnail` / `preview` / `metadata` / `video_*`) are NOT valid
+ * here — they're internal worker artefacts, not user choices.
+ */
+export type MediaActiveVersionType = "original" | "enhanced" | "ai_refined";
+
+/**
  * Read projection returned by GET /api/trips/:tripId/media (and the
  * single-row GET /api/media/:id, when that's wired later). Mirrors
  * `MediaItem` in server/src/media/mediaTypes.ts. Hash columns are
@@ -175,6 +184,15 @@ export interface MediaItem {
   readonly duration: number | null;
   readonly status: MediaStatus;
   readonly userDecision: MediaUserDecision;
+  /**
+   * P8.T4 — the version the user has currently selected for display.
+   * Optional on the wire because older cached responses may not
+   * carry the field (the server always sets it post-migration 010;
+   * the optional shape just protects deploys mid-rollout). Readers
+   * treat `undefined` the same as `'original'` (the schema-level
+   * default).
+   */
+  readonly activeVersionType?: MediaActiveVersionType;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
@@ -418,4 +436,133 @@ export async function restoreMedia(id: string): Promise<RestoreMediaResult> {
     throw new Error(await readErrorMessage(res));
   }
   return (await res.json()) as RestoreMediaResult;
+}
+
+// ---------------------------------------------------------------------------
+// P8 — Enhance + version switching (T1 / T4)
+// ---------------------------------------------------------------------------
+
+/**
+ * P8.T1 — enqueue a fresh `image_enhance` job for one media. Mirrors
+ * the server's `EnhanceMediaResult` envelope.
+ *
+ * The job is asynchronous from the client's perspective: the response
+ * confirms the enqueue (`outcome: 'created' | 'reset' | 'skipped'`)
+ * but the sharp pipeline runs on the image channel after the
+ * executor's next tick. The UI typically shows "Submitted — refresh
+ * in a moment" and lets the user re-check Versions later.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid id / non-image media
+ *   * 404 — media missing or soft-deleted
+ */
+export type EnhanceOutcome = "created" | "reset" | "skipped";
+
+export interface EnhanceMediaResult {
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly outcome: EnhanceOutcome;
+  readonly jobId: string;
+  readonly reason?: string;
+}
+
+export async function enhanceMedia(id: string): Promise<EnhanceMediaResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/enhance`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as EnhanceMediaResult;
+}
+
+/**
+ * P8.T4 — one user-selectable version entry. Mirrors the server-side
+ * `MediaVersionView` projection. `id` is `null` for the synthesized
+ * 'original' entry (no `media_versions` row exists for it — it's
+ * the implicit base). `filePath` is a logical path inside the
+ * storage root (never an absolute filesystem path).
+ */
+export interface MediaVersionView {
+  readonly id: string | null;
+  readonly versionType: MediaActiveVersionType;
+  readonly isActive: boolean;
+  readonly filePath: string;
+  readonly mimeType: string | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly fileSize: number | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * P8.T4 — response envelope of `GET /api/media/:id/versions`.
+ * `activeVersionType` is surfaced at top level so callers don't have
+ * to scan `versions[]` to find the active one.
+ */
+export interface MediaVersionsView {
+  readonly mediaId: string;
+  readonly activeVersionType: MediaActiveVersionType;
+  readonly versions: readonly MediaVersionView[];
+}
+
+/**
+ * Fetch the user-selectable versions for one media (P8.T4). Returns
+ * the synthesized 'original' entry plus any 'enhanced' / 'ai_refined'
+ * rows; operational types (thumbnail / preview / metadata / video_*)
+ * are filtered out at the server.
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid id format
+ *   * 404 — media missing or soft-deleted (P7 recycle-bin contract)
+ */
+export async function fetchMediaVersions(
+  id: string,
+  signal?: AbortSignal,
+): Promise<MediaVersionsView> {
+  const init: RequestInit = { headers: { Accept: "application/json" } };
+  if (signal) init.signal = signal;
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/versions`, init);
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as MediaVersionsView;
+}
+
+/**
+ * P8.T4 — outcome of `POST /api/media/:id/select-version`. Server
+ * writes `media_items.active_version_type` and reports the previous
+ * value + an `alreadyActive` flag (true means the user re-selected
+ * the already-current version; no DB write happened but the response
+ * still looks like success for idempotent UX).
+ */
+export interface SelectVersionResult {
+  readonly mediaId: string;
+  readonly activeVersionType: MediaActiveVersionType;
+  readonly previousVersionType: MediaActiveVersionType;
+  readonly alreadyActive: boolean;
+}
+
+/**
+ * Switch the user-selected active version for one media (P8.T4).
+ *
+ * Throws on whole-request failures:
+ *   * 400 — invalid versionType / version doesn't exist for this media
+ *   * 404 — media missing or soft-deleted
+ */
+export async function selectMediaVersion(
+  id: string,
+  versionType: MediaActiveVersionType,
+): Promise<SelectVersionResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/select-version`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ versionType }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as SelectVersionResult;
 }
