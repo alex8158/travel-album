@@ -11,9 +11,18 @@
 // the Service contract — same split that P1.T3 uses for trips list.
 //
 // `includeDeleted` is accepted by the Service schema so future
-// restore / admin callers can request soft-deleted rows. The route
-// layer deliberately does NOT expose it; the public read endpoint
-// only ever shows active rows.
+// restore / admin callers can request the COMBINED set (active +
+// soft-deleted) — the public read endpoint deliberately does NOT
+// expose this knob.
+//
+// `onlyDeleted` (P7.T4) is the "recycle bin" filter. When true the
+// list returns ONLY soft-deleted rows; the regular `deleted_at IS
+// NULL` predicate is inverted. Mutually exclusive with
+// `includeDeleted=true` semantically (you either want everything or
+// just the deleted slice), but we don't enforce that at the schema
+// level — the repository picks `onlyDeleted` first, then
+// `includeDeleted`. Route layer exposes `onlyDeleted` so the
+// frontend recycle-bin page can query without extra ceremony.
 
 import { z } from "zod";
 
@@ -34,6 +43,7 @@ export const listMediaOptionsSchema = z
       .nonnegative("offset must be ≥ 0")
       .default(0),
     includeDeleted: z.coerce.boolean().default(false),
+    onlyDeleted: z.coerce.boolean().default(false),
   })
   .strict();
 

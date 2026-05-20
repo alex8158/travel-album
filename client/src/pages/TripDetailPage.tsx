@@ -234,6 +234,13 @@ export default function TripDetailPage() {
           <Link to={`/trips/${trip.id}/duplicates`} className="btn-secondary">
             View duplicates
           </Link>
+          {/* P7.T4 recycle-bin entry point: lists soft-deleted media of
+              this trip with a per-row Restore action. The page reuses
+              the same media list endpoint with ?onlyDeleted=true so
+              the default gallery still hides deleted rows. */}
+          <Link to={`/trips/${trip.id}/recycle-bin`} className="btn-secondary">
+            Recycle bin
+          </Link>
           <button type="button" className="btn-danger" onClick={openDelete}>
             Delete
           </button>

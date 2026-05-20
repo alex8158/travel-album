@@ -222,10 +222,16 @@ interface ListMediaResponse {
  * the server defaults to `limit=50 / offset=0`. The route layer caps
  * limit at 100. The gallery uses these only minimally (no in-UI
  * pagination yet — P2.T7 is the basic grid).
+ *
+ * `onlyDeleted` (P7.T4) flips the read to recycle-bin mode: the
+ * server returns ONLY soft-deleted media for this trip, ordered by
+ * `deleted_at DESC` (most-recently-deleted first). Default is false
+ * so the gallery still hides deleted rows.
  */
 export interface FetchTripMediaOptions {
   readonly limit?: number;
   readonly offset?: number;
+  readonly onlyDeleted?: boolean;
 }
 
 /**
@@ -246,6 +252,7 @@ export async function fetchTripMedia(
   const params = new URLSearchParams();
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.onlyDeleted) params.set("onlyDeleted", "true");
   const query = params.toString();
   const url = `/api/trips/${encodeURIComponent(tripId)}/media${query ? `?${query}` : ""}`;
 

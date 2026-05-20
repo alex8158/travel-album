@@ -148,6 +148,9 @@ export class MediaRepository {
   private readonly findByIdAnyStmt;
   private readonly listByTripActiveStmt;
   private readonly listByTripAllStmt;
+  // P7.T4 — recycle-bin filter: ONLY soft-deleted rows, ordered by
+  // `deleted_at DESC` so the most-recently-deleted items show first.
+  private readonly listByTripDeletedOnlyStmt;
   private readonly updateImageDerivedPathsStmt;
   private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
@@ -199,6 +202,19 @@ export class MediaRepository {
       ${SELECT_FROM_MEDIA}
       WHERE m.trip_id = ?
       ORDER BY m.created_at DESC, m.id DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    // P7.T4 recycle-bin filter: invert the active predicate so the
+    // result set contains ONLY soft-deleted rows. Ordering switches
+    // to `deleted_at DESC` (most-recently-deleted first) because the
+    // recycle bin's primary UX is "undo what I just did" — fresh
+    // deletes are the ones users most often want to restore. Tie-
+    // break on id keeps page boundaries deterministic.
+    this.listByTripDeletedOnlyStmt = db.prepare(`
+      ${SELECT_FROM_MEDIA}
+      WHERE m.trip_id = ? AND m.deleted_at IS NOT NULL
+      ORDER BY m.deleted_at DESC, m.id DESC
       LIMIT ? OFFSET ?
     `);
 
@@ -401,7 +417,15 @@ export class MediaRepository {
   list(tripId: string, options: ListMediaOptions = {}): MediaItem[] {
     const limit = options.limit ?? DEFAULT_LIMIT;
     const offset = options.offset ?? 0;
-    const stmt = options.includeDeleted ? this.listByTripAllStmt : this.listByTripActiveStmt;
+    // Precedence: `onlyDeleted` wins over `includeDeleted`. The two
+    // flags are semantically disjoint ("recycle bin" vs "combined
+    // admin view"); if a caller passes both we treat `onlyDeleted`
+    // as the more specific intent (P7.T4 recycle-bin page).
+    const stmt = options.onlyDeleted
+      ? this.listByTripDeletedOnlyStmt
+      : options.includeDeleted
+        ? this.listByTripAllStmt
+        : this.listByTripActiveStmt;
     const rows = stmt.all(tripId, limit, offset) as MediaRow[];
     return rows.map(rowToItem);
   }

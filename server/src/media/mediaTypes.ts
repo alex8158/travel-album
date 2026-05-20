@@ -135,6 +135,12 @@ export interface MediaAnalysisProjection {
  *   tightens them to 1..100, the service caps at 200 (mirrors trips).
  * - `includeDeleted` is for restore / admin paths and is NOT exposed
  *   on the public API.
+ * - `onlyDeleted` (P7.T4) is the "recycle bin" filter — when true the
+ *   repository inverts the active-only predicate and returns ONLY
+ *   soft-deleted rows, ordered by `deleted_at DESC` so the UI shows
+ *   the most-recently-deleted items first. Wins over `includeDeleted`
+ *   when both are set; route layer exposes only this knob so the
+ *   frontend recycle-bin page can query without extra ceremony.
  *
  * The `| undefined` on each property is required by
  * `exactOptionalPropertyTypes: true`: it lets callers pass
@@ -147,6 +153,7 @@ export interface ListMediaOptions {
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
   readonly includeDeleted?: boolean | undefined;
+  readonly onlyDeleted?: boolean | undefined;
 }
 
 /**

@@ -40,6 +40,14 @@ export interface MediaRouterDeps {
  * 1..100, same as the trips list route (P1.T3). Unknown query keys
  * are silently dropped (default zod `strip`) so future cache-busters
  * / instrumentation params don't trigger 400s here.
+ *
+ * `onlyDeleted` (P7.T4) is the public "recycle bin" knob. When true
+ * the response contains ONLY soft-deleted media for this trip, ordered
+ * by `deleted_at DESC`. We deliberately do NOT expose `includeDeleted`
+ * at the route layer — that flag is the admin / combined view and
+ * stays internal (mirrors the existing comment block in
+ * `mediaSchemas.ts`). Default is `false`, so the regular gallery
+ * endpoint keeps hiding deleted rows.
  */
 const listMediaQuerySchema = z.object({
   limit: z.coerce
@@ -53,6 +61,7 @@ const listMediaQuerySchema = z.object({
     .int("offset must be an integer")
     .nonnegative("offset must be >= 0")
     .default(0),
+  onlyDeleted: z.coerce.boolean().default(false),
 });
 
 export function makeMediaRouter(deps: MediaRouterDeps): Router {

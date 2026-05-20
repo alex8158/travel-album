@@ -23,6 +23,11 @@
 //     Pagination beyond a single page is out of scope for P2.T7; the
 //     hook still accepts the prop so a future "load more" UI can
 //     bump it without changing the surface.
+//   * `onlyDeleted` (P7.T4) is a third primitive prop that flips the
+//     fetch to the trip's recycle-bin view (server returns ONLY
+//     soft-deleted rows). Default is false so the gallery keeps
+//     hiding deleted rows. The flag is part of the effect dep array,
+//     so toggling it triggers a refetch + re-render naturally.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -35,7 +40,11 @@ export interface UseTripMediaResult {
   readonly refetch: () => void;
 }
 
-export function useTripMedia(tripId: string | undefined, limit = 100): UseTripMediaResult {
+export function useTripMedia(
+  tripId: string | undefined,
+  limit = 100,
+  onlyDeleted = false,
+): UseTripMediaResult {
   const [media, setMedia] = useState<readonly MediaItem[]>([]);
   const [loading, setLoading] = useState<boolean>(tripId !== undefined);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +69,7 @@ export function useTripMedia(tripId: string | undefined, limit = 100): UseTripMe
     setLoading(true);
     setError(null);
 
-    fetchTripMedia(tripId, { limit }, controller.signal)
+    fetchTripMedia(tripId, { limit, onlyDeleted }, controller.signal)
       .then((m) => {
         if (controller.signal.aborted) return;
         setMedia(m);
@@ -75,7 +84,7 @@ export function useTripMedia(tripId: string | undefined, limit = 100): UseTripMe
     return () => {
       controller.abort();
     };
-  }, [tripId, reloadTick, limit]);
+  }, [tripId, reloadTick, limit, onlyDeleted]);
 
   const refetch = useCallback(() => {
     setReloadTick((n) => n + 1);
