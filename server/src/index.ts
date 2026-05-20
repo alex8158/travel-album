@@ -10,6 +10,7 @@ import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { DedupEngine, DedupService, DuplicateGroupsRepository } from "./dedup/index.js";
 import {
+  IMAGE_ENHANCE_JOB_TYPE,
   IMAGE_HASH_JOB_TYPE,
   IMAGE_QUALITY_BLUR_JOB_TYPE,
   IMAGE_QUALITY_COLOR_JOB_TYPE,
@@ -18,6 +19,7 @@ import {
   JobQueue,
   JobRepository,
   JobService,
+  makeImageEnhanceHandler,
   makeImageHashHandler,
   makeImageMetadataHandler,
   makeImageQualityBlurHandler,
@@ -310,6 +312,33 @@ async function main(): Promise<void> {
         colorWeight: config.quality.finalize.colorWeight,
         colorFloor: config.quality.finalize.colorFloor,
         workerVersion: config.quality.finalize.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P8.T2 image_enhance handler — sharp pipeline + derived
+  // enhanced.jpg + media_versions(version_type='enhanced') upsert.
+  // Settings flow from `config.quality.enhance.*`; defaults are
+  // tuned conservatively per requirements §7.9 acceptance #5 to
+  // avoid over-saturation / over-sharpening.
+  imageHandlers.set(
+    IMAGE_ENHANCE_JOB_TYPE,
+    makeImageEnhanceHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        maxEdge: config.quality.enhance.maxEdge,
+        brightness: config.quality.enhance.brightness,
+        saturation: config.quality.enhance.saturation,
+        gamma: config.quality.enhance.gamma,
+        linearA: config.quality.enhance.linearA,
+        linearB: config.quality.enhance.linearB,
+        sharpenSigma: config.quality.enhance.sharpenSigma,
+        sharpenM1: config.quality.enhance.sharpenM1,
+        sharpenM2: config.quality.enhance.sharpenM2,
+        jpegQuality: config.quality.enhance.jpegQuality,
+        workerVersion: config.quality.enhance.workerVersion,
       },
       logger,
     }),

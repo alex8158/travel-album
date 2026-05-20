@@ -102,8 +102,14 @@ export {
   type FinalizeUsedDimension,
   type ImageQualityFinalizeHandlerDeps,
 } from "./imageQualityFinalizeWorker.js";
-// P8.T1: constant-only re-export. `makeImageEnhanceHandler` lands in
-// P8.T2 alongside the sharp pipeline.
-export { IMAGE_ENHANCE_JOB_TYPE } from "./imageEnhanceWorker.js";
+// P8.T1: constant for the enqueue endpoint. P8.T2 added the
+// `makeImageEnhanceHandler` + `ImageEnhanceHandlerDeps` types
+// alongside, completing the sharp pipeline + media_versions writer.
+export {
+  IMAGE_ENHANCE_JOB_TYPE,
+  makeImageEnhanceHandler,
+  type EnhanceSettings,
+  type ImageEnhanceHandlerDeps,
+} from "./imageEnhanceWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

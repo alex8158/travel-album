@@ -199,6 +199,43 @@ const schema = z
     IMAGE_QUALITY_FINALIZE_COLOR_WEIGHT: numNonNeg(0.2),
     IMAGE_QUALITY_FINALIZE_COLOR_FLOOR: numNonNeg(0.5),
     IMAGE_QUALITY_FINALIZE_WORKER_VERSION: strDefault("1.0"),
+    // P8.T2 image_enhance worker — conservative one-tap enhancement.
+    // The defaults are tuned to produce a perceptible-but-subtle lift
+    // on typical phone / mirrorless travel photos without crossing
+    // into the over-cooked Instagram-filter territory called out by
+    // requirements §7.9 acceptance #5 ("不应过度饱和、过度锐化或明显失真").
+    // Every knob is overridable via env so a future re-tune doesn't
+    // require code changes.
+    //
+    //   * MAX_EDGE — upper bound on the longest edge of the enhanced
+    //     output. We deliberately do NOT downscale below this; the
+    //     enhance file mirrors the original's resolution so users get
+    //     a usable replacement (not a thumbnail). 4096 covers ~12MP
+    //     and matches the modern phone capture size.
+    //   * BRIGHTNESS / SATURATION / GAMMA / LINEAR_A / LINEAR_B —
+    //     deterministic sharp params. Multiplicative `linear(a, b)`
+    //     gives a mild S-curve when paired with `gamma`. Defaults
+    //     stay within ±5% of the source mid-tones.
+    //   * SHARPEN_SIGMA / SHARPEN_M1 / SHARPEN_M2 — light unsharp
+    //     mask. `m2 = 2.0` caps the high-frequency boost so we don't
+    //     ring noisy regions (the prompt explicitly forbids
+    //     "过度锐化"). Sigma 0.6 keeps the operation
+    //     scale-invariant on phone-resolution photos.
+    //   * JPEG_QUALITY — output quality. 88 is the sweet spot for
+    //     visible-detail preservation without inflating file size.
+    //   * WORKER_VERSION — stamped into `media_versions.params` so a
+    //     future re-tune can be told apart from older outputs.
+    IMAGE_ENHANCE_MAX_EDGE: intPositive(4096),
+    IMAGE_ENHANCE_BRIGHTNESS: numNonNeg(1.0),
+    IMAGE_ENHANCE_SATURATION: numNonNeg(1.05),
+    IMAGE_ENHANCE_GAMMA: numNonNeg(1.05),
+    IMAGE_ENHANCE_LINEAR_A: numNonNeg(1.05),
+    IMAGE_ENHANCE_LINEAR_B: z.preprocess(stripEmpty, z.coerce.number().default(-3)),
+    IMAGE_ENHANCE_SHARPEN_SIGMA: numNonNeg(0.6),
+    IMAGE_ENHANCE_SHARPEN_M1: numNonNeg(0.5),
+    IMAGE_ENHANCE_SHARPEN_M2: numNonNeg(2.0),
+    IMAGE_ENHANCE_JPEG_QUALITY: intPositive(88),
+    IMAGE_ENHANCE_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -295,6 +332,61 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ["IMAGE_QUALITY_FINALIZE_COLOR_FLOOR"],
         message: `IMAGE_QUALITY_FINALIZE_COLOR_FLOOR (${cfg.IMAGE_QUALITY_FINALIZE_COLOR_FLOOR}) must be in [0, 1]; it's the lower-bound for the tempered colour contribution.`,
+      });
+    }
+
+    // P8.T2: clamp enhance knobs so a misconfigured env can't produce
+    // visibly broken images. Hard caps come from sharp's documented
+    // safe range; the soft caps reflect requirements §7.9's "no
+    // over-saturation / over-sharpening" guard.
+    if (cfg.IMAGE_ENHANCE_JPEG_QUALITY < 1 || cfg.IMAGE_ENHANCE_JPEG_QUALITY > 100) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_ENHANCE_JPEG_QUALITY"],
+        message: `IMAGE_ENHANCE_JPEG_QUALITY (${cfg.IMAGE_ENHANCE_JPEG_QUALITY}) must be in [1, 100]; sharp.jpeg.quality is a percentage.`,
+      });
+    }
+    for (const [key, value] of [
+      ["IMAGE_ENHANCE_BRIGHTNESS", cfg.IMAGE_ENHANCE_BRIGHTNESS],
+      ["IMAGE_ENHANCE_SATURATION", cfg.IMAGE_ENHANCE_SATURATION],
+      ["IMAGE_ENHANCE_GAMMA", cfg.IMAGE_ENHANCE_GAMMA],
+      ["IMAGE_ENHANCE_LINEAR_A", cfg.IMAGE_ENHANCE_LINEAR_A],
+    ] as const) {
+      // Soft cap at 2.0 — anything above doubles the channel and is
+      // almost certainly an operator error (sharp accepts it but the
+      // output will look like a filter, not an enhancement).
+      if (value > 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be ≤ 2.0 to avoid over-cooked enhancement; reduce or unset to use the default.`,
+        });
+      }
+    }
+    // sharp.gamma requires 1.0 ≤ gamma ≤ 3.0 (per sharp docs). 1.0 is
+    // a pass-through, which matches the "no enhancement" identity.
+    if (cfg.IMAGE_ENHANCE_GAMMA < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_ENHANCE_GAMMA"],
+        message: `IMAGE_ENHANCE_GAMMA (${cfg.IMAGE_ENHANCE_GAMMA}) must be ≥ 1.0 (sharp.gamma's documented range starts at 1.0; 1.0 is identity).`,
+      });
+    }
+    // sharpen.flat (m1) and sharpen.jagged (m2) cap at 3 per sharp
+    // docs; sigma should stay below 10 to keep the operation a sharpen
+    // rather than a blur-detect.
+    if (cfg.IMAGE_ENHANCE_SHARPEN_M2 > 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_ENHANCE_SHARPEN_M2"],
+        message: `IMAGE_ENHANCE_SHARPEN_M2 (${cfg.IMAGE_ENHANCE_SHARPEN_M2}) must be ≤ 3.0 (sharp.sharpen.m2 cap; higher rings the output).`,
+      });
+    }
+    if (cfg.IMAGE_ENHANCE_SHARPEN_SIGMA > 10) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["IMAGE_ENHANCE_SHARPEN_SIGMA"],
+        message: `IMAGE_ENHANCE_SHARPEN_SIGMA (${cfg.IMAGE_ENHANCE_SHARPEN_SIGMA}) must be ≤ 10.0 to remain a sharpen op.`,
       });
     }
 
@@ -400,6 +492,20 @@ export interface Config {
       colorFloor: number;
       workerVersion: string;
     };
+    /** P8.T2 image_enhance worker knobs. */
+    enhance: {
+      maxEdge: number;
+      brightness: number;
+      saturation: number;
+      gamma: number;
+      linearA: number;
+      linearB: number;
+      sharpenSigma: number;
+      sharpenM1: number;
+      sharpenM2: number;
+      jpegQuality: number;
+      workerVersion: string;
+    };
     pHashDistanceMax: number;
     weights: {
       resolution: number;
@@ -487,6 +593,19 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         colorWeight: raw.IMAGE_QUALITY_FINALIZE_COLOR_WEIGHT,
         colorFloor: raw.IMAGE_QUALITY_FINALIZE_COLOR_FLOOR,
         workerVersion: raw.IMAGE_QUALITY_FINALIZE_WORKER_VERSION,
+      },
+      enhance: {
+        maxEdge: raw.IMAGE_ENHANCE_MAX_EDGE,
+        brightness: raw.IMAGE_ENHANCE_BRIGHTNESS,
+        saturation: raw.IMAGE_ENHANCE_SATURATION,
+        gamma: raw.IMAGE_ENHANCE_GAMMA,
+        linearA: raw.IMAGE_ENHANCE_LINEAR_A,
+        linearB: raw.IMAGE_ENHANCE_LINEAR_B,
+        sharpenSigma: raw.IMAGE_ENHANCE_SHARPEN_SIGMA,
+        sharpenM1: raw.IMAGE_ENHANCE_SHARPEN_M1,
+        sharpenM2: raw.IMAGE_ENHANCE_SHARPEN_M2,
+        jpegQuality: raw.IMAGE_ENHANCE_JPEG_QUALITY,
+        workerVersion: raw.IMAGE_ENHANCE_WORKER_VERSION,
       },
       pHashDistanceMax: raw.PHASH_DISTANCE_MAX,
       weights: {
