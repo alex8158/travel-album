@@ -143,6 +143,35 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     }),
   );
 
+  // POST /api/media/:id/enhance (P8.T1).
+  //
+  // Enqueue an `image_enhance` job for one image media. Single-slot
+  // enqueue (unlike reprocess, which covers two job types) — the
+  // response is the flat `EnhanceMediaResult` envelope:
+  //   * `outcome: "created"` — no prior row; one was inserted pending
+  //   * `outcome: "reset"`   — terminal/retrying prior row flipped
+  //                            back to retrying (P4.T2 R-40 path)
+  //   * `outcome: "skipped"` — prior pending/running row left alone;
+  //                            `reason` carries the explanation
+  //
+  // Always returns 200 on the enqueue. 404 when the media is missing
+  // or soft-deleted (recycle-bin members cannot be enhanced; the
+  // user must restore first). 400 when media.type !== 'image' (video
+  // enhance is out of P8 scope per design.md §6.2.2; AI refine is
+  // §7.10).
+  //
+  // Synchronous from the API's perspective: the actual sharp pipeline
+  // is P8.T2 and runs in the image channel executor on the next
+  // pending tick. P8.T1 only manipulates the queue.
+  router.post(
+    "/media/:id/enhance",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.enhanceMedia(id);
+      res.status(200).json(result);
+    }),
+  );
+
   // DELETE /api/media/:id — soft delete (P7.T1).
   //
   // Writes `media_items.deleted_at` + flips `status` to 'deleted';

@@ -236,7 +236,7 @@
 
 > requirements §7.9 / §14 阶段 8。
 
-- [ ] **P8.T1 [MUST]** `POST /api/media/:id/enhance` 入队 `image_enhance` 任务
+- [x] **P8.T1 [MUST]** `POST /api/media/:id/enhance` 入队 `image_enhance` 任务（2026-05-20 完成；新建 `server/src/jobs/imageEnhanceWorker.ts` 仅导出 `IMAGE_ENHANCE_JOB_TYPE = "image_enhance"` 常量（P8.T2 在同一文件追加 handler）；`MediaService.enhanceMedia(id)` 复用 `reprocessOneJobType` 的入队原语，单 slot 返回扁平 `EnhanceMediaResult { mediaId, jobType, outcome: 'created'|'reset'|'skipped', jobId, reason? }`；missing/soft-deleted 媒体 → 404、非 image 媒体 → 400（image-only per requirements §7.9）。路由 `POST /api/media/:id/enhance` 直接转发到 service。无新增 migration、无 media_versions 写入（P8.T3 territory）、无 sharp 调用（P8.T2 territory）、无前端改动（P8.T5）。新增 `smoke:media-enhance-trigger`（27/27 PASS），并跑 10 个回归 smoke 全绿。详见 `docs/progress.md`）
 - [ ] **P8.T2 [MUST]** sharp 增强管线：白平衡 / 曝光 / 对比度 / 锐化 / 降噪（参数走 config）
 - [ ] **P8.T3 [MUST]** 输出 `derived/{mediaId}/enhanced.jpg`，写 `media_versions(version_type='enhanced')`
 - [ ] **P8.T4 [MUST]** 版本切换 API：`GET /api/media/:id/versions`、`POST /api/media/:id/select-version`

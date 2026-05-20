@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import type { SqliteDatabase } from "../db/connection.js";
 import type { DuplicateGroupsRepository } from "../dedup/index.js";
 import { BadRequestError, NotFoundError } from "../errors/AppError.js";
-import type { JobRepository } from "../jobs/index.js";
+import { IMAGE_ENHANCE_JOB_TYPE, type JobRepository } from "../jobs/index.js";
 import type { Logger } from "../logger.js";
 import { QUALITY_SELECTOR_JOB_TYPE, encodeQualitySelectorPayload } from "../quality/index.js";
 import {
@@ -124,6 +124,36 @@ export interface ReprocessJobResult {
 export interface ReprocessResult {
   readonly mediaId: string;
   readonly results: readonly ReprocessJobResult[];
+}
+
+/**
+ * Outcome envelope for {@link MediaService.enhanceMedia} (P8.T1).
+ *
+ * `image_enhance` is a single-slot enqueue (unlike reprocess which
+ * covers `image_thumbnail + image_metadata`), so the response is
+ * flat — no `results[]` wrapper. Keeps the typical UI call site
+ * (`const { outcome } = await enhanceMedia(id)`) trivial.
+ *
+ * Outcome semantics mirror reprocess one-for-one so the queue
+ * state-machine stays consistent:
+ *   * `created` — no prior `image_enhance` row for this media;
+ *                 one was inserted as pending.
+ *   * `reset`   — the most recent prior row was failed / success /
+ *                 cancelled / retrying; we routed it through
+ *                 `retrying` (P4.T2 R-40 fix) so the executor's next
+ *                 tick picks it up. `retry_count` resets to 0.
+ *   * `skipped` — the most recent prior row is pending / running;
+ *                 leaving it alone avoids double-queuing or racing
+ *                 the handler. `reason` carries the explanation.
+ */
+export interface EnhanceMediaResult {
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly outcome: ReprocessOutcome;
+  /** Job row id (newly created or pre-existing). */
+  readonly jobId: string;
+  /** When outcome === "skipped", why (e.g. "already pending"). */
+  readonly reason?: string;
 }
 
 /**
@@ -234,6 +264,79 @@ export class MediaService {
       this.reprocessOneJobType(safeId, jobType, now),
     );
     return { mediaId: safeId, results };
+  }
+
+  /**
+   * P8.T1 — enqueue an `image_enhance` job for one media row.
+   *
+   * Single-slot wrapper around the same enqueue primitive that
+   * `reprocess` uses (`reprocessOneJobType`). The handler that
+   * consumes these rows lands in P8.T2 (sharp pipeline) and writes
+   * `media_versions(version_type='enhanced')` in P8.T3 — this method
+   * intentionally does NEITHER of those things; it just manipulates
+   * the queue so the user's "Enhance" click stays snappy and the
+   * heavy work happens off-request.
+   *
+   * Failure modes:
+   *   * `NotFoundError` — media row missing OR soft-deleted. The
+   *     recycle-bin contract from P7 forbids further writes to
+   *     soft-deleted rows; the read goes through the default-active
+   *     filter so a soft-deleted media surfaces as 404 here.
+   *   * `BadRequestError` — `media.type !== 'image'`. Per
+   *     requirements §7.9 enhancement is image-only; video enhance /
+   *     AI refine (§7.10) live in later phases. `unknown`-typed
+   *     media also rejects because the original bytes were discarded
+   *     by Upload_Manager (design.md §6.2.3) — there is nothing to
+   *     enhance.
+   *
+   * Idempotency: re-calling on a media whose latest `image_enhance`
+   * row is pending / running yields `outcome='skipped'`. Calling
+   * after a terminal row (success / failed / cancelled / retrying)
+   * yields `outcome='reset'` (re-routes through the canonical
+   * `retrying` re-entry state). First call on a fresh media yields
+   * `outcome='created'`.
+   *
+   * Does NOT block on the actual enhance. The image-channel
+   * executor (P3.T2) polls pending rows independently.
+   */
+  enhanceMedia(mediaIdInput: unknown): EnhanceMediaResult {
+    if (this.jobRepo === undefined) {
+      throw new Error("MediaService: jobRepo not configured; cannot enhance");
+    }
+    const safeId = parseOrThrow(entityIdSchema, mediaIdInput, "id");
+    const media = this.repo.findById(safeId);
+    if (media === null) {
+      // Active-only read above — `findById` defaults
+      // `includeDeleted=false`, so soft-deleted media surface here as
+      // a clean 404 (matches the recycle-bin invariant from P7).
+      throw new NotFoundError(`Media not found: ${safeId}`, { id: safeId });
+    }
+    if (media.type !== "image") {
+      throw new BadRequestError(
+        `enhance is only supported for image media; this row is '${media.type}'`,
+        { mediaId: safeId, type: media.type },
+      );
+    }
+
+    const now = new Date().toISOString();
+    const slot = this.reprocessOneJobType(safeId, IMAGE_ENHANCE_JOB_TYPE, now);
+    // `slot.reason` is exactOptionalPropertyTypes-friendly — we only
+    // spread it back when it exists so the caller doesn't see an
+    // explicit `reason: undefined` field.
+    return slot.reason !== undefined
+      ? {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+          reason: slot.reason,
+        }
+      : {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+        };
   }
 
   // -------------------------------------------------------------------------
