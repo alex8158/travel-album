@@ -212,7 +212,7 @@
 
 - [x] **P7.T1 [MUST]** 软删除路径：`DELETE /api/media/:id` 设 `deleted_at`，先重置 `duplicate_groups.recommended_media_id`、清 `duplicate_group_items` 标记（2026-05-20 完成；`duplicate_group_items.user_decision` 保留以方便 P7.T2 恢复，UI 已通过 `media: null` 占位渲染；详见 `docs/progress.md`）
 - [x] **P7.T2 [MUST]** 恢复路径：`POST /api/media/:id/restore`，事务内复位 `deleted_at`、`status`，重新参与去重评估但不覆盖已 `user_confirmed` 的组（2026-05-20 完成；事务内 reset，post-tx 入队 `quality_selector_run` trip-scope 由现有 handler 复用做 re-rank + auto-cover；client 仅加 `restoreMedia(id)` helper，UI 留 P7.T4；详见 `docs/progress.md`）
-- [ ] **P7.T3 [MUST]** 重复组批量删除：`POST /api/duplicate-groups/:id/delete-others` 走软删除路径
+- [x] **P7.T3 [MUST]** 重复组批量删除：`POST /api/duplicate-groups/:id/delete-others` 走软删除路径（2026-05-20 完成；`DedupService.deleteOthers` 对组内 `recommendation = 'remove'` 成员逐个调 `MediaService.softDeleteMedia`，winner 保留；typed outcome `applied / no-winner` + 幂等；前端 DuplicateGroupDetailPage 加 "Delete N other photo(s)" 按钮 + modal；详见 `docs/progress.md`）
 - [ ] **P7.T4 [MUST]** 前端：回收站视图（列出 `deleted_at` 不为空的媒体）、恢复按钮、软删除二次确认提示“可恢复”
 - [ ] **P7.T5 [MUST]** 自动化测试：
   - 删除推荐图后该重复组 `recommended_media_id` 被正确重置

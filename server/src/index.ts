@@ -202,7 +202,18 @@ async function main(): Promise<void> {
     logger,
   });
   const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
-  const dedupService = new DedupService(dedupEngine, tripService, duplicateGroupsRepo, mediaRepo);
+  const dedupService = new DedupService(
+    dedupEngine,
+    tripService,
+    duplicateGroupsRepo,
+    mediaRepo,
+    // P7.T3 — deleteOthers funnels each remove-candidate through
+    // MediaService.softDeleteMedia so the cross-table cleanup +
+    // auto-cover refresh chain stays in one place. Optional on the
+    // DedupService constructor so existing smokes that build the
+    // service directly without a full media wiring still compile.
+    mediaService,
+  );
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel

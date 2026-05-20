@@ -241,3 +241,45 @@ export async function confirmDuplicateGroup(
   const body = (await res.json()) as SingleDuplicateGroupResponse;
   return body.group;
 }
+
+// ---------------------------------------------------------------------------
+// Bulk soft-delete losers (P7.T3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcome of `deleteOthersInGroup`. Two statuses:
+ *   * `applied` — winner was identified; every item with
+ *     `recommendation = 'remove'` was funnelled through the
+ *     media soft-delete path. The UI typically shows
+ *     `deletedCount + skippedCount`.
+ *   * `no-winner` — the group has no `recommendedMediaId`; the
+ *     server refused to delete anything. The UI should ask the
+ *     user to confirm a winner first.
+ */
+export interface DeleteOthersOutcome {
+  readonly groupId: string;
+  readonly status: "applied" | "no-winner";
+  readonly keptMediaId: string | null;
+  readonly deletedCount: number;
+  readonly deletedMediaIds: readonly string[];
+  readonly skippedCount: number;
+  readonly skippedMediaIds: readonly string[];
+}
+
+/**
+ * P7.T3 — bulk soft-delete every member of a duplicate group whose
+ * `recommendation = 'remove'`, keeping the `recommendedMediaId`.
+ * Idempotent: a re-call returns `deletedCount: 0, skippedCount: N`.
+ *
+ * Throws on whole-request failures:
+ *   * 404 — group missing
+ *   * 400 — malformed group id
+ */
+export async function deleteOthersInGroup(groupId: string): Promise<DeleteOthersOutcome> {
+  const res = await fetch(`/api/duplicate-groups/${encodeURIComponent(groupId)}/delete-others`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  return (await res.json()) as DeleteOthersOutcome;
+}

@@ -24,6 +24,8 @@ export {
   type DedupExactApiResult,
   type DedupRunApiResult,
   type DedupSimilarApiResult,
+  type DeleteOthersOutcome,
+  type DeleteOthersStatus,
   type DuplicateGroupItemView,
   type DuplicateGroupView,
   type DuplicateMediaProjection,

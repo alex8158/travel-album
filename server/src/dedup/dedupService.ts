@@ -26,7 +26,7 @@
 
 import { AppError, NotFoundError } from "../errors/AppError.js";
 import { ERROR_CODES } from "../errors/errorCodes.js";
-import type { MediaItem, MediaRepository } from "../media/index.js";
+import type { MediaItem, MediaRepository, MediaService } from "../media/index.js";
 import { entityIdSchema, type TripService } from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
@@ -124,12 +124,55 @@ export interface SingleDuplicateGroupResponse {
   readonly group: DuplicateGroupView;
 }
 
+/**
+ * Outcome of `DedupService.deleteOthers` (P7.T3). Two statuses:
+ *
+ *   * `applied` — a clear winner was identified; every item with
+ *     `recommendation = 'remove'` (except the winner, for paranoia)
+ *     was passed through `MediaService.softDeleteMedia`. The loop
+ *     splits results into `deletedMediaIds` (the soft-delete
+ *     happened in this call) and `skippedMediaIds` (the media was
+ *     already soft-deleted on entry — idempotent path).
+ *   * `no-winner` — `recommended_media_id` is NULL on the group.
+ *     Without an explicit keeper we refuse to delete: an
+ *     unconfirmed group whose recommendation was cleared (e.g. the
+ *     prior winner was soft-deleted) should not silently nuke
+ *     every remaining member. `deletedCount` / `skippedCount` are
+ *     both 0; the caller can ask the user to confirm a winner
+ *     (POST /api/duplicate-groups/:id/confirm) and retry.
+ *
+ * 404 is reserved for "group not found" (raised separately, not a
+ * status here). The route translates the typed outcome to a 200
+ * response body in both `applied` and `no-winner` cases.
+ */
+export type DeleteOthersStatus = "applied" | "no-winner";
+
+export interface DeleteOthersOutcome {
+  readonly groupId: string;
+  readonly status: DeleteOthersStatus;
+  readonly keptMediaId: string | null;
+  readonly deletedCount: number;
+  readonly deletedMediaIds: readonly string[];
+  readonly skippedCount: number;
+  readonly skippedMediaIds: readonly string[];
+}
+
 export class DedupService {
   constructor(
     private readonly engine: DedupEngine,
     private readonly tripService: TripService,
     private readonly duplicateGroupsRepo: DuplicateGroupsRepository,
     private readonly mediaRepo: MediaRepository,
+    /**
+     * P7.T3 — used by `deleteOthers` to soft-delete losers through
+     * the canonical `MediaService.softDeleteMedia` path (which owns
+     * the cross-table cleanup: `duplicate_groups.recommended_media_id`,
+     * `trips.cover_media_id` + auto-cover refresh). Optional so
+     * existing smokes / tests that build `DedupService` directly
+     * (without a full media wiring) continue to work — `deleteOthers`
+     * throws if it's missing.
+     */
+    private readonly mediaService?: MediaService,
   ) {}
 
   /** POST /api/trips/:tripId/dedup/exact */
@@ -291,6 +334,88 @@ export class DedupService {
       throw new NotFoundError(`Duplicate group not found: ${groupId}`, { id: groupId });
     }
     return this.getById(groupId);
+  }
+
+  /**
+   * P7.T3 — soft-delete every member of a duplicate group whose
+   * `recommendation = 'remove'`, keeping the `recommended_media_id`
+   * (the "winner") and any item the engine / user left at
+   * 'keep' / 'undecided'.
+   *
+   * Composition: each remove-candidate is funnelled through
+   * `MediaService.softDeleteMedia`, which already owns the
+   * cross-table cleanup (clears any `duplicate_groups.recommended_media_id`
+   * that pointed at the deleted media, releases the user-pin on
+   * `trips.cover_media_id`, kicks off auto-cover refresh). We
+   * deliberately do NOT re-implement those cleanups here.
+   *
+   * Idempotent: a media that is already soft-deleted returns
+   * `alreadyDeleted: true` from `softDeleteMedia` and lands in
+   * `skippedMediaIds`. A second call to `deleteOthers` on the same
+   * group has every remaining 'remove' member already gone and
+   * reports `deletedCount = 0, skippedCount = N`.
+   *
+   * Failure modes:
+   *   * 404 NotFoundError — group missing entirely.
+   *   * `status: "no-winner"` — group has no `recommended_media_id`
+   *     (typed outcome, not an exception; HTTP 200). The caller
+   *     should confirm a winner first.
+   *
+   * Defensive: even if a `recommendation = 'remove'` item somehow
+   * matches the `recommended_media_id` (shouldn't happen, but the
+   * loop guards just in case), the winner is skipped.
+   */
+  deleteOthers(idInput: unknown): DeleteOthersOutcome {
+    const groupId = parseOrThrow(entityIdSchema, idInput, "id");
+    if (this.mediaService === undefined) {
+      throw new AppError(
+        ERROR_CODES.INVALID_STATE_TRANSITION,
+        "DedupService.deleteOthers called without mediaService; service not fully wired",
+        { statusCode: 500 },
+      );
+    }
+    const group = this.duplicateGroupsRepo.findGroupByIdWithItems(groupId);
+    if (group === null) {
+      throw new NotFoundError(`Duplicate group not found: ${groupId}`, { id: groupId });
+    }
+    const keptMediaId = group.recommendedMediaId;
+    if (keptMediaId === null) {
+      // Refuse to delete losers without a clear winner. Returning
+      // a typed outcome (rather than throwing) keeps the HTTP
+      // response simple: a successful 200 with a status the UI can
+      // branch on.
+      return {
+        groupId,
+        status: "no-winner",
+        keptMediaId: null,
+        deletedCount: 0,
+        deletedMediaIds: [],
+        skippedCount: 0,
+        skippedMediaIds: [],
+      };
+    }
+
+    const deletedMediaIds: string[] = [];
+    const skippedMediaIds: string[] = [];
+    for (const item of group.items) {
+      if (item.recommendation !== "remove") continue;
+      if (item.mediaId === keptMediaId) continue; // defensive — never delete the winner
+      const outcome = this.mediaService.softDeleteMedia(item.mediaId);
+      if (outcome.alreadyDeleted) {
+        skippedMediaIds.push(item.mediaId);
+      } else {
+        deletedMediaIds.push(item.mediaId);
+      }
+    }
+    return {
+      groupId,
+      status: "applied",
+      keptMediaId,
+      deletedCount: deletedMediaIds.length,
+      deletedMediaIds,
+      skippedCount: skippedMediaIds.length,
+      skippedMediaIds,
+    };
   }
 
   /** Throws NotFoundError when the group is missing. */

@@ -1,16 +1,17 @@
-// Dedup API routes (P5.T5 + P5.T6 + P5.T7).
+// Dedup API routes (P5.T5 + P5.T6 + P5.T7 + P7.T3).
 //
 // Mounted at `/api`. Owns the per-trip dedup invocation endpoints,
-// the read endpoints backing the duplicate-groups UI, and the
-// user-confirmation surface:
+// the read endpoints backing the duplicate-groups UI, the
+// user-confirmation surface, and the bulk soft-delete-others helper:
 //
-//   POST /api/trips/:tripId/dedup/exact          — DedupEngine.runExactForTrip
-//   POST /api/trips/:tripId/dedup/similar        — DedupEngine.runSimilarForTrip
-//   POST /api/trips/:tripId/dedup/run            — exact then similar
-//   GET  /api/trips/:tripId/duplicate-groups     — list groups + items + media
-//   GET  /api/duplicate-groups/:id               — single group + items + media
-//   POST /api/duplicate-groups/:id/recommend     — set recommended_media_id
-//   POST /api/duplicate-groups/:id/confirm       — bind user pick (atomic)
+//   POST /api/trips/:tripId/dedup/exact            — DedupEngine.runExactForTrip
+//   POST /api/trips/:tripId/dedup/similar          — DedupEngine.runSimilarForTrip
+//   POST /api/trips/:tripId/dedup/run              — exact then similar
+//   GET  /api/trips/:tripId/duplicate-groups       — list groups + items + media
+//   GET  /api/duplicate-groups/:id                 — single group + items + media
+//   POST /api/duplicate-groups/:id/recommend       — set recommended_media_id
+//   POST /api/duplicate-groups/:id/confirm         — bind user pick (atomic)
+//   POST /api/duplicate-groups/:id/delete-others   — bulk soft-delete losers (P7.T3)
 //
 // Path-binding rules:
 //   * `tripId` ALWAYS comes from the URL path; there is no body
@@ -97,6 +98,20 @@ export function makeDedupRouter(deps: DedupRouterDeps): Router {
     asyncHandler((req, res) => {
       const result = service.confirmGroup(getIdParam(req.params), req.body);
       res.status(200).json(result);
+    }),
+  );
+
+  // POST /api/duplicate-groups/:id/delete-others — P7.T3 bulk
+  // soft-delete every member with `recommendation = 'remove'`,
+  // funnelling each through MediaService.softDeleteMedia so the
+  // cross-table cleanup chain stays consistent. Returns a typed
+  // outcome (status: "applied" / "no-winner") + per-id audit
+  // arrays. 404 when the group does not exist.
+  router.post(
+    "/duplicate-groups/:id/delete-others",
+    asyncHandler((req, res) => {
+      const outcome = service.deleteOthers(getIdParam(req.params));
+      res.status(200).json(outcome);
     }),
   );
 

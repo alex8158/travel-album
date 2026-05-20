@@ -48,7 +48,8 @@
     "smoke:quality-selector-trigger": "tsx src/scripts/quality-selector-trigger-smoke.ts",
     "smoke:trip-cover-auto": "tsx src/scripts/trip-cover-auto-smoke.ts",
     "smoke:media-soft-delete": "tsx src/scripts/media-soft-delete-smoke.ts",
-    "smoke:media-restore": "tsx src/scripts/media-restore-smoke.ts"
+    "smoke:media-restore": "tsx src/scripts/media-restore-smoke.ts",
+    "smoke:dedup-delete-others": "tsx src/scripts/dedup-delete-others-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

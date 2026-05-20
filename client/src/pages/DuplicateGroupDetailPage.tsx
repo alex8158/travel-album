@@ -23,7 +23,9 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   confirmDuplicateGroup,
+  deleteOthersInGroup,
   recommendDuplicateGroupMedia,
+  type DeleteOthersOutcome,
   type DuplicateDecision,
   type DuplicateGroupItemView,
   type DuplicateGroupType,
@@ -43,6 +45,13 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
   const [recommendingMediaId, setRecommendingMediaId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // P7.T3 — bulk soft-delete losers state. Modal-confirm flow keeps
+  // accidental clicks from blowing up data. Last outcome stays on
+  // screen via an aria-live region until the user takes another
+  // action (refresh, pick, confirm, delete-others again).
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteOthersOutcome, setDeleteOthersOutcome] = useState<DeleteOthersOutcome | null>(null);
 
   // Whenever the server re-fetches (initial load, refetch, id change),
   // reset the local override so the freshly-loaded server state shows.
@@ -86,7 +95,36 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
   function handleRefresh(): void {
     setLocalGroup(null);
     setActionError(null);
+    setDeleteOthersOutcome(null);
     refetch();
+  }
+
+  function openDeleteOthers(): void {
+    setActionError(null);
+    setDeleteOpen(true);
+  }
+  function closeDeleteOthers(): void {
+    if (deleting) return;
+    setDeleteOpen(false);
+  }
+
+  async function confirmDeleteOthers(): Promise<void> {
+    if (!group || deleting) return;
+    setDeleting(true);
+    setActionError(null);
+    try {
+      const outcome = await deleteOthersInGroup(group.id);
+      setDeleteOthersOutcome(outcome);
+      setDeleteOpen(false);
+      // Refetch the group so soft-deleted members render with the
+      // missing-media placeholder (P5.T6 projection: `media: null`).
+      setLocalGroup(null);
+      refetch();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
   }
 
   if (loading) {
@@ -116,6 +154,29 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
     : group.recommendedMediaId === null
       ? "Pick an image with 'Keep this one' first."
       : null;
+  // P7.T3 — count members that would actually go through the
+  // soft-delete loop. We exclude the recommended winner explicitly
+  // (matches the server's defensive skip) and we don't count
+  // already-deleted members (their `media` projection is null
+  // when the gallery has filtered them out).
+  const removeCandidates = group.items.filter(
+    (it) =>
+      it.recommendation === "remove" &&
+      it.mediaId !== group.recommendedMediaId &&
+      it.media !== null,
+  );
+  const deleteOthersDisabled =
+    deleting ||
+    confirming ||
+    recommendingMediaId !== null ||
+    group.recommendedMediaId === null ||
+    removeCandidates.length === 0;
+  const deleteOthersReason =
+    group.recommendedMediaId === null
+      ? "Pick an image with 'Keep this one' first (a winner is required)."
+      : removeCandidates.length === 0
+        ? "No members with recommendation = 'remove' to delete."
+        : null;
 
   return (
     <main>
@@ -149,12 +210,37 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
                 ? "Re-confirm group"
                 : "Confirm group"}
           </button>
+          <button
+            type="button"
+            className="btn-danger"
+            onClick={openDeleteOthers}
+            disabled={deleteOthersDisabled}
+            title={deleteOthersReason ?? undefined}
+          >
+            {deleting
+              ? "Deleting…"
+              : removeCandidates.length > 0
+                ? `Delete ${removeCandidates.length} other photo(s)`
+                : "Delete others"}
+          </button>
         </div>
       </header>
 
       {actionError !== null && (
         <p className="status-text status-error" role="alert">
           {actionError}
+        </p>
+      )}
+
+      {deleteOthersOutcome !== null && (
+        <p className="status-text" aria-live="polite">
+          {deleteOthersOutcome.status === "no-winner"
+            ? "No winner set — confirm a 'Keep this one' first, then try again."
+            : `Soft-deleted ${deleteOthersOutcome.deletedCount} photo(s)` +
+              (deleteOthersOutcome.skippedCount > 0
+                ? ` (${deleteOthersOutcome.skippedCount} were already deleted)`
+                : "") +
+              ". Original files stay on disk; the photos can be restored later."}
         </p>
       )}
 
@@ -194,6 +280,49 @@ export default function DuplicateGroupDetailPage(): JSX.Element {
           </ul>
         )}
       </section>
+
+      {deleteOpen && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-others-title"
+          aria-describedby="delete-others-body"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDeleteOthers();
+          }}
+        >
+          <div className="modal-card">
+            <h2 id="delete-others-title">Delete other photos in this group?</h2>
+            <p id="delete-others-body">
+              {removeCandidates.length} photo(s) marked as &quot;remove&quot; will be soft-deleted.
+              The recommended photo stays. Original files stay on disk and the deleted photos can be
+              restored later.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={closeDeleteOthers}
+                disabled={deleting}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() => {
+                  void confirmDeleteOthers();
+                }}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting…" : `Delete ${removeCandidates.length} photo(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
