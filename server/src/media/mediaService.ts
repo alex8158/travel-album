@@ -23,6 +23,7 @@ import type { DuplicateGroupsRepository } from "../dedup/index.js";
 import { BadRequestError, NotFoundError } from "../errors/AppError.js";
 import type { JobRepository } from "../jobs/index.js";
 import type { Logger } from "../logger.js";
+import { QUALITY_SELECTOR_JOB_TYPE, encodeQualitySelectorPayload } from "../quality/index.js";
 import {
   autoSelectCoverForTrip,
   entityIdSchema,
@@ -78,6 +79,34 @@ export interface SoftDeleteMediaResult {
   readonly clearedRecommendedGroups: readonly string[];
   /** Trips whose `cover_media_id` was cleared (typically 0 or 1). */
   readonly clearedCoverTrips: readonly string[];
+}
+
+/**
+ * Outcome of a {@link MediaService.restoreMedia} call. Mirrors the
+ * soft-delete shape: a `restored: true` flag, an `alreadyRestored`
+ * idempotency marker, and a `qualitySelectorEnqueued` boolean so
+ * the route response can hint at the asynchronous re-rank /
+ * cover-refresh that follows.
+ */
+export interface RestoreMediaResult {
+  readonly mediaId: string;
+  readonly tripId: string;
+  /** `true` when the row is active after the call. */
+  readonly restored: boolean;
+  /**
+   * `true` when the row was already active before the call (no
+   * write happened). Distinguishes idempotent-success from
+   * actual-write.
+   */
+  readonly alreadyRestored: boolean;
+  /**
+   * `true` when the post-restore `quality_selector_run` job was
+   * successfully enqueued. `false` when enqueue failed (we log
+   * + swallow so the HTTP response still reports the restore
+   * success) or when the row was already active and no re-rank
+   * was needed.
+   */
+  readonly qualitySelectorEnqueued: boolean;
 }
 
 /** Outcome of one job-type slot during reprocess (P3.T7). */
@@ -404,6 +433,126 @@ export class MediaService {
       alreadyDeleted: false,
       clearedRecommendedGroups,
       clearedCoverTrips,
+    };
+  }
+
+  /**
+   * P7.T2 — restore one soft-deleted media row. The reverse of
+   * `softDeleteMedia`, with deliberately asymmetric responsibilities:
+   *
+   *   * The active part of restore is intentionally tiny — just
+   *     clear `deleted_at` and reset `status` to 'processed'. That
+   *     is what design.md §4.3 lists as the "restore" path and what
+   *     re-exposes the row to every default reader (gallery, dedup
+   *     engine, auto-cover candidate query).
+   *   * The downstream re-rank + cover refresh is delegated to a
+   *     freshly-enqueued `quality_selector_run` job (trip-scope
+   *     payload). The handler — which has been in the queue since
+   *     P6.T5 — calls `Quality_Selector.selectForTrip` (skipping
+   *     `user_confirmed=1` groups per CLAUDE.md §3.9) and then the
+   *     post-success `autoSelectCoverForTrip`. The two together
+   *     give the restored media its full "re-participate in dedup
+   *     + maybe become the cover again" treatment without us
+   *     re-implementing any of it here.
+   *
+   * Idempotent: a restore on an already-active media returns
+   * `{ restored: true, alreadyRestored: true }` with no DB writes
+   * and no selector enqueue. A restore on a missing media throws
+   * NotFoundError.
+   *
+   * Files on disk are NOT touched (the soft-delete left them alone
+   * to begin with).
+   */
+  restoreMedia(idInput: unknown): RestoreMediaResult {
+    const mediaId = parseOrThrow(entityIdSchema, idInput, "id");
+    if (this.softDeleteDeps === undefined) {
+      throw new BadRequestError(
+        "MediaService.restoreMedia called without softDeleteDeps; service not fully wired",
+      );
+    }
+    const deps = this.softDeleteDeps;
+
+    const existing = this.repo.findById(mediaId, { includeDeleted: true });
+    if (existing === null) {
+      throw new NotFoundError(`Media not found: ${mediaId}`, { id: mediaId });
+    }
+    if (existing.deletedAt === null) {
+      // Already active — idempotent success.
+      return {
+        mediaId,
+        tripId: existing.tripId,
+        restored: true,
+        alreadyRestored: true,
+        qualitySelectorEnqueued: false,
+      };
+    }
+
+    const now = new Date().toISOString();
+
+    const tx = deps.db.transaction((): void => {
+      const changed = this.repo.restore(mediaId, now);
+      if (changed === 0) {
+        // Race: another writer restored between our existence check
+        // and the UPDATE. Tx is harmless either way; end state =
+        // active.
+        return;
+      }
+    });
+    tx();
+
+    // Enqueue a trip-scope quality_selector_run job. The handler
+    // (registered on the image channel by `server/src/index.ts`)
+    // will re-rank every group in the trip — skipping user-confirmed
+    // groups — and then refresh the cover, picking up the newly-
+    // restored media as a candidate.
+    //
+    // Job-insert failures are non-fatal: the restore itself succeeded;
+    // the user just won't get an immediate re-rank. The next finalize-
+    // triggered selector chain will catch up naturally.
+    let qualitySelectorEnqueued = false;
+    if (this.jobRepo !== undefined) {
+      try {
+        this.jobRepo.insert({
+          id: randomUUID(),
+          mediaId,
+          jobType: QUALITY_SELECTOR_JOB_TYPE,
+          payload: encodeQualitySelectorPayload({ scope: "trip", tripId: existing.tripId }),
+          createdAt: now,
+          updatedAt: now,
+        });
+        qualitySelectorEnqueued = true;
+        deps.logger.info(
+          { mediaId, tripId: existing.tripId },
+          "restore_media: quality_selector_run enqueued (trip-scope)",
+        );
+      } catch (err) {
+        deps.logger.warn(
+          {
+            mediaId,
+            tripId: existing.tripId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "restore_media: failed to enqueue quality_selector_run (restore itself still succeeded)",
+        );
+      }
+    } else {
+      deps.logger.warn(
+        { mediaId, tripId: existing.tripId },
+        "restore_media: jobRepo not wired; skipping quality_selector_run enqueue",
+      );
+    }
+
+    deps.logger.info(
+      { mediaId, tripId: existing.tripId, qualitySelectorEnqueued },
+      "restore_media: media restored + quality selector queued",
+    );
+
+    return {
+      mediaId,
+      tripId: existing.tripId,
+      restored: true,
+      alreadyRestored: false,
+      qualitySelectorEnqueued,
     };
   }
 }

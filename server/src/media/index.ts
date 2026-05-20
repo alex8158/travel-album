@@ -13,6 +13,7 @@ export {
   type ReprocessJobResult,
   type ReprocessOutcome,
   type ReprocessResult,
+  type RestoreMediaResult,
   type SoftDeleteMediaResult,
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";

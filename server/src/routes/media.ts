@@ -6,13 +6,13 @@
 //   GET  /api/trips/:tripId/media            (P2.T5, requirements §9.2)
 //   GET  /api/media/:id                      (P2.T5, requirements §9.2)
 //
-// P7.T1 added soft-delete:
+// P7.T1 added soft-delete; P7.T2 added restore:
 //
 //   DELETE /api/media/:id                    (P7.T1, requirements §7.18)
+//   POST   /api/media/:id/restore            (P7.T2, requirements §7.18)
 //
-// The restore endpoint (POST /api/media/:id/restore) lands in P7.T2.
-// Originals / thumbnails / previews stay on disk (CLAUDE.md §2.4 /
-// design.md §4.3).
+// Originals / thumbnails / previews stay on disk through both
+// (CLAUDE.md §2.4 / design.md §4.3).
 //
 // Path note: the canonical paths come from requirements §9.2 + design.md
 // §3.3. The Trip CRUD router is mounted at `/api/trips`, so this
@@ -151,6 +151,25 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     asyncHandler((req, res) => {
       const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
       const result = deps.mediaService.softDeleteMedia(id);
+      res.status(200).json(result);
+    }),
+  );
+
+  // POST /api/media/:id/restore — restore a soft-deleted media (P7.T2).
+  //
+  // Clears `deleted_at` + resets `status` to 'processed', then
+  // enqueues a trip-scope `quality_selector_run` job so the restored
+  // media is re-considered by dedup ranking (skipping user-confirmed
+  // groups) and the trip cover auto-refresh runs.
+  //
+  // Idempotent: 200 on already-active media (with
+  // `alreadyRestored: true`); 404 only when the row is genuinely
+  // missing.
+  router.post(
+    "/media/:id/restore",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.restoreMedia(id);
       res.status(200).json(result);
     }),
   );

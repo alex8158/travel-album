@@ -157,6 +157,8 @@ export class MediaRepository {
   private readonly findBestCoverCandidateStmt;
   // P7.T1 — soft-delete writer.
   private readonly softDeleteStmt;
+  // P7.T2 — restore writer (inverse of softDeleteStmt).
+  private readonly restoreStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -229,6 +231,22 @@ export class MediaRepository {
           status = 'deleted',
           updated_at = @deletedAt
       WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P7.T2 restore writer (mirror of softDeleteStmt). Predicate
+    // `deleted_at IS NOT NULL` keeps the UPDATE idempotent against
+    // "restore an already-active row" (0 changes → Service treats
+    // as a no-op). Status resets to 'processed' per design.md §4.3
+    // (default re-entry state); if upstream workers want to flag
+    // partial failure they can re-process via the existing
+    // `POST /api/media/:id/reprocess` path — restore itself stays
+    // pure.
+    this.restoreStmt = db.prepare(`
+      UPDATE media_items
+      SET deleted_at = NULL,
+          status = 'processed',
+          updated_at = @restoredAt
+      WHERE id = @mediaId AND deleted_at IS NOT NULL
     `);
 
     // P5.T2 image_hash worker: cache the file-level SHA256 and the
@@ -540,6 +558,36 @@ export class MediaRepository {
    */
   softDelete(mediaId: string, deletedAt: string): number {
     const info = this.softDeleteStmt.run({ mediaId, deletedAt });
+    return info.changes;
+  }
+
+  /**
+   * P7.T2 — restore one soft-deleted media row: clear `deleted_at`
+   * and reset `status` to 'processed'. Returns the number of rows
+   * touched:
+   *
+   *   * `1` — row was soft-deleted and is now active again.
+   *   * `0` — row is either missing, OR already active; both
+   *     cases look identical from this stmt's perspective. The
+   *     Service uses `findById(id, { includeDeleted: true })` to
+   *     tell them apart (missing → 404; active → idempotent 200).
+   *
+   * Does NOT touch related rows in `duplicate_groups` /
+   * `duplicate_group_items` / `trips.cover_media_id`. The cleanups
+   * P7.T1 did at soft-delete time are intentionally NOT reversed:
+   *   * `duplicate_group_items` rows survived the delete →
+   *     restoring naturally re-exposes the membership via the
+   *     read joins, no extra write needed.
+   *   * `duplicate_groups.recommended_media_id` was reset to NULL
+   *     → the next `quality_selector_run` repopulates it (the
+   *     Service enqueues one after a successful restore).
+   *   * `trips.cover_media_id` was cleared and the user-pin
+   *     released → the same enqueued selector job's auto-cover
+   *     refresh will pick the restored media (if eligible) on
+   *     its next pass.
+   */
+  restore(mediaId: string, restoredAt: string): number {
+    const info = this.restoreStmt.run({ mediaId, restoredAt });
     return info.changes;
   }
 

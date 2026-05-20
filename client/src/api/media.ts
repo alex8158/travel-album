@@ -378,3 +378,37 @@ export async function softDeleteMedia(id: string): Promise<SoftDeleteMediaResult
   }
   return (await res.json()) as SoftDeleteMediaResult;
 }
+
+/**
+ * P7.T2 — restore a soft-deleted media. Server clears `deleted_at`,
+ * resets `status` to `'processed'`, and enqueues a trip-scope
+ * `quality_selector_run` job so the restored media re-participates
+ * in dedup ranking + auto-cover selection (skipping user-confirmed
+ * groups per CLAUDE.md §3.9).
+ *
+ * Idempotent: re-restoring an already-active media returns
+ * `alreadyRestored: true` with `qualitySelectorEnqueued: false`.
+ * 404 only when the row is genuinely missing.
+ *
+ * Note: this client doesn't currently expose a UI for restore — the
+ * recycle-bin view lands in P7.T4. Callers in V1 invoke this from
+ * scripts / admin tools / future UI surfaces.
+ */
+export interface RestoreMediaResult {
+  readonly mediaId: string;
+  readonly tripId: string;
+  readonly restored: boolean;
+  readonly alreadyRestored: boolean;
+  readonly qualitySelectorEnqueued: boolean;
+}
+
+export async function restoreMedia(id: string): Promise<RestoreMediaResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/restore`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as RestoreMediaResult;
+}
