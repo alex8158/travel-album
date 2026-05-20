@@ -207,6 +207,8 @@
 > requirements §7.18 / §14 阶段 7。
 >
 > **第一轮主流程仅做软删除 + 恢复（P7.T1–T6）**。永久删除（P7.T7–T9）作为预留，前置条件是 P7.T1–T6 全部完成且自动化测试通过；在此之前，永久删除接口默认禁用（`PERMANENT_DELETE_ENABLED=false`，返回 `PERMANENT_DELETE_DISABLED`）。
+>
+> **状态：第一轮（P7.T1–T6）已完成（2026-05-20）。** P7.T7–T9（永久删除）保留为后续阶段任务，默认禁用未实现，requirements §7.18 验收第 5–6 条留待解锁。
 
 第一轮（必须完成）：
 
@@ -220,7 +222,7 @@
   - 删除后再恢复，状态字段、关联记录、`duplicate_groups` 评估都正确恢复
   - 跨表外键路径（media_analysis / duplicate_group_items / media_versions / video_segments / processing_jobs）遍历检查
   - （2026-05-20 完成；新增 `smoke:p7-recycle-bin-acceptance`（55/55 PASS）作为 P7 阶段端到端验收，单一 smoke 覆盖：4 个用户路径 A/B/C/D（默认 gallery 隐藏 deleted / 回收站只列 deleted / restore 状态切换 / restore 不动主流程）+ tasks.md 列出的 4 个交叉路径（recommended 重置 / FK 不抛错 / 状态字段恢复 / 跨表 FK 遍历）；每个用例都 seed 一个挂满所有引用关系的 media（media_analysis + media_versions + processing_jobs + duplicate_group_items + 可选 recommended_media_id），然后软删除 + 恢复，逐表断言行依然存在 + 内容未被覆盖（user_decision / user_confirmed / params / quality_score / is_blurry / reason / file_path 等）；并验证磁盘原始文件、type='video' 行、auto-cover 用户 pin 释放、processing_jobs.status 不被改写、两轮 delete→restore→delete→restore 循环稳定。video_segments 表 P9 才落地，注释说明跳过原因。回归 smoke：trip-media-recycle-bin 17/17 / media-soft-delete 32/32 / media-restore 28/28 / dedup-delete-others 28/28 / media 26/26 / dedup-api 27/27 全绿。详见 `docs/progress.md`）
-- [ ] **P7.T6 [MUST]** 第一轮阶段验收：requirements §7.18 验收前 4 条 + “删除图片不会出现 FOREIGN KEY 错误”
+- [x] **P7.T6 [MUST]** 第一轮阶段验收：requirements §7.18 验收前 4 条 + “删除图片不会出现 FOREIGN KEY 错误”（2026-05-20 完成；逐条对照 requirements §7.18 前 4 条验收标准均有显式 PASS 断言（FK 不抛错、重复组状态更新、推荐图被删后可重新推荐/取消推荐、软删除后可恢复），加上用户扩展项（gallery 默认不展示 deleted、回收站只展示 deleted、restore 后回 gallery、未引入永久删除/批量 restore/复杂筛选 UI/分页 UI）。验收来源：P7 阶段 5 个 smoke 共 160/160 PASS + 14 个其它回归 smoke 全绿；server/client `typecheck`/`lint`/`format:check`/`build` 全绿；代码审计确认 `permanentDeleteEnabled` 仅是 `/health` 元数据标记（默认 false，无路由消费）、无 `bulkRestore`/`batchRestore` 任何变体、`TripRecycleBinPage` 无 filter/sort/pagination UI。详见 `docs/progress.md`）
 
 预留（**前置条件：P7.T1–T6 全部完成并通过测试，再执行**）：
 
