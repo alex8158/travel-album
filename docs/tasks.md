@@ -214,11 +214,12 @@
 - [x] **P7.T2 [MUST]** 恢复路径：`POST /api/media/:id/restore`，事务内复位 `deleted_at`、`status`，重新参与去重评估但不覆盖已 `user_confirmed` 的组（2026-05-20 完成；事务内 reset，post-tx 入队 `quality_selector_run` trip-scope 由现有 handler 复用做 re-rank + auto-cover；client 仅加 `restoreMedia(id)` helper，UI 留 P7.T4；详见 `docs/progress.md`）
 - [x] **P7.T3 [MUST]** 重复组批量删除：`POST /api/duplicate-groups/:id/delete-others` 走软删除路径（2026-05-20 完成；`DedupService.deleteOthers` 对组内 `recommendation = 'remove'` 成员逐个调 `MediaService.softDeleteMedia`，winner 保留；typed outcome `applied / no-winner` + 幂等；前端 DuplicateGroupDetailPage 加 "Delete N other photo(s)" 按钮 + modal；详见 `docs/progress.md`）
 - [x] **P7.T4 [MUST]** 前端：回收站视图（列出 `deleted_at` 不为空的媒体）、恢复按钮、软删除二次确认提示“可恢复”（2026-05-20 完成；服务端最小侵入：`listMediaOptionsSchema` / `ListMediaOptions` / `listMediaQuerySchema` 增加 `onlyDeleted` 字段，`MediaRepository` 新增 `listByTripDeletedOnlyStmt`（`deleted_at DESC` 排序），`list()` 三档分支（`onlyDeleted` > `includeDeleted` > 默认 active-only）；`includeDeleted` 仍保留为内部管理 / 组合视图 API。客户端 `useTripMedia` 增加 `onlyDeleted` 第三参数；新增 `TripRecycleBinPage`（路由 `/trips/:id/recycle-bin`），每行带 Restore 按钮复用 P7.T2 `restoreMedia` API；trip 详情页 header 增加 "Recycle bin" 入口。无新增 API、无新增 migration。新增 `smoke:trip-media-recycle-bin`（17/17 PASS）+ media/soft-delete/restore/dedup-delete-others/dedup-api 回归全绿；详见 `docs/progress.md`）
-- [ ] **P7.T5 [MUST]** 自动化测试：
+- [x] **P7.T5 [MUST]** 自动化测试：
   - 删除推荐图后该重复组 `recommended_media_id` 被正确重置
   - 删除一张组内图片不会触发 `FOREIGN KEY constraint failed`
   - 删除后再恢复，状态字段、关联记录、`duplicate_groups` 评估都正确恢复
   - 跨表外键路径（media_analysis / duplicate_group_items / media_versions / video_segments / processing_jobs）遍历检查
+  - （2026-05-20 完成；新增 `smoke:p7-recycle-bin-acceptance`（55/55 PASS）作为 P7 阶段端到端验收，单一 smoke 覆盖：4 个用户路径 A/B/C/D（默认 gallery 隐藏 deleted / 回收站只列 deleted / restore 状态切换 / restore 不动主流程）+ tasks.md 列出的 4 个交叉路径（recommended 重置 / FK 不抛错 / 状态字段恢复 / 跨表 FK 遍历）；每个用例都 seed 一个挂满所有引用关系的 media（media_analysis + media_versions + processing_jobs + duplicate_group_items + 可选 recommended_media_id），然后软删除 + 恢复，逐表断言行依然存在 + 内容未被覆盖（user_decision / user_confirmed / params / quality_score / is_blurry / reason / file_path 等）；并验证磁盘原始文件、type='video' 行、auto-cover 用户 pin 释放、processing_jobs.status 不被改写、两轮 delete→restore→delete→restore 循环稳定。video_segments 表 P9 才落地，注释说明跳过原因。回归 smoke：trip-media-recycle-bin 17/17 / media-soft-delete 32/32 / media-restore 28/28 / dedup-delete-others 28/28 / media 26/26 / dedup-api 27/27 全绿。详见 `docs/progress.md`）
 - [ ] **P7.T6 [MUST]** 第一轮阶段验收：requirements §7.18 验收前 4 条 + “删除图片不会出现 FOREIGN KEY 错误”
 
 预留（**前置条件：P7.T1–T6 全部完成并通过测试，再执行**）：

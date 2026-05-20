@@ -50,7 +50,8 @@
     "smoke:media-soft-delete": "tsx src/scripts/media-soft-delete-smoke.ts",
     "smoke:media-restore": "tsx src/scripts/media-restore-smoke.ts",
     "smoke:dedup-delete-others": "tsx src/scripts/dedup-delete-others-smoke.ts",
-    "smoke:trip-media-recycle-bin": "tsx src/scripts/trip-media-recycle-bin-smoke.ts"
+    "smoke:trip-media-recycle-bin": "tsx src/scripts/trip-media-recycle-bin-smoke.ts",
+    "smoke:p7-recycle-bin-acceptance": "tsx src/scripts/p7-recycle-bin-acceptance-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
