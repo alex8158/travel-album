@@ -26,6 +26,20 @@ export type MediaStatus =
 export type MediaUserDecision = "keep" | "remove" | "undecided";
 
 /**
+ * Closed enum for `media_items.active_version_type` (migration 010,
+ * P8.T4). The default `'original'` covers freshly-uploaded media —
+ * nothing has been picked yet, so the original file is the implicit
+ * active view. The non-default values point at user-selectable
+ * `media_versions` rows:
+ *   * `'enhanced'`   — P8.T3 sharp output (`media_versions(version_type='enhanced')`).
+ *   * `'ai_refined'` — reserved for P10 AI refine.
+ * Operational version_types ('thumbnail', 'preview', 'metadata',
+ * 'video_cover', 'video_proxy') are NOT valid here; they are
+ * artefacts of internal workers, not user-facing version choices.
+ */
+export type MediaActiveVersionType = "original" | "enhanced" | "ai_refined";
+
+/**
  * Required fields when Upload_Manager creates a new media_items row.
  *
  * - `originalPath`  null for `type === 'unknown'` (per design.md §6.2.3
@@ -86,6 +100,16 @@ export interface MediaItem {
   readonly duration: number | null;
   readonly status: MediaStatus;
   readonly userDecision: MediaUserDecision;
+  /**
+   * P8.T4 — the version the user has currently selected for display.
+   * `'original'` is the default for every freshly-uploaded row (set
+   * by migration 010); the column is updated by
+   * `MediaService.selectVersion` when the user picks 'enhanced' /
+   * 'ai_refined'. The thumbnail / preview / metadata version_types
+   * are intentionally absent from this enum — they are operational
+   * artefacts of the image-channel workers, not user choices.
+   */
+  readonly activeVersionType: MediaActiveVersionType;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly deletedAt: string | null;
@@ -190,4 +214,66 @@ export interface MediaVersion {
 export interface MediaDetail {
   readonly media: MediaItem;
   readonly versions: readonly MediaVersion[];
+}
+
+/**
+ * One row in the user-facing versions response (P8.T4
+ * `GET /api/media/:id/versions`). Differs from {@link MediaVersion}
+ * in three ways:
+ *
+ *   1. It includes a synthesized 'original' entry that has no
+ *      `media_versions` row — derived from `media_items` columns
+ *      (originalPath, mimeType, width, height, fileSize, timestamps).
+ *      So `id` is `null` for the original entry.
+ *   2. `isActive` is precomputed against `media_items.active_version_type`
+ *      so the frontend doesn't have to cross-reference.
+ *   3. The shape only carries user-relevant fields — `model_name` /
+ *      `params` / `status` are dropped (they're audit-trail noise for
+ *      the user-facing UI; the detail endpoint still exposes them).
+ *
+ * Versions in the list are filtered to user-selectable types only
+ * (`original` + `enhanced` + `ai_refined`). Thumbnail / preview /
+ * metadata / video_* entries are operational and never appear here.
+ */
+export interface MediaVersionView {
+  /** `null` for the synthesized 'original' entry; uuid for real rows. */
+  readonly id: string | null;
+  readonly versionType: MediaActiveVersionType;
+  readonly isActive: boolean;
+  /** Logical path inside the storage root. Never an absolute fs path. */
+  readonly filePath: string;
+  readonly mimeType: string | null;
+  readonly width: number | null;
+  readonly height: number | null;
+  readonly fileSize: number | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Response envelope for `GET /api/media/:id/versions` (P8.T4).
+ *
+ * `activeVersionType` mirrors `media.activeVersionType` and is
+ * surfaced at top-level for convenience — the frontend can decide
+ * which version to render without scanning `versions[]`.
+ */
+export interface MediaVersionsView {
+  readonly mediaId: string;
+  readonly activeVersionType: MediaActiveVersionType;
+  readonly versions: readonly MediaVersionView[];
+}
+
+/**
+ * Response envelope for `POST /api/media/:id/select-version` (P8.T4).
+ *
+ * `alreadyActive` is `true` when the user selects the version that
+ * was already active — no DB write happened, but the response still
+ * looks like success (idempotent UX). `previousVersionType` is the
+ * value before the call so the UI can show "switched from X to Y".
+ */
+export interface SelectVersionResult {
+  readonly mediaId: string;
+  readonly activeVersionType: MediaActiveVersionType;
+  readonly previousVersionType: MediaActiveVersionType;
+  readonly alreadyActive: boolean;
 }

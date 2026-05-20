@@ -53,7 +53,8 @@
     "smoke:trip-media-recycle-bin": "tsx src/scripts/trip-media-recycle-bin-smoke.ts",
     "smoke:p7-recycle-bin-acceptance": "tsx src/scripts/p7-recycle-bin-acceptance-smoke.ts",
     "smoke:media-enhance-trigger": "tsx src/scripts/media-enhance-trigger-smoke.ts",
-    "smoke:image-enhance-worker": "tsx src/scripts/image-enhance-worker-smoke.ts"
+    "smoke:image-enhance-worker": "tsx src/scripts/image-enhance-worker-smoke.ts",
+    "smoke:media-versions-api": "tsx src/scripts/media-versions-api-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

@@ -172,6 +172,59 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     }),
   );
 
+  // GET /api/media/:id/versions (P8.T4).
+  //
+  // Returns the user-selectable versions for one media + the
+  // currently-active one. Shape mirrors `MediaVersionsView`:
+  //   { mediaId, activeVersionType, versions: [{ ... }] }
+  //
+  // Always includes a synthesized 'original' entry (even when no
+  // bytes exist on disk, e.g. for `type='unknown'` rows — the entry
+  // is still present so the UI can render "no original" instead of
+  // hiding the row). 'enhanced' / 'ai_refined' entries are included
+  // iff a matching media_versions row exists. Operational version
+  // types (thumbnail, preview, metadata, video_*) are NOT included —
+  // they are worker artefacts, not user-facing choices.
+  //
+  // 404 when the media is missing or soft-deleted (recycle-bin
+  // members cannot have their versions listed — user must restore
+  // first). Matches the P7 contract.
+  router.get(
+    "/media/:id/versions",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.listVersions(id);
+      res.status(200).json(result);
+    }),
+  );
+
+  // POST /api/media/:id/select-version (P8.T4).
+  //
+  // Body: `{ "versionType": "original" | "enhanced" | "ai_refined" }`.
+  // Updates `media_items.active_version_type` and returns
+  // `SelectVersionResult { mediaId, activeVersionType,
+  // previousVersionType, alreadyActive }`.
+  //
+  // 400 on:
+  //   * malformed body (zod via selectVersionBodySchema, .strict()).
+  //   * versionType not in the closed enum.
+  //   * version doesn't exist for this media (no media_versions
+  //     row of the requested type, or originalPath is NULL when
+  //     versionType='original').
+  // 404 on missing or soft-deleted media (P7 contract).
+  //
+  // Idempotent: selecting the already-active version is a no-op
+  // (no DB write); response carries `alreadyActive: true` so the
+  // UI can decide whether to flash a toast.
+  router.post(
+    "/media/:id/select-version",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.selectVersion(id, req.body);
+      res.status(200).json(result);
+    }),
+  );
+
   // DELETE /api/media/:id — soft delete (P7.T1).
   //
   // Writes `media_items.deleted_at` + flips `status` to 'deleted';

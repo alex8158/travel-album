@@ -9,6 +9,7 @@
 export { MediaRepository } from "./mediaRepository.js";
 export {
   MediaService,
+  type EnhanceMediaResult,
   type MediaSoftDeleteDeps,
   type ReprocessJobResult,
   type ReprocessOutcome,
@@ -30,10 +31,16 @@ export {
   type UpsertFinalQualityInput,
 } from "./mediaAnalysisRepository.js";
 
-export { listMediaOptionsSchema, type ListMediaInput } from "./mediaSchemas.js";
+export {
+  listMediaOptionsSchema,
+  selectVersionBodySchema,
+  type ListMediaInput,
+  type SelectVersionInput,
+} from "./mediaSchemas.js";
 
 export type {
   ListMediaOptions,
+  MediaActiveVersionType,
   MediaAnalysisProjection,
   MediaDetail,
   MediaInsertData,
@@ -42,4 +49,7 @@ export type {
   MediaType,
   MediaUserDecision,
   MediaVersion,
+  MediaVersionView,
+  MediaVersionsView,
+  SelectVersionResult,
 } from "./mediaTypes.js";

@@ -33,9 +33,17 @@ import {
 import { parseOrThrow } from "../util/zodParse.js";
 
 import { MediaRepository } from "./mediaRepository.js";
-import { listMediaOptionsSchema } from "./mediaSchemas.js";
+import { listMediaOptionsSchema, selectVersionBodySchema } from "./mediaSchemas.js";
 import { MediaVersionsRepository } from "./mediaVersionsRepository.js";
-import type { MediaDetail, MediaItem } from "./mediaTypes.js";
+import type {
+  MediaActiveVersionType,
+  MediaDetail,
+  MediaItem,
+  MediaVersion,
+  MediaVersionView,
+  MediaVersionsView,
+  SelectVersionResult,
+} from "./mediaTypes.js";
 
 /**
  * Cross-domain dependencies needed by {@link MediaService.softDeleteMedia}.
@@ -337,6 +345,121 @@ export class MediaService {
           outcome: slot.outcome,
           jobId: slot.jobId,
         };
+  }
+
+  /**
+   * P8.T4 — list user-selectable versions for one media + flag the
+   * currently-active one.
+   *
+   * Response shape (`MediaVersionsView`):
+   *   * Always includes a synthesized `'original'` entry derived
+   *     from `media_items` columns (originalPath, mimeType, width,
+   *     height, fileSize, timestamps). `id` is `null` for this
+   *     entry because the original is not represented as a
+   *     `media_versions` row — it's the implicit base.
+   *   * Includes `'enhanced'` / `'ai_refined'` entries when a
+   *     matching `media_versions` row exists.
+   *   * Excludes operational version_types (`thumbnail`, `preview`,
+   *     `metadata`, `video_cover`, `video_proxy`) — those are
+   *     artefacts of internal workers, not user-facing versions.
+   *
+   * Failure modes:
+   *   * `NotFoundError` — media row missing OR soft-deleted (default
+   *     active-only read; matches the P7 recycle-bin contract — a
+   *     soft-deleted media has no user-facing version list).
+   *
+   * Note: original_path may be `null` for `unknown`-typed media
+   * (Upload_Manager discards the bytes per design §6.2.3). In that
+   * case we still emit a synthesized entry for completeness (with
+   * `filePath: ''`), but the version cannot be selected by the
+   * version-switch endpoint — `selectVersion` enforces the
+   * non-empty original_path predicate.
+   */
+  listVersions(idInput: unknown): MediaVersionsView {
+    if (this.versionsRepo === undefined) {
+      throw new Error("MediaService: versionsRepo not configured; cannot list versions");
+    }
+    const media = this.getMediaById(idInput);
+    const allVersions = this.versionsRepo.listByMediaId(media.id);
+    return buildVersionsView(media, allVersions);
+  }
+
+  /**
+   * P8.T4 — flip the user-selected active version.
+   *
+   * Body shape `{ versionType: 'original' | 'enhanced' | 'ai_refined' }`.
+   *
+   * Failure modes:
+   *   * `NotFoundError` — media row missing OR soft-deleted (matches
+   *     `listVersions` and the P7 contract).
+   *   * `BadRequestError` — body fails zod (`selectVersionBodySchema`)
+   *     OR the requested version doesn't exist for this media:
+   *       - `'original'`: media has no `original_path` (e.g.
+   *         `type='unknown'` rows where Upload_Manager discarded the
+   *         bytes — there is no original to select).
+   *       - `'enhanced'` / `'ai_refined'`: no `media_versions` row
+   *         with that `(media_id, version_type)` exists yet (the
+   *         worker hasn't run or failed).
+   *
+   * Idempotency: selecting the already-active version is a no-op
+   * at the DB level — we short-circuit before the UPDATE and return
+   * `alreadyActive: true` so the response still looks like success.
+   * `updated_at` stays at its previous value, which keeps audit
+   * trails clean when the user re-clicks the same button.
+   */
+  selectVersion(idInput: unknown, bodyInput: unknown): SelectVersionResult {
+    if (this.versionsRepo === undefined) {
+      throw new Error("MediaService: versionsRepo not configured; cannot select version");
+    }
+    const media = this.getMediaById(idInput);
+    const body = parseOrThrow(selectVersionBodySchema, bodyInput, "select-version body");
+    const target: MediaActiveVersionType = body.versionType;
+
+    // Validate the target version actually exists for this media.
+    if (target === "original") {
+      if (media.originalPath === null || media.originalPath.length === 0) {
+        throw new BadRequestError(
+          "cannot select 'original' on a media with no original_path (e.g. type='unknown')",
+          { mediaId: media.id, mediaType: media.type },
+        );
+      }
+    } else {
+      // 'enhanced' / 'ai_refined' — verify a media_versions row exists.
+      const versions = this.versionsRepo.listByMediaId(media.id);
+      const row = versions.find((v) => v.versionType === target);
+      if (row === undefined) {
+        throw new BadRequestError(
+          `cannot select '${target}': no media_versions row of that type for this media`,
+          { mediaId: media.id, requestedVersionType: target },
+        );
+      }
+    }
+
+    const previous = media.activeVersionType;
+    if (previous === target) {
+      // No-op — short-circuit to keep updated_at stable.
+      return {
+        mediaId: media.id,
+        activeVersionType: target,
+        previousVersionType: previous,
+        alreadyActive: true,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const changed = this.repo.setActiveVersionType(media.id, target, now);
+    if (changed === 0) {
+      // Race: media was soft-deleted between the read and the write.
+      // Both possible outcomes look identical from the user's POV
+      // (a 404 follows on the next read), so report it as NotFound.
+      throw new NotFoundError(`Media not found: ${media.id}`, { id: media.id });
+    }
+    return {
+      mediaId: media.id,
+      activeVersionType: target,
+      previousVersionType: previous,
+      alreadyActive: false,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -658,4 +781,90 @@ export class MediaService {
       qualitySelectorEnqueued,
     };
   }
+}
+
+/**
+ * Closed set of `version_type` values that the user-facing versions
+ * endpoint surfaces. Operational types ('thumbnail', 'preview',
+ * 'metadata', 'video_cover', 'video_proxy') are deliberately
+ * excluded — they are artefacts of internal workers, not user
+ * choices. Mirrors the CHECK enum on
+ * `media_items.active_version_type` from migration 010.
+ */
+const USER_SELECTABLE_VERSION_TYPES: ReadonlySet<MediaActiveVersionType> = new Set([
+  "original",
+  "enhanced",
+  "ai_refined",
+]);
+
+/**
+ * Build the `MediaVersionsView` response from a media row + the
+ * raw `media_versions` rows for that media.
+ *
+ * Steps:
+ *   1. Filter the `media_versions` rows down to user-selectable
+ *      types (drops thumbnail / preview / metadata / video_* ).
+ *   2. Synthesize a virtual 'original' entry from `media_items`
+ *      columns. There is no `media_versions` row for 'original'
+ *      because the original file is the implicit base; we still
+ *      render an entry so the frontend can switch back to it.
+ *   3. Mark each entry's `isActive` flag against
+ *      `media.activeVersionType`.
+ *
+ * Ordering: 'original' first, then the rest in their natural
+ * `media_versions.created_at` order (the repo's `listByMediaId`
+ * already orders by version_type ASC). Stable order makes the UI
+ * easy to reason about.
+ */
+function buildVersionsView(
+  media: MediaItem,
+  allVersions: readonly MediaVersion[],
+): MediaVersionsView {
+  const selectable = allVersions.filter((v) =>
+    USER_SELECTABLE_VERSION_TYPES.has(v.versionType as MediaActiveVersionType),
+  );
+
+  const out: MediaVersionView[] = [];
+
+  // 1. Synthesized 'original' entry. We treat the original even
+  //    when originalPath is null (unknown-typed rows) — the entry
+  //    still exists in the list so the UI can show "no original
+  //    available" rather than hiding the row entirely. selectVersion
+  //    will reject 'original' for such rows on the write side.
+  out.push({
+    id: null,
+    versionType: "original",
+    isActive: media.activeVersionType === "original",
+    filePath: media.originalPath ?? "",
+    mimeType: media.mimeType,
+    width: media.width,
+    height: media.height,
+    fileSize: media.fileSize,
+    createdAt: media.createdAt,
+    updatedAt: media.updatedAt,
+  });
+
+  // 2. Real media_versions rows, mapped into the view shape. The
+  //    cast on versionType is safe because the filter above only
+  //    keeps types from USER_SELECTABLE_VERSION_TYPES.
+  for (const v of selectable) {
+    out.push({
+      id: v.id,
+      versionType: v.versionType as MediaActiveVersionType,
+      isActive: media.activeVersionType === v.versionType,
+      filePath: v.filePath,
+      mimeType: v.mimeType,
+      width: v.width,
+      height: v.height,
+      fileSize: v.fileSize,
+      createdAt: v.createdAt,
+      updatedAt: v.updatedAt,
+    });
+  }
+
+  return {
+    mediaId: media.id,
+    activeVersionType: media.activeVersionType,
+    versions: out,
+  };
 }

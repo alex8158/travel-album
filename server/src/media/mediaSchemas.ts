@@ -48,3 +48,33 @@ export const listMediaOptionsSchema = z
   .strict();
 
 export type ListMediaInput = z.infer<typeof listMediaOptionsSchema>;
+
+/**
+ * Body schema for `POST /api/media/:id/select-version` (P8.T4).
+ *
+ * Closed enum: `'original' | 'enhanced' | 'ai_refined'` — same set as
+ * the `media_items.active_version_type` CHECK from migration 010.
+ * `.strict()` so an unknown body key trips a 400 (defense against
+ * future drift; if a future task wants e.g. `{ versionType, reason }`
+ * it must edit the schema explicitly).
+ *
+ * The Service layer cross-checks that:
+ *   * For 'original': `media.originalPath` is non-null (rejects
+ *     `unknown`-typed media which deliberately have no original
+ *     stored on disk per Upload_Manager design §6.2.3).
+ *   * For 'enhanced' / 'ai_refined': a `media_versions` row with
+ *     `(media_id, version_type)` exists. Selecting a version the
+ *     media does not own is a 400 — matches the prompt requirement
+ *     "version 不存在或不属于该 media 时返回明确错误".
+ */
+export const selectVersionBodySchema = z
+  .object({
+    versionType: z.enum(["original", "enhanced", "ai_refined"], {
+      errorMap: () => ({
+        message: "versionType must be one of: original, enhanced, ai_refined",
+      }),
+    }),
+  })
+  .strict();
+
+export type SelectVersionInput = z.infer<typeof selectVersionBodySchema>;

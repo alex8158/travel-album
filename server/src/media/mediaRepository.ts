@@ -36,6 +36,7 @@
 import type { SqliteDatabase } from "../db/connection.js";
 import type {
   ListMediaOptions,
+  MediaActiveVersionType,
   MediaAnalysisProjection,
   MediaItem,
   MediaStatus,
@@ -70,6 +71,9 @@ interface MediaRow {
   duration: number | null;
   status: MediaStatus;
   user_decision: MediaUserDecision;
+  // P8.T4 — `media_items.active_version_type` (migration 010).
+  // Closed set 'original' | 'enhanced' | 'ai_refined'.
+  active_version_type: MediaActiveVersionType;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -117,6 +121,7 @@ const MEDIA_TABLE_COLUMNS = `
   m.duration        AS duration,
   m.status          AS status,
   m.user_decision   AS user_decision,
+  m.active_version_type AS active_version_type,
   m.created_at      AS created_at,
   m.updated_at      AS updated_at,
   m.deleted_at      AS deleted_at
@@ -162,6 +167,8 @@ export class MediaRepository {
   private readonly softDeleteStmt;
   // P7.T2 — restore writer (inverse of softDeleteStmt).
   private readonly restoreStmt;
+  // P8.T4 — active-version writer (migration 010).
+  private readonly setActiveVersionTypeStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -263,6 +270,20 @@ export class MediaRepository {
           status = 'processed',
           updated_at = @restoredAt
       WHERE id = @mediaId AND deleted_at IS NOT NULL
+    `);
+
+    // P8.T4 — flip the user-selected active version. Active rows
+    // only (`deleted_at IS NULL`) per recycle-bin contract: a
+    // soft-deleted media should not be re-targeted from under the
+    // user; the route layer already rejects this case with 404
+    // before reaching here, but the predicate keeps the SQL honest
+    // against a future bypass path. The CHECK enum in migration 010
+    // catches values outside the closed set at write time.
+    this.setActiveVersionTypeStmt = db.prepare(`
+      UPDATE media_items
+      SET active_version_type = @activeVersionType,
+          updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
     `);
 
     // P5.T2 image_hash worker: cache the file-level SHA256 and the
@@ -616,6 +637,35 @@ export class MediaRepository {
   }
 
   /**
+   * P8.T4 — flip `media_items.active_version_type` for one media.
+   * The Service layer is responsible for verifying that the target
+   * version actually exists (an `enhanced` selection requires a
+   * matching `media_versions` row); this method blindly UPDATEs,
+   * trusting the CHECK enum from migration 010 to catch bad values.
+   *
+   * Returns the number of rows touched:
+   *   * `1` — row was active and the column flipped.
+   *   * `0` — row is either missing OR soft-deleted (the WHERE
+   *     filters `deleted_at IS NULL`). Both states are 404 at the
+   *     Service layer; the Service uses
+   *     `findById(id, { includeDeleted: true })` to tell them apart
+   *     and produce the right error envelope.
+   *
+   * Idempotent at the SQL level only in the trivial sense — if the
+   * caller selects the already-active version we still write the
+   * row (touching `updated_at`). The Service short-circuits that
+   * case before invoking this method to keep `updated_at` stable.
+   */
+  setActiveVersionType(
+    mediaId: string,
+    activeVersionType: MediaActiveVersionType,
+    updatedAt: string,
+  ): number {
+    const info = this.setActiveVersionTypeStmt.run({ mediaId, activeVersionType, updatedAt });
+    return info.changes;
+  }
+
+  /**
    * P6.T7 — pick the single best image in a trip for auto-cover
    * selection, or `null` when the trip has no eligible candidate.
    * Selection rules are described in detail on the prepared
@@ -669,6 +719,7 @@ function rowToItem(row: MediaRow): MediaItem {
     duration: row.duration,
     status: row.status,
     userDecision: row.user_decision,
+    activeVersionType: row.active_version_type,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
