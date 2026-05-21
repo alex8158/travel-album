@@ -265,6 +265,43 @@ const schema = z
     VIDEO_COVER_FALLBACK_SEEK_SECONDS: numNonNeg(5),
     VIDEO_COVER_TIMEOUT_MS: intPositive(30_000),
     VIDEO_COVER_WORKER_VERSION: strDefault("1.0"),
+    // P9.T4 video_proxy worker — H.264 / AAC 720p low-res proxy.
+    // The proxy is a derived file used by the future video API +
+    // detail-page playback so the original (potentially 4K / GoPro
+    // .MOV) isn't hit on every read. Output: `derived/{mediaId}/
+    // video_proxy.mp4`. Persisted as `media_versions(version_type=
+    // 'video_proxy')`. The original is never modified or deleted.
+    //
+    //   * TARGET_HEIGHT — height of the proxy (px). Width is
+    //     auto-computed to preserve aspect, rounded to even (yuv420p
+    //     requires it). 720 is the design.md §8.1 default and a
+    //     sensible HD-ish ceiling for travel content.
+    //   * CRF — constant rate factor (libx264 0..51, lower = better
+    //     quality + larger file). 28 is the design.md §8.1 default,
+    //     visually solid for previews while keeping files small.
+    //   * PRESET — speed/size trade. `veryfast` is the sweet spot
+    //     for a proxy: ~3× faster than `medium` with only ~10%
+    //     file-size growth at the same CRF.
+    //   * VIDEO_CODEC / AUDIO_CODEC — H.264 + AAC for maximum
+    //     browser compatibility. `libx264` is the libav default;
+    //     `aac` is the built-in low-complexity encoder.
+    //   * AUDIO_BITRATE_KBPS — 128 kbps stereo is the perceptual
+    //     "indistinguishable from source" threshold for AAC-LC.
+    //   * TIMEOUT_MS — wall-clock cap for ffmpeg. 5 minutes covers
+    //     a typical phone video at TARGET_HEIGHT=720; the
+    //     concurrency budget (VIDEO_WORKER_CONCURRENCY=1) means
+    //     proxies serialise so a slow source can't starve the
+    //     channel for too long. Bumpable for archival 4K dumps.
+    //   * WORKER_VERSION — stamped into `media_versions.params` so
+    //     a future re-tune can be diffed against historical proxies.
+    VIDEO_PROXY_TARGET_HEIGHT: intPositive(720),
+    VIDEO_PROXY_CRF: intNonNeg(28),
+    VIDEO_PROXY_PRESET: strDefault("veryfast"),
+    VIDEO_PROXY_VIDEO_CODEC: strDefault("libx264"),
+    VIDEO_PROXY_AUDIO_CODEC: strDefault("aac"),
+    VIDEO_PROXY_AUDIO_BITRATE_KBPS: intPositive(128),
+    VIDEO_PROXY_TIMEOUT_MS: intPositive(300_000),
+    VIDEO_PROXY_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -417,6 +454,48 @@ const schema = z
         path: ["VIDEO_COVER_MAX_EDGE"],
         message: `VIDEO_COVER_MAX_EDGE (${cfg.VIDEO_COVER_MAX_EDGE}) must be ≥ 64; below that the cover is a thumbnail not a cover.`,
       });
+    }
+    // P9.T4 video_proxy guards. CRF range from libx264 docs (0..51,
+    // lower = better; 0 is lossless, 51 is unwatchable). target
+    // height ≥ 144 (240p / WebRTC floor) — anything smaller is a
+    // thumbnail, not a video proxy.
+    if (cfg.VIDEO_PROXY_CRF > 51) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_PROXY_CRF"],
+        message: `VIDEO_PROXY_CRF (${cfg.VIDEO_PROXY_CRF}) must be ≤ 51; libx264's CRF range.`,
+      });
+    }
+    if (cfg.VIDEO_PROXY_TARGET_HEIGHT < 144) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_PROXY_TARGET_HEIGHT"],
+        message: `VIDEO_PROXY_TARGET_HEIGHT (${cfg.VIDEO_PROXY_TARGET_HEIGHT}) must be ≥ 144; below that the proxy isn't a video.`,
+      });
+    }
+    // x264 preset must be one of its documented values; out-of-set
+    // strings cause ffmpeg to exit immediately at runtime, but
+    // failing here gives a clearer message than the stderr dump.
+    {
+      const allowedPresets: ReadonlyArray<string> = [
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+        "placebo",
+      ];
+      if (!allowedPresets.includes(cfg.VIDEO_PROXY_PRESET)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["VIDEO_PROXY_PRESET"],
+          message: `VIDEO_PROXY_PRESET ('${cfg.VIDEO_PROXY_PRESET}') must be one of: ${allowedPresets.join(", ")}.`,
+        });
+      }
     }
     // sharpen.flat (m1) and sharpen.jagged (m2) cap at 3 per sharp
     // docs; sigma should stay below 10 to keep the operation a sharpen
@@ -573,6 +652,17 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P9.T4 video_proxy worker knobs. */
+    proxy: {
+      targetHeight: number;
+      crf: number;
+      preset: string;
+      videoCodec: string;
+      audioCodec: string;
+      audioBitrateKbps: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -680,6 +770,16 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         fallbackSeekSeconds: raw.VIDEO_COVER_FALLBACK_SEEK_SECONDS,
         timeoutMs: raw.VIDEO_COVER_TIMEOUT_MS,
         workerVersion: raw.VIDEO_COVER_WORKER_VERSION,
+      },
+      proxy: {
+        targetHeight: raw.VIDEO_PROXY_TARGET_HEIGHT,
+        crf: raw.VIDEO_PROXY_CRF,
+        preset: raw.VIDEO_PROXY_PRESET,
+        videoCodec: raw.VIDEO_PROXY_VIDEO_CODEC,
+        audioCodec: raw.VIDEO_PROXY_AUDIO_CODEC,
+        audioBitrateKbps: raw.VIDEO_PROXY_AUDIO_BITRATE_KBPS,
+        timeoutMs: raw.VIDEO_PROXY_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_PROXY_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },

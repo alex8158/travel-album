@@ -21,6 +21,7 @@ import {
   JobService,
   VIDEO_COVER_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
+  VIDEO_PROXY_JOB_TYPE,
   makeImageEnhanceHandler,
   makeImageHashHandler,
   makeImageMetadataHandler,
@@ -31,6 +32,7 @@ import {
   makeImageThumbnailHandler,
   makeVideoCoverHandler,
   makeVideoMetadataHandler,
+  makeVideoProxyHandler,
   type JobHandler,
   type JobQueueChannelConfig,
 } from "./jobs/index.js";
@@ -407,6 +409,33 @@ async function main(): Promise<void> {
         jpegQuality: config.video.cover.jpegQuality,
         fallbackSeekSeconds: config.video.cover.fallbackSeekSeconds,
         workerVersion: config.video.cover.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P9.T4 — `video_proxy` worker (H.264 / AAC 720p MP4). Same
+  // video-channel budget; proxy transcoding is the heaviest video
+  // task, so the serial budget=1 keeps the host responsive. ffmpeg
+  // / ffprobe paths flow from config.ffmpeg.{ffmpegPath, ffprobePath};
+  // transcode settings flow from config.video.proxy.* — defaults
+  // documented inline in config/index.ts.
+  videoHandlers.set(
+    VIDEO_PROXY_JOB_TYPE,
+    makeVideoProxyHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
+        timeoutMs: config.video.proxy.timeoutMs,
+        targetHeight: config.video.proxy.targetHeight,
+        crf: config.video.proxy.crf,
+        preset: config.video.proxy.preset,
+        videoCodec: config.video.proxy.videoCodec,
+        audioCodec: config.video.proxy.audioCodec,
+        audioBitrateKbps: config.video.proxy.audioBitrateKbps,
+        workerVersion: config.video.proxy.workerVersion,
       },
       logger,
     }),

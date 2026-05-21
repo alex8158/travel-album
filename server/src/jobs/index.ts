@@ -134,5 +134,15 @@ export {
   type VideoCoverHandlerDeps,
   type VideoCoverSettings,
 } from "./videoCoverWorker.js";
+// P9.T4 — `video_proxy` worker (ffmpeg 720p H.264/AAC transcode).
+// Same video channel, shares the same VIDEO_WORKER_CONCURRENCY=1
+// budget as metadata + cover.
+export {
+  DEFAULT_VIDEO_PROXY_SETTINGS,
+  VIDEO_PROXY_JOB_TYPE,
+  makeVideoProxyHandler,
+  type VideoProxyHandlerDeps,
+  type VideoProxySettings,
+} from "./videoProxyWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";
