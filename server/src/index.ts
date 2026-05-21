@@ -19,6 +19,7 @@ import {
   JobQueue,
   JobRepository,
   JobService,
+  VIDEO_METADATA_JOB_TYPE,
   makeImageEnhanceHandler,
   makeImageHashHandler,
   makeImageMetadataHandler,
@@ -27,6 +28,7 @@ import {
   makeImageQualityExposureHandler,
   makeImageQualityFinalizeHandler,
   makeImageThumbnailHandler,
+  makeVideoMetadataHandler,
   type JobHandler,
   type JobQueueChannelConfig,
 } from "./jobs/index.js";
@@ -364,9 +366,29 @@ async function main(): Promise<void> {
       logger,
     }),
   );
+  // P9.T2 — video channel gets its first handler. Concurrency 1 by
+  // default (config.workers.videoConcurrency) so ffprobe / future
+  // ffmpeg spawns don't compete for the same CPU core. ffprobe path
+  // flows from config.ffmpeg.ffprobePath (PATH fallback at runtime
+  // inside the worker).
+  const videoHandlers = new Map<string, JobHandler>();
+  videoHandlers.set(
+    VIDEO_METADATA_JOB_TYPE,
+    makeVideoMetadataHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
+        ffprobeTimeoutMs: 30_000,
+        workerVersion: "1.0",
+      },
+      logger,
+    }),
+  );
   const channels: JobQueueChannelConfig[] = [
     { name: "image", concurrency: config.workers.imageConcurrency, handlers: imageHandlers },
-    { name: "video", concurrency: config.workers.videoConcurrency, handlers: new Map() },
+    { name: "video", concurrency: config.workers.videoConcurrency, handlers: videoHandlers },
     { name: "ai", concurrency: config.workers.aiConcurrency, handlers: new Map() },
   ];
   const jobQueue = new JobQueue({

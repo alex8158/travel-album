@@ -111,5 +111,17 @@ export {
   type EnhanceSettings,
   type ImageEnhanceHandlerDeps,
 } from "./imageEnhanceWorker.js";
+// P9.T2 — `video_metadata` worker (ffprobe). Registered on the
+// video channel (not image), per design.md §6.10
+// (VIDEO_WORKER_CONCURRENCY=1).
+export {
+  DEFAULT_VIDEO_METADATA_SETTINGS,
+  VIDEO_METADATA_JOB_TYPE,
+  makeVideoMetadataHandler,
+  projectFfprobe,
+  type VideoMetadataHandlerDeps,
+  type VideoMetadataProjection,
+  type VideoMetadataSettings,
+} from "./videoMetadataWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

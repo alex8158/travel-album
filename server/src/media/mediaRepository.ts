@@ -157,6 +157,11 @@ export class MediaRepository {
   // `deleted_at DESC` so the most-recently-deleted items show first.
   private readonly listByTripDeletedOnlyStmt;
   private readonly updateImageDerivedPathsStmt;
+  // P9.T2 — cache duration / width / height on the media row after
+  // ffprobe runs. Different from `updateImageDerivedPaths` because
+  // we don't touch preview_path / thumbnail_path (those land in
+  // P9.T3 / P9.T4 from a different worker).
+  private readonly updateVideoMetadataStmt;
   private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
   private readonly findActiveImageHashesByTripIdStmt;
@@ -236,6 +241,21 @@ export class MediaRepository {
           height = @height,
           preview_path = @previewPath,
           thumbnail_path = @thumbnailPath,
+          updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P9.T2 video metadata writer. Writes duration (the video-only
+    // column) + width/height (shared with image workers; for videos
+    // these are the source video's dimensions from ffprobe). Active
+    // rows only (same soft-delete guard as updateImageDerivedPaths).
+    // preview_path / thumbnail_path are deliberately NOT touched —
+    // those are P9.T3 (video_cover) territory.
+    this.updateVideoMetadataStmt = db.prepare(`
+      UPDATE media_items
+      SET duration = @duration,
+          width = @width,
+          height = @height,
           updated_at = @updatedAt
       WHERE id = @mediaId AND deleted_at IS NULL
     `);
@@ -475,6 +495,39 @@ export class MediaRepository {
       height: args.height,
       previewPath: args.previewPath,
       thumbnailPath: args.thumbnailPath,
+      updatedAt: args.updatedAt,
+    });
+    return info.changes;
+  }
+
+  /**
+   * P9.T2 — cache the video's duration / dimensions on the media row
+   * after the `video_metadata` worker (ffprobe) finishes. Caller
+   * passes already-projected values; nulls mean "ffprobe couldn't
+   * determine that field" and land in the column as NULL.
+   *
+   * Returns the number of rows touched (`1` happy, `0` when the row
+   * was missing or soft-deleted between the worker's `findById` and
+   * this UPDATE — the worker logs that race and proceeds; the
+   * media_versions(metadata) row still lands).
+   *
+   * Does NOT touch `preview_path` / `thumbnail_path` — those belong
+   * to P9.T3 (`video_cover` FFmpeg-extracted cover frame). Keeping
+   * the writes separate means a P9.T2 success leaves a P9.T3 retry
+   * room without partial-row weirdness.
+   */
+  updateVideoMetadata(args: {
+    readonly mediaId: string;
+    readonly duration: number | null;
+    readonly width: number | null;
+    readonly height: number | null;
+    readonly updatedAt: string;
+  }): number {
+    const info = this.updateVideoMetadataStmt.run({
+      mediaId: args.mediaId,
+      duration: args.duration,
+      width: args.width,
+      height: args.height,
       updatedAt: args.updatedAt,
     });
     return info.changes;
