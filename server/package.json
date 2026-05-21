@@ -58,7 +58,8 @@
     "smoke:migration-011": "tsx src/scripts/migration-011-smoke.ts",
     "smoke:video-metadata-worker": "tsx src/scripts/video-metadata-worker-smoke.ts",
     "smoke:video-cover-worker": "tsx src/scripts/video-cover-worker-smoke.ts",
-    "smoke:video-proxy-worker": "tsx src/scripts/video-proxy-worker-smoke.ts"
+    "smoke:video-proxy-worker": "tsx src/scripts/video-proxy-worker-smoke.ts",
+    "smoke:video-keyframes-worker": "tsx src/scripts/video-keyframes-worker-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

@@ -144,5 +144,17 @@ export {
   type VideoProxyHandlerDeps,
   type VideoProxySettings,
 } from "./videoProxyWorker.js";
+// P9.T5 — `video_keyframes` worker (ffmpeg fixed-interval frame
+// extraction). Video channel; shares the same budget.
+export {
+  DEFAULT_VIDEO_KEYFRAMES_SETTINGS,
+  VIDEO_KEYFRAMES_JOB_TYPE,
+  computeEffectiveInterval,
+  makeVideoKeyframesHandler,
+  type KeyframeManifest,
+  type KeyframeManifestEntry,
+  type VideoKeyframesHandlerDeps,
+  type VideoKeyframesSettings,
+} from "./videoKeyframesWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

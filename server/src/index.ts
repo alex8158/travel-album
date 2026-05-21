@@ -20,6 +20,7 @@ import {
   JobRepository,
   JobService,
   VIDEO_COVER_JOB_TYPE,
+  VIDEO_KEYFRAMES_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
   VIDEO_PROXY_JOB_TYPE,
   makeImageEnhanceHandler,
@@ -31,6 +32,7 @@ import {
   makeImageQualityFinalizeHandler,
   makeImageThumbnailHandler,
   makeVideoCoverHandler,
+  makeVideoKeyframesHandler,
   makeVideoMetadataHandler,
   makeVideoProxyHandler,
   type JobHandler,
@@ -436,6 +438,27 @@ async function main(): Promise<void> {
         audioCodec: config.video.proxy.audioCodec,
         audioBitrateKbps: config.video.proxy.audioBitrateKbps,
         workerVersion: config.video.proxy.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P9.T5 — `video_keyframes` worker (fixed-interval frame
+  // extraction). Same video-channel budget. Settings come from
+  // config.video.keyframes.*; defaults documented inline in
+  // config/index.ts.
+  videoHandlers.set(
+    VIDEO_KEYFRAMES_JOB_TYPE,
+    makeVideoKeyframesHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        timeoutMs: config.video.keyframes.timeoutMs,
+        intervalSec: config.video.keyframes.intervalSec,
+        maxFrames: config.video.keyframes.maxFrames,
+        jpegQuality: config.video.keyframes.jpegQuality,
+        workerVersion: config.video.keyframes.workerVersion,
       },
       logger,
     }),

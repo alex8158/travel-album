@@ -302,6 +302,36 @@ const schema = z
     VIDEO_PROXY_AUDIO_BITRATE_KBPS: intPositive(128),
     VIDEO_PROXY_TIMEOUT_MS: intPositive(300_000),
     VIDEO_PROXY_WORKER_VERSION: strDefault("1.0"),
+    // P9.T5 video_keyframes worker — fixed-interval frame extraction.
+    // Output: `derived/{mediaId}/frames/frame_NNNNNN.jpg` + a sibling
+    // `manifest.json` listing the (index, timestampSec, filePath,
+    // width, height) of every emitted frame. Downstream consumers
+    // (P9.T7 segment quality, P9.T8 Video API) read the manifest
+    // file from disk — there's no DB-side persistence for
+    // keyframes, by design (no new migration; see R-104).
+    //
+    //   * INTERVAL_SEC — base interval between emitted frames. 2s
+    //     matches the existing VIDEO_KEYFRAME_INTERVAL default
+    //     (design.md §11.1). Quite dense for typical phone clips
+    //     but cheap because proxies are 720p.
+    //   * MAX_FRAMES — hard cap on emitted frames per video. The
+    //     handler computes an "effective interval" that grows above
+    //     INTERVAL_SEC when a long video would otherwise exceed
+    //     this cap (e.g. a 1-hour video at 2s = 1800 frames → with
+    //     cap=200 the effective interval becomes 18s). Keeps disk
+    //     bounded and downstream segment scoring tractable.
+    //   * JPEG_QUALITY — ffmpeg `-q:v` (range 2-31, lower = better).
+    //     2 = sharp visually-lossless; matches video_cover worker
+    //     so downstream quality comparisons stay apples-to-apples.
+    //   * TIMEOUT_MS — wall-clock cap. 5 minutes covers typical
+    //     phone videos at the cap; long 4K archives may need more.
+    //   * WORKER_VERSION — stamped into the manifest for
+    //     traceability across algorithm bumps.
+    VIDEO_KEYFRAMES_INTERVAL_SEC: numNonNeg(2),
+    VIDEO_KEYFRAMES_MAX_FRAMES: intPositive(200),
+    VIDEO_KEYFRAMES_JPEG_QUALITY: intPositive(2),
+    VIDEO_KEYFRAMES_TIMEOUT_MS: intPositive(300_000),
+    VIDEO_KEYFRAMES_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -473,6 +503,34 @@ const schema = z
         message: `VIDEO_PROXY_TARGET_HEIGHT (${cfg.VIDEO_PROXY_TARGET_HEIGHT}) must be ≥ 144; below that the proxy isn't a video.`,
       });
     }
+    // P9.T5 video_keyframes guards. `-q:v` shares the same ffmpeg
+    // range as video_cover. `intervalSec ≥ 0.5` avoids degenerate
+    // sub-half-second sampling that doesn't help downstream segment
+    // scoring. `maxFrames ≤ 10000` is a paranoid upper bound to
+    // protect disk from a misconfigured env (10k frames @ ~100KB
+    // each = ~1GB).
+    if (cfg.VIDEO_KEYFRAMES_JPEG_QUALITY < 2 || cfg.VIDEO_KEYFRAMES_JPEG_QUALITY > 31) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_KEYFRAMES_JPEG_QUALITY"],
+        message: `VIDEO_KEYFRAMES_JPEG_QUALITY (${cfg.VIDEO_KEYFRAMES_JPEG_QUALITY}) must be in [2, 31]; ffmpeg's -q:v range.`,
+      });
+    }
+    if (cfg.VIDEO_KEYFRAMES_INTERVAL_SEC < 0.5) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_KEYFRAMES_INTERVAL_SEC"],
+        message: `VIDEO_KEYFRAMES_INTERVAL_SEC (${cfg.VIDEO_KEYFRAMES_INTERVAL_SEC}) must be ≥ 0.5; sub-half-second sampling doesn't help downstream scoring.`,
+      });
+    }
+    if (cfg.VIDEO_KEYFRAMES_MAX_FRAMES > 10_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_KEYFRAMES_MAX_FRAMES"],
+        message: `VIDEO_KEYFRAMES_MAX_FRAMES (${cfg.VIDEO_KEYFRAMES_MAX_FRAMES}) must be ≤ 10000; higher would risk disk blow-up.`,
+      });
+    }
+
     // x264 preset must be one of its documented values; out-of-set
     // strings cause ffmpeg to exit immediately at runtime, but
     // failing here gives a clearer message than the stderr dump.
@@ -663,6 +721,14 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P9.T5 video_keyframes worker knobs. */
+    keyframes: {
+      intervalSec: number;
+      maxFrames: number;
+      jpegQuality: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -780,6 +846,13 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         audioBitrateKbps: raw.VIDEO_PROXY_AUDIO_BITRATE_KBPS,
         timeoutMs: raw.VIDEO_PROXY_TIMEOUT_MS,
         workerVersion: raw.VIDEO_PROXY_WORKER_VERSION,
+      },
+      keyframes: {
+        intervalSec: raw.VIDEO_KEYFRAMES_INTERVAL_SEC,
+        maxFrames: raw.VIDEO_KEYFRAMES_MAX_FRAMES,
+        jpegQuality: raw.VIDEO_KEYFRAMES_JPEG_QUALITY,
+        timeoutMs: raw.VIDEO_KEYFRAMES_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_KEYFRAMES_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },
