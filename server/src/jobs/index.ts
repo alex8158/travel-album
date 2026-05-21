@@ -123,5 +123,16 @@ export {
   type VideoMetadataProjection,
   type VideoMetadataSettings,
 } from "./videoMetadataWorker.js";
+// P9.T3 — `video_cover` worker (ffmpeg cover-frame extraction).
+// Also registered on the video channel; shares the
+// VIDEO_WORKER_CONCURRENCY=1 budget with video_metadata.
+export {
+  DEFAULT_VIDEO_COVER_SETTINGS,
+  VIDEO_COVER_JOB_TYPE,
+  chooseCoverSeekSeconds,
+  makeVideoCoverHandler,
+  type VideoCoverHandlerDeps,
+  type VideoCoverSettings,
+} from "./videoCoverWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

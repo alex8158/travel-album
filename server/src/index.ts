@@ -19,6 +19,7 @@ import {
   JobQueue,
   JobRepository,
   JobService,
+  VIDEO_COVER_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
   makeImageEnhanceHandler,
   makeImageHashHandler,
@@ -28,6 +29,7 @@ import {
   makeImageQualityExposureHandler,
   makeImageQualityFinalizeHandler,
   makeImageThumbnailHandler,
+  makeVideoCoverHandler,
   makeVideoMetadataHandler,
   type JobHandler,
   type JobQueueChannelConfig,
@@ -382,6 +384,29 @@ async function main(): Promise<void> {
         ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
         ffprobeTimeoutMs: 30_000,
         workerVersion: "1.0",
+      },
+      logger,
+    }),
+  );
+  // P9.T3 — `video_cover` worker. Shares the video-channel
+  // VIDEO_WORKER_CONCURRENCY=1 budget with `video_metadata`. ffmpeg
+  // path flows from config.ffmpeg.ffmpegPath (PATH fallback to
+  // "ffmpeg" at worker runtime). Settings come from
+  // config.video.cover.* — defaults documented inline in
+  // config/index.ts.
+  videoHandlers.set(
+    VIDEO_COVER_JOB_TYPE,
+    makeVideoCoverHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        timeoutMs: config.video.cover.timeoutMs,
+        maxEdge: config.video.cover.maxEdge,
+        jpegQuality: config.video.cover.jpegQuality,
+        fallbackSeekSeconds: config.video.cover.fallbackSeekSeconds,
+        workerVersion: config.video.cover.workerVersion,
       },
       logger,
     }),

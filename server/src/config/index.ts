@@ -236,6 +236,35 @@ const schema = z
     IMAGE_ENHANCE_SHARPEN_M2: numNonNeg(2.0),
     IMAGE_ENHANCE_JPEG_QUALITY: intPositive(88),
     IMAGE_ENHANCE_WORKER_VERSION: strDefault("1.0"),
+    // P9.T3 video_cover worker — FFmpeg-extracted cover frame for
+    // videos. Output lands at `derived/{mediaId}/video_cover.jpg`
+    // (per design.md §7.5 / §8.1) and is mirrored onto
+    // media_items.thumbnail_path so the existing gallery / cover
+    // URL pipeline surfaces it uniformly with image thumbnails.
+    //
+    //   * MAX_EDGE — upper bound on the longest edge of the cover
+    //     JPEG. 1280 covers HD-class previews and keeps the file
+    //     compact (typical 100-300 KB at q=2). Larger cover doesn't
+    //     buy meaningful gallery quality.
+    //   * JPEG_QUALITY — ffmpeg's `-q:v` (range 2-31, lower = better).
+    //     2 = sharp visually-lossless; matches the photographic
+    //     intent of cover frames.
+    //   * FALLBACK_SEEK_SECONDS — when duration is known, the
+    //     worker seeks `min(duration/2, FALLBACK_SEEK_SECONDS)`.
+    //     5s is a sweet spot: short enough that decoder seek is
+    //     cheap, late enough to skip startup glitches (camera
+    //     auto-focus, fade-in). When duration is unknown (e.g.
+    //     P9.T2 hasn't run yet) the worker falls back to seek 0.
+    //   * TIMEOUT_MS — wall-clock cap for the ffmpeg child process.
+    //     30s handles even slow remote storage; longer would
+    //     suggest the host has a deeper problem.
+    //   * WORKER_VERSION — stamped into `media_versions.params` so
+    //     a future re-tune can be diffed against historical covers.
+    VIDEO_COVER_MAX_EDGE: intPositive(1280),
+    VIDEO_COVER_JPEG_QUALITY: intPositive(2),
+    VIDEO_COVER_FALLBACK_SEEK_SECONDS: numNonNeg(5),
+    VIDEO_COVER_TIMEOUT_MS: intPositive(30_000),
+    VIDEO_COVER_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -370,6 +399,23 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ["IMAGE_ENHANCE_GAMMA"],
         message: `IMAGE_ENHANCE_GAMMA (${cfg.IMAGE_ENHANCE_GAMMA}) must be ≥ 1.0 (sharp.gamma's documented range starts at 1.0; 1.0 is identity).`,
+      });
+    }
+    // P9.T3 video_cover JPEG quality is ffmpeg's `-q:v` (range 2-31,
+    // lower is better; 31 is unusable, 2 is visually lossless). Clamp
+    // here so a misconfigured env can't produce a sub-pixel cover.
+    if (cfg.VIDEO_COVER_JPEG_QUALITY < 2 || cfg.VIDEO_COVER_JPEG_QUALITY > 31) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_COVER_JPEG_QUALITY"],
+        message: `VIDEO_COVER_JPEG_QUALITY (${cfg.VIDEO_COVER_JPEG_QUALITY}) must be in [2, 31]; ffmpeg's -q:v range.`,
+      });
+    }
+    if (cfg.VIDEO_COVER_MAX_EDGE < 64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_COVER_MAX_EDGE"],
+        message: `VIDEO_COVER_MAX_EDGE (${cfg.VIDEO_COVER_MAX_EDGE}) must be ≥ 64; below that the cover is a thumbnail not a cover.`,
       });
     }
     // sharpen.flat (m1) and sharpen.jagged (m2) cap at 3 per sharp
@@ -519,6 +565,14 @@ export interface Config {
     proxyHeight: number;
     keyframeIntervalSec: number;
     blackDetectDurationSec: number;
+    /** P9.T3 video_cover worker knobs. */
+    cover: {
+      maxEdge: number;
+      jpegQuality: number;
+      fallbackSeekSeconds: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -620,6 +674,13 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
       proxyHeight: raw.VIDEO_PROXY_HEIGHT,
       keyframeIntervalSec: raw.VIDEO_KEYFRAME_INTERVAL,
       blackDetectDurationSec: raw.BLACK_DETECT_DURATION,
+      cover: {
+        maxEdge: raw.VIDEO_COVER_MAX_EDGE,
+        jpegQuality: raw.VIDEO_COVER_JPEG_QUALITY,
+        fallbackSeekSeconds: raw.VIDEO_COVER_FALLBACK_SEEK_SECONDS,
+        timeoutMs: raw.VIDEO_COVER_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_COVER_WORKER_VERSION,
+      },
     },
     meta: { loadedDotenvFiles },
   };

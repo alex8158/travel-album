@@ -162,6 +162,13 @@ export class MediaRepository {
   // we don't touch preview_path / thumbnail_path (those land in
   // P9.T3 / P9.T4 from a different worker).
   private readonly updateVideoMetadataStmt;
+  // P9.T3 — cache the cover-frame logical path on the media row.
+  // Writes only `thumbnail_path` (not `preview_path`): videos have
+  // no separate medium-resolution preview in V1; the original file
+  // is the playback source. By using `thumbnail_path` we get
+  // P3.T8 cover_url derivation + P6.T7 auto-cover selection for
+  // free, since both already SELECT on this column.
+  private readonly updateVideoCoverPathsStmt;
   private readonly updateImageHashesStmt;
   private readonly findFirstThumbnailPathStmt;
   private readonly findActiveImageHashesByTripIdStmt;
@@ -256,6 +263,19 @@ export class MediaRepository {
       SET duration = @duration,
           width = @width,
           height = @height,
+          updated_at = @updatedAt
+      WHERE id = @mediaId AND deleted_at IS NULL
+    `);
+
+    // P9.T3 video cover writer. Writes only `thumbnail_path` (a
+    // logical path under `derived/{mediaId}/video_cover.jpg`).
+    // preview_path is deliberately left alone — V1 videos have no
+    // separate medium-resolution preview file; the gallery uses the
+    // cover JPEG for both grid and detail-hero thumbnails. Active
+    // rows only (same soft-delete guard as the image writers).
+    this.updateVideoCoverPathsStmt = db.prepare(`
+      UPDATE media_items
+      SET thumbnail_path = @thumbnailPath,
           updated_at = @updatedAt
       WHERE id = @mediaId AND deleted_at IS NULL
     `);
@@ -528,6 +548,33 @@ export class MediaRepository {
       duration: args.duration,
       width: args.width,
       height: args.height,
+      updatedAt: args.updatedAt,
+    });
+    return info.changes;
+  }
+
+  /**
+   * P9.T3 — cache the video cover's logical path on the media row.
+   * `thumbnailPath` is something like
+   * `trips/{tripId}/derived/{mediaId}/video_cover.jpg`. Writing to
+   * `thumbnail_path` (vs introducing a new column) lets the existing
+   * cover-URL pipeline (P3.T8 `findFirstThumbnailPath` + P6.T7
+   * `findBestCoverCandidate`) surface video covers without
+   * per-type branching.
+   *
+   * Returns the number of rows touched (`1` happy, `0` when the row
+   * was missing or soft-deleted between the worker's `findById` and
+   * this UPDATE — the worker logs that race and proceeds; the
+   * media_versions(video_cover) row still lands).
+   */
+  updateVideoCoverPaths(args: {
+    readonly mediaId: string;
+    readonly thumbnailPath: string;
+    readonly updatedAt: string;
+  }): number {
+    const info = this.updateVideoCoverPathsStmt.run({
+      mediaId: args.mediaId,
+      thumbnailPath: args.thumbnailPath,
       updatedAt: args.updatedAt,
     });
     return info.changes;

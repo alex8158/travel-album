@@ -56,7 +56,8 @@
     "smoke:image-enhance-worker": "tsx src/scripts/image-enhance-worker-smoke.ts",
     "smoke:media-versions-api": "tsx src/scripts/media-versions-api-smoke.ts",
     "smoke:migration-011": "tsx src/scripts/migration-011-smoke.ts",
-    "smoke:video-metadata-worker": "tsx src/scripts/video-metadata-worker-smoke.ts"
+    "smoke:video-metadata-worker": "tsx src/scripts/video-metadata-worker-smoke.ts",
+    "smoke:video-cover-worker": "tsx src/scripts/video-cover-worker-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
