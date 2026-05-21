@@ -19,6 +19,16 @@ export {
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 export {
+  VideoSegmentsRepository,
+  videoSegmentMp4Path,
+} from "./videoSegmentsRepository.js";
+export type {
+  VideoSegment,
+  VideoSegmentInsertData,
+  VideoSegmentUserDecision,
+  VideoSegmentWasteType,
+} from "./videoSegmentTypes.js";
+export {
   BLUR_DIMENSION_LABELS,
   COLOR_DIMENSION_LABELS,
   EXPOSURE_DIMENSION_LABELS,

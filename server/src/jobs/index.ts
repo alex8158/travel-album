@@ -156,5 +156,15 @@ export {
   type VideoKeyframesHandlerDeps,
   type VideoKeyframesSettings,
 } from "./videoKeyframesWorker.js";
+// P9.T6 — `video_segments` worker (ffmpeg fixed-duration slicing).
+// Same video channel; shares the VIDEO_WORKER_CONCURRENCY=1 budget
+// with metadata / cover / proxy / keyframes.
+export {
+  DEFAULT_VIDEO_SEGMENTS_SETTINGS,
+  VIDEO_SEGMENTS_JOB_TYPE,
+  makeVideoSegmentsHandler,
+  type VideoSegmentsHandlerDeps,
+  type VideoSegmentsSettings,
+} from "./videoSegmentsWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

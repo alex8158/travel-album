@@ -332,6 +332,30 @@ const schema = z
     VIDEO_KEYFRAMES_JPEG_QUALITY: intPositive(2),
     VIDEO_KEYFRAMES_TIMEOUT_MS: intPositive(300_000),
     VIDEO_KEYFRAMES_WORKER_VERSION: strDefault("1.0"),
+    // P9.T6 video_segments worker — fixed-duration MP4 slicing.
+    // Output: `derived/{mediaId}/segments/{segmentId}.mp4` × N + a
+    // matching `video_segments` row per file. The producer is also
+    // responsible for cleaning up old rows + old files on re-run
+    // (transactional wipe + reinsert; see R-107).
+    //
+    //   * DURATION_SEC — base slice length (seconds). 10s matches
+    //     the design.md §8.1 default. The last segment in a video
+    //     may be shorter (e.g. a 25s clip → 3 × 10s + 1 × 5s).
+    //   * TIMEOUT_MS — wall-clock cap on the ffmpeg child process.
+    //     5 minutes covers typical phone videos at 10s slicing; long
+    //     archives may need more (overridable via env).
+    //   * WORKER_VERSION — stamped into log lines for traceability.
+    //     `video_segments` has no `params` column, so the worker
+    //     version is logger-side only; if a future task wants it in
+    //     the DB the column would need to land in a migration.
+    //
+    // NB: VIDEO_SEGMENT_DURATION (declared below in the existing
+    // video-parameters block) is the SAME knob viewed from the
+    // design.md §11.1 angle — it lands in config.video.segmentDurationSec
+    // and the worker reads `config.video.segments.durationSec`
+    // which mirrors it. Single source of truth, two access paths.
+    VIDEO_SEGMENTS_TIMEOUT_MS: intPositive(300_000),
+    VIDEO_SEGMENTS_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -729,6 +753,14 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P9.T6 video_segments worker knobs. `durationSec` mirrors the
+     * existing `segmentDurationSec` field above so the worker has
+     * a single config source; both surface VIDEO_SEGMENT_DURATION. */
+    segments: {
+      durationSec: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -853,6 +885,11 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         jpegQuality: raw.VIDEO_KEYFRAMES_JPEG_QUALITY,
         timeoutMs: raw.VIDEO_KEYFRAMES_TIMEOUT_MS,
         workerVersion: raw.VIDEO_KEYFRAMES_WORKER_VERSION,
+      },
+      segments: {
+        durationSec: raw.VIDEO_SEGMENT_DURATION,
+        timeoutMs: raw.VIDEO_SEGMENTS_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_SEGMENTS_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },

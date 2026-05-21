@@ -23,6 +23,7 @@ import {
   VIDEO_KEYFRAMES_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
   VIDEO_PROXY_JOB_TYPE,
+  VIDEO_SEGMENTS_JOB_TYPE,
   makeImageEnhanceHandler,
   makeImageHashHandler,
   makeImageMetadataHandler,
@@ -35,6 +36,7 @@ import {
   makeVideoKeyframesHandler,
   makeVideoMetadataHandler,
   makeVideoProxyHandler,
+  makeVideoSegmentsHandler,
   type JobHandler,
   type JobQueueChannelConfig,
 } from "./jobs/index.js";
@@ -49,6 +51,7 @@ import {
   MediaRepository,
   MediaService,
   MediaVersionsRepository,
+  VideoSegmentsRepository,
 } from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
@@ -185,6 +188,7 @@ async function main(): Promise<void> {
   const mediaRepo = new MediaRepository(dbHandle.db);
   const mediaVersionsRepo = new MediaVersionsRepository(dbHandle.db);
   const mediaAnalysisRepo = new MediaAnalysisRepository(dbHandle.db);
+  const videoSegmentsRepo = new VideoSegmentsRepository(dbHandle.db);
   const jobRepo = new JobRepository(dbHandle.db);
   const uploadService = new UploadService({
     db: dbHandle.db,
@@ -459,6 +463,27 @@ async function main(): Promise<void> {
         maxFrames: config.video.keyframes.maxFrames,
         jpegQuality: config.video.keyframes.jpegQuality,
         workerVersion: config.video.keyframes.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P9.T6 — `video_segments` worker (fixed-duration slicing). Same
+  // video-channel budget. Reuses `config.video.segments.durationSec`
+  // (which maps to env VIDEO_SEGMENT_DURATION introduced for P9.T1)
+  // plus dedicated timeoutMs / workerVersion knobs.
+  videoHandlers.set(
+    VIDEO_SEGMENTS_JOB_TYPE,
+    makeVideoSegmentsHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      videoSegmentsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
+        timeoutMs: config.video.segments.timeoutMs,
+        durationSec: config.video.segments.durationSec,
+        workerVersion: config.video.segments.workerVersion,
       },
       logger,
     }),
