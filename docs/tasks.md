@@ -251,7 +251,7 @@
 
 > requirements §7.11 / §7.12 / §14 阶段 9。第一版范围内项目均为 SHOULD（§6.2），但封面 / 元数据为 MUST。
 
-- [ ] **P9.T1 [MUST]** 迁移：`video_segments`
+- [x] **P9.T1 [MUST]** 迁移：`video_segments`（2026-05-21 完成；新增 migration `011_create_video_segments.sql` 落库 `video_segments` 表：16 列（id PK / media_id FK CASCADE / start_time / end_time / duration / thumbnail_path / preview_path / blur_score / stability_score / quality_score / waste_type / is_recommended / user_decision / reason / created_at / updated_at）+ 9 个 CHECK 约束（start_time≥0、end_time>start_time、duration>0、3 个 score [0,1] OR NULL、waste_type ∈ {'black','blurry','unstable','silence','none'} 默认 'none'、is_recommended 0/1、user_decision ∈ {'keep','remove','undecided'} 默认 'undecided'）+ 2 个索引（media_id、is_recommended）+ FK `media_id → media_items(id) ON DELETE CASCADE`。STRICT 表。无 worker / repository / service / route / 前端代码——纯 schema 落库；这些将随 P9.T2-T9 各自落地。新增 `smoke:migration-011`（39/39 PASS：fresh + upgrade scenarios + 16 列顺序 + 索引 + FK + 9 个 CHECK + 默认值落地 + CASCADE + FK 拒绝错 media_id + 幂等 + integrity_check + 兼容 P1-P8 表）。同步扩展 `p7-recycle-bin-acceptance-smoke.ts` 加 video_segments 跨表 FK case（5 个新断言：soft-delete 保留 / restore 保留 + 内容不变 / round-trip 两轮均保留），共 60/60 PASS（之前 55/55）。**关闭 R-78**：video_segments 表已落库且接入 P7 跨表 FK 验收 smoke。回归 30 个 smoke 全绿。详见 `docs/progress.md`）
 - [ ] **P9.T2 [MUST]** `video_metadata`：ffprobe 读时长 / 分辨率 / 帧率 / 码率 / 编码 / 音频
 - [ ] **P9.T3 [MUST]** `video_cover`：FFmpeg 抽封面帧
 - [ ] **P9.T4 [SHOULD]** `video_proxy`：720p 低清代理

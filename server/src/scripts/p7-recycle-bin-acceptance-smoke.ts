@@ -86,6 +86,8 @@ function describeError(err: unknown): string {
 //   * media_analysis             (ON DELETE CASCADE — survives soft delete)
 //   * processing_jobs            (ON DELETE CASCADE — survives soft delete)
 //   * duplicate_group_items      (ON DELETE CASCADE — survives soft delete)
+//   * video_segments             (ON DELETE CASCADE — survives soft delete)
+//                                 added by P9.T1 (migration 011); closes R-78
 //
 // Plus optionally a `duplicate_groups.recommended_media_id` pointing
 // at the seeded media so we can verify it gets reset on soft-delete
@@ -101,6 +103,14 @@ interface SeededAttachments {
   readonly analysisId: string;
   readonly versionId: string;
   readonly jobId: string;
+  /**
+   * P9.T1 (migration 011). One row in `video_segments` so the
+   * cross-table FK walk also asserts soft-delete + restore preserves
+   * video child rows. Always seeded — the table doesn't care about
+   * `media.type`, and the CHECK constraints only require positive
+   * timing values, which the seed provides.
+   */
+  readonly segmentId: string;
 }
 
 async function seedFullyAttachedMedia(args: {
@@ -213,6 +223,37 @@ async function seedFullyAttachedMedia(args: {
     now,
   );
 
+  // 6) video_segments row — FK ON DELETE CASCADE (migration 011,
+  //    P9.T1). The table is independent of media.type at the schema
+  //    level (FK only requires media_items(id) to exist), so we
+  //    seed regardless. We carry deterministic fixture values for
+  //    every column the smoke later inspects: a 10-second slice
+  //    starting at t=0, neutral waste_type, user_decision='keep'.
+  //    These values are part of the soft-delete preservation
+  //    contract: restore must NOT clobber them (CLAUDE.md §3.9 user-
+  //    decision precedence applies to video segments too).
+  const segmentId = randomUUID();
+  db.prepare(
+    `INSERT INTO video_segments
+       (id, media_id, start_time, end_time, duration,
+        thumbnail_path, preview_path,
+        blur_score, stability_score, quality_score,
+        waste_type, is_recommended, user_decision, reason,
+        created_at, updated_at)
+     VALUES (?, ?, 0, 10, 10,
+             ?, ?,
+             0.85, 0.7, 0.78,
+             'none', 1, 'keep', 'seeded for P9.T1 FK walk',
+             ?, ?)`,
+  ).run(
+    segmentId,
+    mediaId,
+    `trips/${tripId}/derived/${mediaId}/segments/seg-0/thumb.webp`,
+    `trips/${tripId}/derived/${mediaId}/segments/seg-0/preview.mp4`,
+    now,
+    now,
+  );
+
   return {
     mediaId,
     originalPath: stored.logicalPath,
@@ -221,6 +262,7 @@ async function seedFullyAttachedMedia(args: {
     analysisId,
     versionId,
     jobId,
+    segmentId,
   };
 }
 
@@ -474,6 +516,14 @@ async function main(): Promise<void> {
         item?.user_decision === "keep",
         `user_decision=${String(item?.user_decision)}`,
       );
+      // P9.T1: video_segments row survives soft-delete (CASCADE
+      // does not fire because soft-delete is marker-only). Closes
+      // R-78.
+      record(
+        "FK walk (soft-delete): video_segments row preserved (P9.T1, closes R-78)",
+        rowExists(dbHandle.db, "video_segments", bSeed.segmentId),
+        `segmentId=${bSeed.segmentId}`,
+      );
     }
 
     // -----------------------------------------------------------------
@@ -520,6 +570,38 @@ async function main(): Promise<void> {
         "FK walk (restore): user_decision still 'keep' (CLAUDE.md §3.9 user-decision precedence)",
         item?.user_decision === "keep",
         `user_decision=${String(item?.user_decision)}`,
+      );
+      // P9.T1: video_segments row STILL preserved through the round
+      // trip + content (user_decision, waste_type, scores) intact.
+      // Closes R-78 — soft-delete + restore is FK-safe + content-safe
+      // for video child rows just as for image child rows.
+      record(
+        "FK walk (restore): video_segments row STILL preserved (P9.T1, closes R-78)",
+        rowExists(dbHandle.db, "video_segments", bSeed.segmentId),
+        `segmentId=${bSeed.segmentId}`,
+      );
+      const segmentRow = dbHandle.db
+        .prepare(
+          `SELECT user_decision, waste_type, blur_score, stability_score, quality_score
+             FROM video_segments WHERE id = ?`,
+        )
+        .get(bSeed.segmentId) as
+        | {
+            user_decision: string;
+            waste_type: string;
+            blur_score: number;
+            stability_score: number;
+            quality_score: number;
+          }
+        | undefined;
+      record(
+        "FK walk (restore): video_segments fixture content preserved (user_decision='keep', waste_type='none', scores intact)",
+        segmentRow?.user_decision === "keep" &&
+          segmentRow?.waste_type === "none" &&
+          segmentRow?.blur_score === 0.85 &&
+          segmentRow?.stability_score === 0.7 &&
+          segmentRow?.quality_score === 0.78,
+        `row=${JSON.stringify(segmentRow)}`,
       );
       // group.recommended_media_id stays NULL after restore — restore
       // is intentionally NOT idempotent w.r.t. the prior selection;
@@ -843,6 +925,13 @@ async function main(): Promise<void> {
           `round-trip[${cycle}]: processing_jobs still attached`,
           rowExists(dbHandle.db, "processing_jobs", jSeed.jobId),
           `jobId=${jSeed.jobId}`,
+        );
+        // P9.T1 (closes R-78): video_segments row also survives the
+        // full round-trip cycle.
+        record(
+          `round-trip[${cycle}]: video_segments still attached (P9.T1)`,
+          rowExists(dbHandle.db, "video_segments", jSeed.segmentId),
+          `segmentId=${jSeed.segmentId}`,
         );
       }
     }
