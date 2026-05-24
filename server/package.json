@@ -61,7 +61,8 @@
     "smoke:video-proxy-worker": "tsx src/scripts/video-proxy-worker-smoke.ts",
     "smoke:video-keyframes-worker": "tsx src/scripts/video-keyframes-worker-smoke.ts",
     "smoke:video-segments-worker": "tsx src/scripts/video-segments-worker-smoke.ts",
-    "smoke:video-segment-quality-worker": "tsx src/scripts/video-segment-quality-worker-smoke.ts"
+    "smoke:video-segment-quality-worker": "tsx src/scripts/video-segment-quality-worker-smoke.ts",
+    "smoke:video-api": "tsx src/scripts/video-api-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

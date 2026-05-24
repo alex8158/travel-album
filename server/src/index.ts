@@ -54,6 +54,7 @@ import {
   MediaService,
   MediaVersionsRepository,
   VideoSegmentsRepository,
+  VideoService,
 } from "./media/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
@@ -229,6 +230,15 @@ async function main(): Promise<void> {
     // DedupService constructor so existing smokes that build the
     // service directly without a full media wiring still compile.
     mediaService,
+  );
+  // P9.T8 — Video API service. Reads `video_segments` rows + the
+  // P9.T5 keyframes manifest off disk, writes `user_decision`
+  // (only — never scores), and enqueues the P9.T5/T6/T7 jobs.
+  const videoService = new VideoService(
+    mediaRepo,
+    videoSegmentsRepo,
+    jobRepo,
+    storage,
   );
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
@@ -555,6 +565,7 @@ async function main(): Promise<void> {
     mediaRepo,
     jobService,
     dedupService,
+    videoService,
     debugRoutes: config.nodeEnv !== "production",
   });
 

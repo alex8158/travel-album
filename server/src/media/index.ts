@@ -26,6 +26,23 @@ export {
   type ReplaceAllForMediaOptions,
   type VideoSegmentQualityUpdate,
 } from "./videoSegmentsRepository.js";
+export {
+  VideoService,
+  type KeyframesSummary,
+  type ListVideoSegmentsResult,
+  type ProcessSlotOutcome,
+  type ProcessSlotResult,
+  type ProcessVideoSegmentsResult,
+  type UpdateUserDecisionResult,
+  type VideoSegmentDetailResult,
+  type VideoSegmentView,
+} from "./videoService.js";
+export {
+  processVideoSegmentsBodySchema,
+  updateUserDecisionBodySchema,
+  type ProcessVideoSegmentsInput,
+  type UpdateUserDecisionInput,
+} from "./videoSchemas.js";
 export type {
   VideoSegment,
   VideoSegmentInsertData,

@@ -25,13 +25,14 @@ import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
-import type { MediaRepository, MediaService } from "./media/index.js";
+import type { MediaRepository, MediaService, VideoService } from "./media/index.js";
 import { makeDedupRouter } from "./routes/dedup.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeJobsRouter } from "./routes/jobs.js";
 import { makeMediaRouter } from "./routes/media.js";
 import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
+import { makeVideoRouter } from "./routes/video.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
 import type { TripRepository, TripService } from "./trips/index.js";
@@ -61,6 +62,8 @@ export interface CreateAppOptions {
   readonly jobService: JobService;
   /** Dedup domain service powering /api/trips/:tripId/dedup/* (P5.T5). */
   readonly dedupService: DedupService;
+  /** Video API (P9.T8) — segments list / detail / user_decision PATCH / process. */
+  readonly videoService: VideoService;
   /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
@@ -80,6 +83,7 @@ export function createApp(opts: CreateAppOptions): Express {
     mediaRepo,
     jobService,
     dedupService,
+    videoService,
     debugRoutes,
   } = opts;
 
@@ -118,6 +122,17 @@ export function createApp(opts: CreateAppOptions): Express {
   // reprocess endpoints. Synchronous execution; each call is bound
   // to a single tripId from the URL path.
   app.use("/api", makeDedupRouter({ service: dedupService }));
+
+  // Video API (P9.T8). Mounted at /api so the routes live under
+  // `/api/media/:mediaId/video-segments[/:segmentId]`,
+  // `/api/video-segments/:segmentId/user-decision`, and
+  // `/api/media/:mediaId/process-video-segments`. Read paths
+  // surface the P9.T1-T7 produced data; the PATCH respects R-107
+  // (system rescoring never overwrites user_decision); the process
+  // endpoint enqueues the three video-channel jobs in dependency
+  // order and threads the optional `force` flag into the segments
+  // worker payload.
+  app.use("/api", makeVideoRouter({ videoService }));
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file

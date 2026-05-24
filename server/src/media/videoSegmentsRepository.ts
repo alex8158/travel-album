@@ -133,6 +133,7 @@ export interface VideoSegmentQualityUpdate {
 export class VideoSegmentsRepository {
   private readonly insertStmt;
   private readonly listByMediaIdStmt;
+  private readonly findByIdStmt;
   private readonly deleteByMediaIdStmt;
   private readonly updateUserDecisionStmt;
   private readonly updateQualityStmt;
@@ -156,6 +157,16 @@ export class VideoSegmentsRepository {
       FROM video_segments
       WHERE media_id = ?
       ORDER BY start_time ASC, id ASC
+    `);
+
+    // P9.T8 single-row lookup powering `GET /api/video-segments/:id`
+    // and the user_decision PATCH. Returns the raw row; the Service
+    // layer cross-checks the parent media's `deleted_at` to honour
+    // the P7 contract (recycle-bin members must NOT surface).
+    this.findByIdStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM video_segments
+      WHERE id = ?
     `);
 
     this.deleteByMediaIdStmt = db.prepare(`
@@ -216,6 +227,17 @@ export class VideoSegmentsRepository {
   listByMediaId(mediaId: string): VideoSegment[] {
     const rows = this.listByMediaIdStmt.all(mediaId) as SegmentRow[];
     return rows.map(rowToSegment);
+  }
+
+  /**
+   * Lookup one segment by primary key. Returns `null` when the row
+   * does not exist. The repository does NOT cross-check the parent
+   * `media_items` row's `deleted_at` — that's a Service-layer
+   * concern (`VideoService` cross-checks via `MediaRepository`).
+   */
+  findById(id: string): VideoSegment | null {
+    const row = this.findByIdStmt.get(id) as SegmentRow | undefined;
+    return row === undefined ? null : rowToSegment(row);
   }
 
   /**
