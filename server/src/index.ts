@@ -23,6 +23,7 @@ import {
   VIDEO_KEYFRAMES_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
   VIDEO_PROXY_JOB_TYPE,
+  VIDEO_SEGMENT_QUALITY_JOB_TYPE,
   VIDEO_SEGMENTS_JOB_TYPE,
   makeImageEnhanceHandler,
   makeImageHashHandler,
@@ -36,6 +37,7 @@ import {
   makeVideoKeyframesHandler,
   makeVideoMetadataHandler,
   makeVideoProxyHandler,
+  makeVideoSegmentQualityHandler,
   makeVideoSegmentsHandler,
   type JobHandler,
   type JobQueueChannelConfig,
@@ -484,6 +486,36 @@ async function main(): Promise<void> {
         timeoutMs: config.video.segments.timeoutMs,
         durationSec: config.video.segments.durationSec,
         workerVersion: config.video.segments.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P9.T7 — `video_segment_quality` worker (per-keyframe Laplacian
+  // sharpness + ffmpeg blackdetect → per-segment scoring). Same
+  // video-channel budget. Reuses the existing image-blur
+  // `BLUR_THRESHOLD_MAYBE` env (config.quality.blurThresholdMaybe)
+  // as the `normaliseSharpness` denominator so image / video stay
+  // comparable; the other thresholds come from
+  // config.video.segmentQuality.*.
+  videoHandlers.set(
+    VIDEO_SEGMENT_QUALITY_JOB_TYPE,
+    makeVideoSegmentQualityHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      videoSegmentsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        timeoutMs: config.video.segmentQuality.timeoutMs,
+        blurMaxEdge: config.video.segmentQuality.blurMaxEdge,
+        normaliseSharpnessMaybeThreshold: config.quality.blurThresholdMaybe,
+        blurWasteThreshold: config.video.segmentQuality.blurWasteThreshold,
+        blackRatioThreshold: config.video.segmentQuality.blackRatioThreshold,
+        blackdetectMinDurationSec: config.video.segmentQuality.blackdetectMinDurationSec,
+        blackdetectPicTh: config.video.segmentQuality.blackdetectPicTh,
+        blackdetectPixTh: config.video.segmentQuality.blackdetectPixTh,
+        recommendThreshold: config.video.segmentQuality.recommendThreshold,
+        workerVersion: config.video.segmentQuality.workerVersion,
       },
       logger,
     }),

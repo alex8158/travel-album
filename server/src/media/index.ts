@@ -19,8 +19,12 @@ export {
 } from "./mediaService.js";
 export { MediaVersionsRepository, type MediaVersionUpsertData } from "./mediaVersionsRepository.js";
 export {
+  PRESERVE_USER_DECISION_OVERLAP_RATIO,
   VideoSegmentsRepository,
+  mapUserDecisionsByOverlap,
   videoSegmentMp4Path,
+  type ReplaceAllForMediaOptions,
+  type VideoSegmentQualityUpdate,
 } from "./videoSegmentsRepository.js";
 export type {
   VideoSegment,

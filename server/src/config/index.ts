@@ -356,6 +356,42 @@ const schema = z
     // which mirrors it. Single source of truth, two access paths.
     VIDEO_SEGMENTS_TIMEOUT_MS: intPositive(300_000),
     VIDEO_SEGMENTS_WORKER_VERSION: strDefault("1.0"),
+    // P9.T7 video_segment_quality worker — per-segment blur scoring
+    // (Laplacian variance on the P9.T5 keyframes) + ffmpeg
+    // `blackdetect` filter for black-screen intervals. Output:
+    // UPDATE per-segment columns blur_score / stability_score /
+    // quality_score / waste_type / is_recommended / reason. The
+    // worker NEVER writes user_decision (CLAUDE.md §3.9).
+    //
+    //   * BLUR_MAX_EDGE — sharp resize cap for the per-keyframe
+    //     Laplacian. 512 matches the image_quality_blur worker so
+    //     numerical scales stay comparable.
+    //   * BLUR_WASTE_THRESHOLD — normalised sharpness below which
+    //     a segment is labelled `waste_type='blurry'` (provided
+    //     it's not also black). 0.25 = "half of a noticeable
+    //     wobble below the maybe-blurry image threshold".
+    //   * BLACK_RATIO_THRESHOLD — fraction of a segment's
+    //     duration that must overlap a `blackdetect` interval
+    //     before the segment is labelled `waste_type='black'`.
+    //     0.5 = "majority of the segment is black".
+    //   * BLACKDETECT_PIC_TH / BLACKDETECT_PIX_TH — FFmpeg
+    //     blackdetect filter args (frame-level + pixel-level
+    //     black thresholds). Defaults match the FFmpeg docs.
+    //   * RECOMMEND_THRESHOLD — quality_score above which the
+    //     finalizer sets `is_recommended = 1` (provided
+    //     waste_type='none'). 0.5 = "comfortably above the
+    //     mid-line".
+    //   * TIMEOUT_MS — wall-clock cap on the ffmpeg blackdetect
+    //     pass.
+    //   * WORKER_VERSION — stamped into log lines for traceability.
+    VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE: intPositive(512),
+    VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD: numNonNeg(0.25),
+    VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD: numNonNeg(0.5),
+    VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH: numNonNeg(0.98),
+    VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH: numNonNeg(0.1),
+    VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD: numNonNeg(0.5),
+    VIDEO_SEGMENT_QUALITY_TIMEOUT_MS: intPositive(300_000),
+    VIDEO_SEGMENT_QUALITY_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -553,6 +589,33 @@ const schema = z
         path: ["VIDEO_KEYFRAMES_MAX_FRAMES"],
         message: `VIDEO_KEYFRAMES_MAX_FRAMES (${cfg.VIDEO_KEYFRAMES_MAX_FRAMES}) must be ≤ 10000; higher would risk disk blow-up.`,
       });
+    }
+
+    // P9.T7 video_segment_quality — keep the [0, 1] thresholds in
+    // their natural ranges. blurMaxEdge has to be ≥ 4 because the
+    // 3×3 Laplacian kernel skips a 1-pixel border (matching the
+    // image_quality_blur worker's guard).
+    if (cfg.VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE < 4) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE"],
+        message: `VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE (${cfg.VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE}) must be ≥ 4 so the Laplacian has a non-empty interior after dropping the 1-pixel border.`,
+      });
+    }
+    for (const [key, value] of [
+      ["VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD],
+      ["VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD],
+      ["VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH", cfg.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH],
+      ["VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH", cfg.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH],
+      ["VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD],
+    ] as const) {
+      if (value > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be in [0, 1].`,
+        });
+      }
     }
 
     // x264 preset must be one of its documented values; out-of-set
@@ -761,6 +824,18 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P9.T7 video_segment_quality worker knobs. */
+    segmentQuality: {
+      blurMaxEdge: number;
+      blurWasteThreshold: number;
+      blackRatioThreshold: number;
+      blackdetectMinDurationSec: number;
+      blackdetectPicTh: number;
+      blackdetectPixTh: number;
+      recommendThreshold: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -890,6 +965,17 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         durationSec: raw.VIDEO_SEGMENT_DURATION,
         timeoutMs: raw.VIDEO_SEGMENTS_TIMEOUT_MS,
         workerVersion: raw.VIDEO_SEGMENTS_WORKER_VERSION,
+      },
+      segmentQuality: {
+        blurMaxEdge: raw.VIDEO_SEGMENT_QUALITY_BLUR_MAX_EDGE,
+        blurWasteThreshold: raw.VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD,
+        blackRatioThreshold: raw.VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD,
+        blackdetectMinDurationSec: raw.BLACK_DETECT_DURATION,
+        blackdetectPicTh: raw.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH,
+        blackdetectPixTh: raw.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH,
+        recommendThreshold: raw.VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD,
+        timeoutMs: raw.VIDEO_SEGMENT_QUALITY_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_SEGMENT_QUALITY_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },

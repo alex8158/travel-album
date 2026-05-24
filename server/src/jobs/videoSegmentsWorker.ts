@@ -162,6 +162,13 @@ export function makeVideoSegmentsHandler(deps: VideoSegmentsHandlerDeps): JobHan
   return async (job) => {
     const correlation = { jobId: job.id, mediaId: job.mediaId };
 
+    // R-107 fix: optional `{ "force": true }` in the job payload
+    // opts into a destructive re-slice that wipes user_decision
+    // along with the rest. Default (omitted or `{ "force": false }`)
+    // preserves any non-`undecided` user_decision by time-overlap
+    // mapping inside `replaceAllForMedia`.
+    const force = parseForceFlag(job.payload, deps.logger, correlation);
+
     // ---- 1. Resolve media row -----------------------------------------
     const media = deps.mediaRepo.findById(job.mediaId);
     if (media === null) {
@@ -276,8 +283,10 @@ export function makeVideoSegmentsHandler(deps: VideoSegmentsHandlerDeps): JobHan
         );
       }
 
-      // Step (c): transactional DELETE-old + INSERT-new.
-      deps.videoSegmentsRepo.replaceAllForMedia(media.id, newSegmentInserts);
+      // Step (c): transactional DELETE-old + INSERT-new. R-107:
+      // the repo preserves non-`undecided` user_decision via
+      // time-overlap mapping unless we pass `{ force: true }`.
+      deps.videoSegmentsRepo.replaceAllForMedia(media.id, newSegmentInserts, { force });
 
       // Step (d): best-effort removal of OLD segment files. Outside
       // the transaction because (i) storage removal can't roll back
@@ -319,6 +328,7 @@ export function makeVideoSegmentsHandler(deps: VideoSegmentsHandlerDeps): JobHan
           decodeSourcePath: decodeSource.logicalPath,
           segmentsDir: `trips/${media.tripId}/derived/${media.id}/${SEGMENTS_SUBDIR}/`,
           workerVersion: settings.workerVersion,
+          force,
         },
         "video_segments: segments written + video_segments rows replaced",
       );
@@ -567,4 +577,36 @@ async function probeSegmentDurationSec(absolutePath: string, ffprobePath: string
  */
 function roundToMs(seconds: number): number {
   return Math.round(seconds * 1000) / 1000;
+}
+
+/**
+ * Parse `{ "force": true|false }` out of the job's `payload` TEXT
+ * column. Anything else (null payload, non-JSON, JSON with no
+ * `force` key, malformed JSON) silently falls back to `false`. We
+ * log-warn on malformed JSON so a typo doesn't quietly skip the
+ * caller's intent, but we don't fail the job — the safe interpretation
+ * is "no force, preserve user_decision".
+ *
+ * Exported as a regular function (not the public surface) so the
+ * smoke can exercise the edge cases without spinning up a JobQueue.
+ */
+function parseForceFlag(
+  payload: string | null,
+  logger: Logger,
+  correlation: Record<string, unknown>,
+): boolean {
+  if (payload === null || payload.length === 0) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    logger.warn(
+      { ...correlation, err: err instanceof Error ? err.message : String(err) },
+      "video_segments: payload is not parseable JSON; treating as force=false",
+    );
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+  const flag = (parsed as { force?: unknown }).force;
+  return flag === true;
 }

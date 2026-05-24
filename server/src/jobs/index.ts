@@ -166,5 +166,19 @@ export {
   type VideoSegmentsHandlerDeps,
   type VideoSegmentsSettings,
 } from "./videoSegmentsWorker.js";
+// P9.T7 — `video_segment_quality` worker (per-keyframe Laplacian
+// sharpness + ffmpeg blackdetect → per-segment scoring / waste_type
+// / is_recommended). Same video channel; shares the budget.
+export {
+  DEFAULT_VIDEO_SEGMENT_QUALITY_SETTINGS,
+  VIDEO_SEGMENT_QUALITY_JOB_TYPE,
+  makeVideoSegmentQualityHandler,
+  parseBlackdetectStderr,
+  runBlackdetect,
+  scoreOneSegment,
+  type SegmentScore,
+  type VideoSegmentQualityHandlerDeps,
+  type VideoSegmentQualitySettings,
+} from "./videoSegmentQualityWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";
