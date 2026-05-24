@@ -9,6 +9,7 @@ import TripFormPage from "./pages/TripFormPage";
 import TripListPage from "./pages/TripListPage";
 import TripRecycleBinPage from "./pages/TripRecycleBinPage";
 import UploadPage from "./pages/UploadPage";
+import VideoSegmentsPage from "./pages/VideoSegmentsPage";
 
 // Route shell. Business routes (per docs/design.md §2.2) land in their
 // corresponding tasks:
@@ -24,7 +25,7 @@ import UploadPage from "./pages/UploadPage";
 //   /duplicate-groups/:id       -> P5.T6 (DuplicateGroupDetailPage) ✓ wired
 //   /media/:id                  -> P3.T6 (MediaDetailPage v1)      ✓ wired
 //                                  P6 / P8 / P10 add features
-//   /videos/:id/segments        -> P9.T9 (VideoSegmentsPage)
+//   /videos/:mediaId/segments   -> P9.T9 (VideoSegmentsPage)        ✓ wired
 //   /jobs                       -> P4.T6 (JobsPage)             ✓ wired
 //
 // Route order matters: /trips/new sits before /trips/:id so it does
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="/trips/:id" element={<TripDetailPage />} />
         <Route path="/duplicate-groups/:id" element={<DuplicateGroupDetailPage />} />
         <Route path="/media/:id" element={<MediaDetailPage />} />
+        <Route path="/videos/:mediaId/segments" element={<VideoSegmentsPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>

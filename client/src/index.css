@@ -1459,3 +1459,179 @@ a {
   gap: 0.5rem;
   margin-top: 0.75rem;
 }
+
+/* P9.T9 — Video segments page. Mirrors the visual language of
+   the media gallery + enhancement section so a user moving from
+   the photo flow to the video flow doesn't have to relearn the
+   shapes. The page uses existing .btn-primary / .btn-secondary /
+   .btn-danger / .quality-pill / .modal-overlay / .modal-card
+   patterns wherever possible. */
+
+.video-segments-section-h {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #57606a;
+  margin: 1.5rem 0 0.75rem 0;
+}
+
+.video-segments-list-wrap {
+  margin-top: 1rem;
+}
+
+.video-segments-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.video-segment-card {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 1rem;
+  background: #ffffff;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.video-segment-card[data-recommended="true"] {
+  border-color: #1a7f37;
+  background: #f6fff8;
+}
+
+.video-segment-card[data-user-decision="remove"] {
+  opacity: 0.65;
+  background: #fafafa;
+}
+
+.video-segment-card[data-waste-type="black"],
+.video-segment-card[data-waste-type="blurry"] {
+  border-color: #cf222e;
+}
+
+.video-segment-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.video-segment-card-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.95rem;
+  color: #1f2328;
+}
+
+.video-segment-card-range {
+  font-weight: 600;
+}
+
+.video-segment-card-duration {
+  margin-left: 0.4rem;
+  color: #57606a;
+}
+
+.video-segment-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.video-segment-card-frames {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.video-segment-card-frame img,
+.video-keyframe-img {
+  width: 84px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #eaeef2;
+  display: block;
+}
+
+.video-segment-card-decisions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.video-segment-card-disclosure {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #0969da;
+  cursor: pointer;
+  font: inherit;
+}
+
+.video-segment-card-disclosure:hover {
+  text-decoration: underline;
+}
+
+.video-segment-card-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  background: #f6f8fa;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.video-segment-card-details > div {
+  display: contents;
+}
+
+.video-segment-card-details dt {
+  font-weight: 600;
+  color: #57606a;
+}
+
+.video-segment-card-details dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.video-keyframe-strip-wrap {
+  margin-top: 1rem;
+}
+
+.video-keyframe-strip {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem;
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  background: #f6f8fa;
+  border-radius: 6px;
+  border: 1px solid #d0d7de;
+}
+
+.video-keyframe-strip-item {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.video-keyframe-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem;
+  color: #57606a;
+}

@@ -249,6 +249,18 @@ export default function MediaDetailPage(): JSX.Element {
           </p>
         </div>
         <div className="page-header-actions">
+          {media.type === "video" && (
+            // P9.T9 — only video-typed media own video_segments rows.
+            // Link surfaces here as a Link (not a button) so right-
+            // click "open in new tab" works for power users.
+            <Link
+              to={`/videos/${media.id}/segments`}
+              className="btn-secondary"
+              title="View video segments + per-segment quality scores"
+            >
+              View segments
+            </Link>
+          )}
           <button
             type="button"
             className="btn-secondary"
