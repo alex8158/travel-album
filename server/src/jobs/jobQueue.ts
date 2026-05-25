@@ -118,6 +118,25 @@ export interface JobQueueDeps {
    */
   readonly retryConfig?: JobQueueRetryConfig;
   /**
+   * P10.T7 — optional per-job-type retry overrides. Keyed by
+   * `processing_jobs.job_type`. When a handler for a listed type
+   * fails, the override's `maxRetries` / `baseDelayMs` /
+   * `maxDelayMs` are used in place of the global `retryConfig`.
+   *
+   * Use case: `image_ai_refine` should not retry (R-132 — the
+   * worker's audit-row lookup fails the second attempt because
+   * P10.T4's enqueue path only writes one pending row per
+   * /ai-refine request; the user explicitly re-triggers via
+   * /ai-refine for a real retry, which then writes a fresh
+   * audit row). Overriding `maxRetries: 0` for that job type
+   * stops the audit row's first-attempt terminal state from
+   * being shadowed by a string of "no pending audit row"
+   * processing_jobs errors.
+   *
+   * A missing entry inherits the global `retryConfig`.
+   */
+  readonly retryOverrides?: Readonly<Record<string, JobQueueRetryConfig>>;
+  /**
    * P4.T3: max wall-clock duration a row may stay in `running`
    * before it is considered a zombie (process crashed, kill -9,
    * OOM, etc.) and reset back through the retry-budget judge.
@@ -180,6 +199,7 @@ export class JobQueue {
   private state: JobQueueState = "idle";
   private readonly channels: Map<JobQueueChannelName, ChannelRuntime>;
   private readonly retryConfig: JobQueueRetryConfig;
+  private readonly retryOverrides: Readonly<Record<string, JobQueueRetryConfig>>;
   private readonly zombieTimeoutMs: number;
 
   constructor(private readonly deps: JobQueueDeps) {
@@ -214,6 +234,31 @@ export class JobQueue {
       }
     }
     this.retryConfig = cfg;
+
+    // P10.T7: validate per-job-type overrides on the same axes as
+    // the global retryConfig. Invalid entries throw at boot so an
+    // operator typo doesn't smuggle through.
+    const overrides = deps.retryOverrides ?? {};
+    for (const [jobType, override] of Object.entries(overrides)) {
+      if (override.maxRetries < 0) {
+        throw new Error(
+          `JobQueue: retryOverrides['${jobType}'].maxRetries < 0 (${override.maxRetries})`,
+        );
+      }
+      if (override.maxRetries > 0) {
+        if (override.baseDelayMs <= 0) {
+          throw new Error(
+            `JobQueue: retryOverrides['${jobType}'].baseDelayMs must be > 0 when maxRetries > 0`,
+          );
+        }
+        if (override.maxDelayMs < override.baseDelayMs) {
+          throw new Error(
+            `JobQueue: retryOverrides['${jobType}'].maxDelayMs (${override.maxDelayMs}) < baseDelayMs (${override.baseDelayMs})`,
+          );
+        }
+      }
+    }
+    this.retryOverrides = overrides;
 
     // P4.T3 zombie timeout. Negative is rejected outright; 0 is the
     // documented "disable" sentinel; > 0 is the cutoff.
@@ -441,7 +486,14 @@ export class JobQueue {
           )}s timeout)`
         : `zombie: 'running' with null started_at (recovered by P4.T3 scan)`;
 
-    const { maxRetries, baseDelayMs, maxDelayMs } = this.retryConfig;
+    // P10.T7: zombie recovery honours the same per-job-type
+    // override as handleFailure — `image_ai_refine` with override
+    // maxRetries=0 will go straight to failed instead of cycling.
+    const effectiveRetryConfig =
+      this.retryOverrides[job.jobType] !== undefined
+        ? this.retryOverrides[job.jobType]!
+        : this.retryConfig;
+    const { maxRetries, baseDelayMs, maxDelayMs } = effectiveRetryConfig;
     if (job.retryCount < maxRetries) {
       const delayMs = Math.min(baseDelayMs * Math.pow(2, job.retryCount), maxDelayMs);
       const nextRunAt = new Date(now.getTime() + delayMs).toISOString();
@@ -607,7 +659,13 @@ export class JobQueue {
     message: string,
     correlation: Record<string, unknown>,
   ): void {
-    const { maxRetries, baseDelayMs, maxDelayMs } = this.retryConfig;
+    // P10.T7: per-job-type override has priority over the global
+    // retryConfig. Missing entry falls through to the global.
+    const effectiveRetryConfig =
+      this.retryOverrides[job.jobType] !== undefined
+        ? this.retryOverrides[job.jobType]!
+        : this.retryConfig;
+    const { maxRetries, baseDelayMs, maxDelayMs } = effectiveRetryConfig;
     if (job.retryCount >= maxRetries) {
       // Retry budget exhausted (covers both maxRetries=0 "no retry"
       // and "we already retried N times"). Final fail.

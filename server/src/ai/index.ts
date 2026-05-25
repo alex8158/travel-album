@@ -23,6 +23,7 @@
 
 import type { Logger } from "../logger.js";
 
+import { LocalMockProvider } from "./LocalMockProvider.js";
 import { NoopProvider } from "./NoopProvider.js";
 
 export {
@@ -37,6 +38,11 @@ export {
   type AISuccessResponse,
 } from "./AIProvider.js";
 export { NoopProvider } from "./NoopProvider.js";
+export {
+  LocalMockProvider,
+  LOCAL_MOCK_MODEL_NAME,
+  LOCAL_MOCK_PROVIDER_NAME,
+} from "./LocalMockProvider.js";
 export {
   AiInvocationsRepository,
   type AiInvocationInsertData,
@@ -75,8 +81,15 @@ export interface AIProviderFactoryConfig {
 
 /** Provider registry — extend this when a real provider lands.
  * Closed set: anything not in this map falls back to NoopProvider
- * with a WARN log. Matching is case-insensitive after trim. */
-const KNOWN_PROVIDER_IDS: readonly string[] = ["noop", "disabled"] as const;
+ * with a WARN log. Matching is case-insensitive after trim.
+ *
+ * `local-mock` (P10.T7) is a deterministic in-process fixture
+ * intended for local dev / smoke / acceptance only — it doesn't
+ * call any external service, doesn't echo secrets, and applies a
+ * fixed sharp transform. It's safe to leave wired in production
+ * config too (no harm done), but operators wanting a real
+ * provider should not select it. */
+const KNOWN_PROVIDER_IDS: readonly string[] = ["noop", "disabled", "local-mock"] as const;
 
 /**
  * Decide which `AIProvider` implementation to use at boot.
@@ -112,9 +125,22 @@ export function createAIProviderFromConfig(
     return new NoopProvider();
   }
 
+  // P10.T7 — deterministic in-process fixture. INFO not WARN
+  // because this is a recognised (if unusual) selection: an
+  // operator running smoke / acceptance / dev with no real
+  // provider wired yet. The provider has no secrets, no network,
+  // and is deterministic for reproducibility.
+  if (providerToken === "local-mock") {
+    logger?.info(
+      { aiEnabled: true, providerToken },
+      "ai: LocalMockProvider selected — deterministic in-process fixture; do not use in production",
+    );
+    return new LocalMockProvider();
+  }
+
   // Unknown provider id — future PRs add the openai / gemini /
-  // bedrock / local-mock branches here. Until then, refuse to
-  // attempt real network calls and stay safe.
+  // bedrock branches here. Until then, refuse to attempt real
+  // network calls and stay safe.
   logger?.warn(
     {
       aiEnabled: true,

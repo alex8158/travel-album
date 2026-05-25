@@ -596,6 +596,22 @@ async function main(): Promise<void> {
       baseDelayMs: config.workers.jobRetryBaseDelayMs,
       maxDelayMs: config.workers.jobRetryMaxDelayMs,
     },
+    // P10.T7 (R-132 closure): image_ai_refine cannot meaningfully
+    // retry under the current audit-row model — P10.T4 writes the
+    // pending audit row at /ai-refine enqueue time, and the worker
+    // refuses to fabricate a fresh one. JobQueue's automatic retry
+    // would just burn the budget on "no pending audit row"
+    // failures. Override to maxRetries=0 so a single transient
+    // provider failure goes straight to terminal; the user
+    // explicitly clicks /ai-refine again to spawn a fresh audit
+    // row + fresh attempt.
+    retryOverrides: {
+      [IMAGE_AI_REFINE_JOB_TYPE]: {
+        maxRetries: 0,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+      },
+    },
     zombieTimeoutMs: config.workers.zombieTimeoutMs,
   });
 
