@@ -184,6 +184,13 @@ docs/
   - 永远返回 200（除非整体校验失败），单文件错误体现在数组项中。
 - 列表接口必须分页（`page` + `pageSize` 或 `cursor`），默认每页 50。
 - 删除接口区分软删除（默认）与永久删除（`?permanent=true` 且需要二次确认 token）。
+- 音频库 API（P11 新增，详见 requirements.md §9.7）：
+  - `GET /api/audio-library`：返回音频库条目列表。
+  - `POST /api/audio-library/upload`：`multipart/form-data` 上传单个音频，写入 `audio_library/user/`。
+  - `POST /api/audio-library/import-url`：body 含 `{ url, name? }`；服务器端先下载到 `audio_library/imported/`，再写表；下载失败时回滚事务。
+  - `DELETE /api/audio-library/:id`：仅允许删除用户上传 / 导入的条目；引用检查不通过时返回业务错误。
+- 视频合成 API（P11 新增）：
+  - `POST /api/videos/compose`：body 包含 `inputs: [{ mediaVersionId, order }]` + `audioPolicy`；返回 `compositionId` 与初始 `processing_job` 信息；实际渲染异步执行。
 
 ---
 
@@ -210,6 +217,8 @@ docs/
 | `video_segments` | `media_id`（CASCADE） | `media_id`、`is_recommended` | 每段独立缩略图 / 预览 |
 | `processing_jobs` | `media_id`（CASCADE 或 SET NULL，见下） | `status`、`job_type`、`started_at` | 状态机表，详见 §8 |
 | `ai_invocations` | `media_id`、`job_id`（SET NULL） | `created_at` | 审计用，不参与业务流 |
+| `audio_library` | 无强外键（与媒体解耦） | `source_type`、`is_default`、`is_user_uploaded` | 系统默认 + 用户上传 + URL 导入条目；删除时需先校验是否被进行中的渲染任务引用（详见 §8.5） |
+| `video_compositions` | `trip_id`（SET NULL）、`output_media_version_id`（SET NULL） | `status`、`created_at` | 多视频合成历史；inputs 列表通过子表或 JSON 字段记录顺序敏感的剪辑视频引用 |
 
 ### 4.3 删除关联处理顺序
 
@@ -277,7 +286,15 @@ storage/
           segments/{segmentId}.mp4      # 切片
           segments/{segmentId}_thumb.jpg
       outputs/
-        edits/{editId}.mp4              # 后续视频剪辑输出
+        edits/{editId}.mp4              # 单个视频的剪辑输出（含 audioPolicy 渲染结果）
+        compositions/{compositionId}.mp4 # 多视频合成的最终视频（P11 新增）
+  audio_library/
+    system/
+      {audioId}.{ext}                  # 系统内置默认音频；普通删除接口不可删
+    user/
+      {audioId}.{ext}                  # 用户上传的音频
+    imported/
+      {audioId}.{ext}                  # URL 导入音频的本地落盘副本（不依赖远程 URL 渲染）
 ```
 
 ### 5.3 文件命名与路径规则
@@ -428,8 +445,26 @@ Client                Upload API           DB                    Queue
 ### 8.3 视频基础优化与剪辑（后续阶段）
 
 - 优化：转码、统一分辨率/帧率、轻防抖、音量归一化，输出新文件，记 `media_versions`。
-- 剪辑方案：基于候选 `video_segments` 生成顺序与时长，存为 JSON。
-- 渲染：FFmpeg concat / filter_complex 合成 → `outputs/edits/`。
+- 剪辑方案（render plan）：基于候选 `video_segments` 生成片段顺序、起止时间与目标总时长，存为 JSON 字段。
+- 剪辑方案必须包含一个顶层字段 `audioPolicy`，描述音频处理策略，建议结构：
+
+  ```jsonc
+  {
+    "audioPolicy": {
+      "mode": "keep_original" | "remove_original" | "replace_with_default" | "replace_with_library_audio" | "mute",
+      "audioLibraryId": "uuid-or-null",       // 仅 replace_with_* 模式需要
+      "removeOriginalAudio": true,             // 与 mode 联动，便于 worker 直接读
+      "normalizeVolume": true,
+      "fadeInMs": 500,
+      "fadeOutMs": 800,
+      "loopToFit": true,                       // 音频不足目标时长时循环
+      "trimToDuration": true                   // 音频超过目标时长时裁剪
+    }
+  }
+  ```
+
+- 渲染：FFmpeg concat / filter_complex 合成 → `outputs/edits/{editId}.mp4`，结果作为新的 `media_versions` 行（建议 `version_type='edited'` 或等价），**不覆盖原始视频，也不覆盖之前的 edit 输出**。
+- 用户在手动编辑界面可以重新发起渲染并替换 `audioPolicy.audioLibraryId`，每次替换都产生新 edit 版本。
 - AI 不可用时，使用规则引擎兜底（按 `quality_score` + 时长目标贪心选择）。
 
 ### 8.4 ffmpeg / ffprobe 启动检查
@@ -448,6 +483,87 @@ Client                Upload API           DB                    Queue
    - 图片任务路径（thumbnail / hash / quality / dedup / enhance）**完全不受影响**。
 4. 运维侧暴露 `GET /api/health`（最小实现）返回 `ffmpegAvailable` / `ffprobeAvailable`，便于诊断。
 5. README、`.env.example` 必须明确写出该系统依赖（详见 P0.T1 / P0.T4 任务）。
+
+### 8.5 音频库与音频处理（P11 新增）
+
+#### 8.5.1 audio_library 表设计
+
+第一版字段建议（与 requirements.md §8.10 对齐）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | TEXT (uuid) | 主键 |
+| `name` | TEXT NOT NULL | 显示名称 |
+| `source_type` | TEXT NOT NULL CHECK (`'system_default'`/`'upload'`/`'url_import'`) | 来源类型，闭合枚举 |
+| `source_url` | TEXT | 来源 URL，仅 `url_import` 必填 |
+| `storage_path` | TEXT NOT NULL | 本地存储相对路径 |
+| `duration_ms` | INTEGER | 时长（毫秒） |
+| `mime_type` | TEXT | MIME 类型 |
+| `format` | TEXT | 容器 / 编码 |
+| `file_size` | INTEGER | 文件大小（字节） |
+| `is_default` | INTEGER NOT NULL DEFAULT 0 | 是否系统内置默认音频 |
+| `is_user_uploaded` | INTEGER NOT NULL DEFAULT 0 | 是否用户上传 / 导入 |
+| `metadata_json` | TEXT | 版权 / 来源说明（JSON）|
+| `created_at` | TEXT NOT NULL | 创建时间 |
+| `updated_at` | TEXT NOT NULL | 更新时间 |
+
+索引建议：`source_type`、`is_default`、`is_user_uploaded`、`created_at`。
+
+#### 8.5.2 音频文件存储
+
+- 默认音频与用户音频物理目录分离（见 §5.2）：
+  - 系统默认：`audio_library/system/{audioId}.{ext}`，普通删除接口不可删，避免渲染回退失败。
+  - 用户上传：`audio_library/user/{audioId}.{ext}`。
+  - URL 导入：`audio_library/imported/{audioId}.{ext}`（先下载到本地，再注册到表，渲染**不再依赖远程 URL**）。
+- 业务表只存逻辑路径，`StorageProvider` 后续可平滑切换到 S3。
+- URL 导入需要在下载阶段做：MIME / 扩展名白名单校验、大小上限、超时控制；下载失败 → 整个导入事务回滚，不留半成品 audio_library 行。
+
+#### 8.5.3 ffmpeg 音频处理
+
+- 替换配乐：先 demux 视频音轨（或忽略），再用 `-i video -i audio -map 0:v -map 1:a -shortest`（或带 filter_complex 的精确长度控制）重新 mux 输出。
+- 去原声：`-an` 或 `-map 0:v -an` 输出视频 only / 静音轨。
+- 音频长度不足：`-stream_loop -1` + 输出端裁剪到目标时长；或 filter_complex `aloop`。
+- 音频长度过长：filter_complex `atrim=duration=X,asetpts=PTS-STARTPTS`。
+- 淡入淡出：`afade=t=in:st=0:d=<ms>`、`afade=t=out:st=<endStart>:d=<ms>`。
+- 音量归一化：`loudnorm`（EBU R128 标准）或 `volume` filter。
+- 输出文件落到 `outputs/edits/{editId}.mp4`，写入新的 `media_versions` 行（`version_type='edited'`），**绝不覆盖原视频或既有 edit 版本**。
+
+#### 8.5.4 删除保护
+
+删除 `audio_library` 条目前必须：
+1. 检查是否被 `video_compositions` 或正在排队 / 运行的渲染任务引用，若是则拒绝并提示原因；
+2. 系统默认音频（`is_default=1`）走单独的管理路径，普通用户接口 `DELETE /api/audio-library/:id` 返回 403 / 业务错误码。
+
+### 8.6 多视频合成（P11 新增）
+
+#### 8.6.1 合成流程
+
+1. 用户在前端选择多个已剪辑视频（来自 `media_versions(version_type='edited')` 或等价类型）。
+2. 用户调整顺序，选择音频策略：
+   - 保留各段音频（concat 时不动每段音轨）。
+   - 统一替换为音频库某条音频（整段最终视频共享一个新音轨，原各段音轨被替换）。
+   - 静音（输出无声）。
+3. 后端创建 `video_compositions` 行，状态 `pending`，记录 inputs / 顺序 / `audioPolicy` / `audio_library_id`。
+4. 渲染 worker 拉起任务：
+   - 校验所有输入文件存在且可读。
+   - 规格归一化：以第一段或全局配置为基准（统一分辨率 / 帧率 / 像素格式 / 音频采样率），其他段按需 transcode 到统一规格。
+   - 用 FFmpeg `concat` demuxer 或 filter_complex 拼接视频流。
+   - 音频按所选策略处理（保留 / 替换 / 静音），逻辑复用 §8.5.3。
+   - 输出到 `outputs/compositions/{compositionId}.mp4`。
+   - 写入新的 `media_versions` 行（建议 `version_type='final_composition'`），记 `video_compositions.output_media_version_id`。
+5. 任务结束更新 `video_compositions.status`，失败时保留 `error_message`，**不修改任何输入剪辑视频或原视频**。
+
+#### 8.6.2 异常输入处理
+
+- 分辨率不同：在归一化阶段统一 scale + pad（或 crop），保证最终视频分辨率一致。
+- 帧率不同：统一到目标帧率（建议 30fps，可配置）。
+- 音频参数不同：统一采样率、声道数；保留各段音频策略下要在合并时插入 `aresample` filter。
+- 输入文件缺失 / 损坏：任务直接 `failed`，error 信息指明哪一段缺失。
+
+#### 8.6.3 不覆盖原则（红线）
+
+- 多视频合成只读取输入剪辑视频，绝不修改、删除、覆盖它们。
+- 多视频合成产生新文件 `outputs/compositions/{compositionId}.mp4` 和新的 `media_versions` 行；同一组输入可重复触发合成，每次都是独立的输出。
 
 ---
 
@@ -612,5 +728,8 @@ retrying → running
 | §11 处理流程 | §7、§8 任务链 |
 | §12 非功能 | §9 队列、§10 错误处理、§11 配置 |
 | §16 风险 | §7.2 模糊、§7.3 去重、§9 重试、§12 安全 |
+| §7.13 / §7.14 视频优化与剪辑 | §8.3、§8.5（音频处理）|
+| §7.19 音频库 | §8.5、§5.2 存储布局、§3.3 API |
+| §7.20 多视频合成 | §8.6、§5.2 存储布局、§3.3 API |
 
 阶段实现进度回写到本文件 §1 / §13，与 `tasks.md` 同步。

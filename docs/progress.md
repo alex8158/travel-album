@@ -3485,3 +3485,112 @@ P10 阶段完成。tasks.md 中没有定义 P11 / 后续阶段；下一步取决
 - 每完成一个 task，在所属阶段小节里追加 commit 与主要成果条目；不在文件末尾堆叠。
 - 风险一旦消化，从 `剩余风险` 表中移除并附 commit 引用，避免列表无限增长。
 - 本文件不替代 `docs/tasks.md`：任务的范围、约束、验收以 tasks.md 为准；本文件只是回顾视图。
+
+---
+
+## 2026-05-25 · P11 规划文档更新（音频处理 + 音频库 + 多视频合成）
+
+> **本次只是文档规划同步，未进入任何代码实现**。所有 P11 子任务保持 `[ ] LATER`，未触动 P10 及之前已完成阶段的代码或测试。
+
+### 背景
+
+P10 阶段（AI 视觉精修）已于 2026-05-25 整体收口（commit `02d5044`）。在进入 P11 实现之前，按用户提示词把视频智能剪辑阶段的范围补齐：新增音频处理、音频库（系统默认 + 用户上传 + URL 导入）、多视频合成三块能力，并把 P11 拆成 T1 ~ T9 共 9 个子任务，全部标 LATER。
+
+### 本次修改了哪些文件
+
+- `docs/requirements.md`（**修改**）
+- `docs/design.md`（**修改**）
+- `docs/tasks.md`（**修改**）
+- `docs/progress.md`（**修改**，即本文件）
+
+未新增 / 未删除任何代码文件、迁移、API、worker、前端组件、依赖。
+
+### requirements.md 新增了哪些需求
+
+1. **§7.13 视频基础优化**：补充音频细化需求的指向（移除原声 / 淡入淡出 / 按目标时长裁剪 / 循环填充 / 替换配乐细节落到 §7.14 与 §7.19）；验收追加“音量归一化峰值不爆音”。
+2. **§7.14 视频智能剪辑**：
+   - 明确剪辑流程非破坏式（原视频与已有剪辑版本不被覆盖）。
+   - 增加 `audioPolicy` 概念：`keep_original` / `remove_original` / `replace_with_default` / `replace_with_library_audio` / `mute` 五值闭合枚举 + 子字段 `audioLibraryId` / `removeOriginalAudio` / `normalizeVolume` / `fadeInMs` / `fadeOutMs` / `loopToFit` / `trimToDuration`。
+   - 验收新增 3 条：去原声替换默认配乐、手动替换剪辑视频音频、渲染失败时有明确错误且原视频不受影响。
+3. **§7.19 音频库**（新增整节）：系统内置默认音频 + 用户上传 + URL 导入；条目元数据（名称 / 来源 / 时长 / 格式 / 是否默认 / 是否用户上传 + 版权 / 来源 metadata 预留）；URL 导入只处理用户明确提供的合法地址，不爬取，先本地下载再使用；删除保护（默认音频不可经普通接口删除、引用检查）。7 条验收。
+4. **§7.20 多视频合成**（新增整节）：从多个已剪辑视频中选择若干、调整顺序、合成为最终视频；音频策略（保留各段 / 统一替换 / 静音）；规格归一化（分辨率 / 帧率 / 音轨）；不覆盖已有剪辑视频；合成历史可查看；7 条验收。
+5. **§8.10 audio_library**（新增数据模型）：14 列含 `source_type` 闭合枚举 + 来源 URL + 本地路径 + 时长 + 默认 / 用户上传布尔 + 版权 metadata 等。
+6. **§8.11 video_compositions**（新增数据模型）：多视频合成记录（inputs 顺序敏感、audio_policy、output_media_version_id、status、error_message）。
+7. **§9.5 Video API**：新增 `POST /api/videos/compose`，对 `generate-edit-plan` / `render` 增加“含 audioPolicy”说明。
+8. **§9.7 Audio Library API**（新增整节）：GET 列表 / POST 上传 / POST URL 导入 / DELETE 删除。
+9. **§14 阶段 11**：扩展目标和验收，从 4 条扩展为 9 条目标 + 11 条验收。
+10. **§15.4 音频处理与多视频合成验收**（新增）：9 条端到端验收标准（含本次提示词列出的 7 条产品级验收）。
+
+### design.md 新增了哪些设计
+
+1. **§3.3 API 设计要点**：补充音频库 API（上传 / URL 导入 / 删除 / 列表）与多视频合成 API（`POST /api/videos/compose`）的关键约束。
+2. **§4.2 表结构概览**：新增 `audio_library` 与 `video_compositions` 两行，描述外键 / 索引 / 设计要点。
+3. **§5.2 文件目录布局**：补充 `audio_library/system/` / `audio_library/user/` / `audio_library/imported/` 三类音频存储路径，以及 `outputs/compositions/{compositionId}.mp4` 多视频合成输出路径。
+4. **§8.3 视频基础优化与剪辑**：在剪辑方案 JSON 中明示 `audioPolicy` 完整字段示例；强调每次渲染都是新 `media_versions` 行，不覆盖任何既有 edit 版本。
+5. **§8.5 音频库与音频处理**（新增整节）：
+   - §8.5.1 `audio_library` schema 字段表（与 requirements §8.10 对齐）。
+   - §8.5.2 音频文件存储：系统 / 用户 / URL 导入三路径分离，URL 导入必须先本地下载，渲染不依赖远程 URL。
+   - §8.5.3 ffmpeg 音频处理：替换 / 去声 / 循环 / 裁剪 / 淡入淡出 / 音量归一化的具体 FFmpeg filter 与参数策略。
+   - §8.5.4 删除保护：引用检查 + 默认音频不可经普通接口删除。
+6. **§8.6 多视频合成**（新增整节）：
+   - §8.6.1 合成流程：选择 → 顺序 → 音频策略 → 规格归一化 → concat → 写新 `media_versions` 行。
+   - §8.6.2 异常输入处理：分辨率 / 帧率 / 音频参数不一致时的统一策略，缺失输入的失败路径。
+   - §8.6.3 不覆盖原则（红线）：合成只读不改输入剪辑视频与原视频。
+7. **§14 与需求的对应关系**：新增 §7.13 / §7.14 → §8.3 / §8.5；§7.19 → §8.5；§7.20 → §8.6 三行映射。
+
+### tasks.md 调整后的 P11 子任务列表
+
+原 P11.T1 ~ P11.T5（5 个子任务）扩展为 P11.T1 ~ P11.T9（9 个子任务），全部保持 LATER：
+
+| 编号 | 标题 | 主要范围 |
+|---|---|---|
+| P11.T1 | 视频基础优化 | 转码 / 统一分辨率与帧率 / 轻防抖 / 音量归一化，新文件，不覆盖原视频 |
+| P11.T2 | 音频处理基础能力 | 移除原声 / 淡入淡出 / 裁剪 / 循环填充 / 替换 BGM，FFmpeg filter 工具链 |
+| P11.T3 | 音频库 Audio Library | migration + 系统默认音频 seed（不含 API / 前端）|
+| P11.T4 | 剪辑方案生成 | 规则引擎 + 可选 AI；方案含 `audioPolicy`；AI 不可用时回退规则 |
+| P11.T5 | 视频渲染 API | `POST /api/videos/:id/generate-edit-plan` + `POST /api/videos/:id/render`，按 audioPolicy 输出新 edit 版本 |
+| P11.T6 | 音频库 API | GET / POST upload / POST import-url / DELETE；URL 导入先下载再写表；删除时引用检查 |
+| P11.T7 | 前端：剪辑方案预览与音频替换 | 方案预览 + 顺序调整 + 音频替换 + 多时长输出 |
+| P11.T8 | 多个已剪辑视频合成为一个视频 | `video_compositions` schema + worker + `POST /api/videos/compose` + 前端合成 UI |
+| P11.T9 | 阶段验收 | §7.14 / §7.19 / §7.20 / §15.4 全部验收条目 |
+
+`requirements ↔ tasks` 索引表同步更新：
+- §7.13 → P11.T1
+- §7.14 → P11.T2 / P11.T4 / P11.T5 / P11.T7
+- §7.19 → P11.T3 / P11.T6
+- §7.20 → P11.T8
+
+### 新增风险（R-138 ~ R-142）
+
+| 编号 | 风险 | 初步控制方向（实现期再细化） |
+| --- | --- | --- |
+| **R-138** | 音频版权 / 来源风险：用户上传或 URL 导入的音频可能存在版权问题；系统默认音频也需要明确许可证。前端展示与剪辑使用未做版权声明时，存在用户场景下的合规风险。 | (1) `audio_library.metadata_json` 预留版权 / 作者 / 许可证字段；(2) 系统默认音频统一选用允许商业 / 个人使用的免版税或 CC0 来源，并在 seed 时写入许可证元信息；(3) 用户上传 / URL 导入界面提示用户对版权负责，必要时增加勾选确认。实现期由 P11.T3 / P11.T6 落实。 |
+| **R-139** | URL 导入音频的安全边界风险：恶意 URL 可能指向超大文件、非音频内容、内网地址（SSRF）或下载耗时极长的资源，直接落到 `audio_library/imported/` 会撑爆磁盘 / 引发 SSRF。 | (1) URL 导入只走 HTTP / HTTPS；拒绝 `file://` / 内网保留地址（10/8、172.16/12、192.168/16、127/8、169.254/16）；(2) MIME / 扩展名白名单 + 文件大小上限 + 下载超时（如 30s）；(3) 下载阶段失败 → 事务回滚不留半成品；(4) 失败错误码与文案集中维护（design.md §10）。实现期由 P11.T6 落实。 |
+| **R-140** | 长视频合成耗时风险：多个长视频合成时 FFmpeg 任务可能跑数十分钟，占用单进程 Worker 与磁盘 IO，影响其他视频任务和图片任务。 | (1) 多视频合成使用 video 通道并发 1（与现有 P9 worker 共享 `VIDEO_WORKER_CONCURRENCY=1`），不允许扩散到图片通道；(2) 合成任务支持取消（`POST /api/jobs/:id/cancel`），失败 / 取消时清理临时文件；(3) 必要时增加单合成任务的硬超时（例如 1 小时），超时按 `failed` 处理。 |
+| **R-141** | ffmpeg 音频循环 / 裁剪 / 淡入淡出兼容性风险：不同 FFmpeg 版本对 `aloop` / `atrim` / `afade` / `loudnorm` filter 的行为细节与参数支持略有差异（如 `aloop=-1` 的语义、双段 loudnorm 的二次扫描），导致同样的剪辑方案在不同部署环境产出不一致。 | (1) `.env.example` 与 README 明确 FFmpeg 最低版本（建议 4.4+）；(2) 启动检查（design §8.4）扩展为同时记录 `ffmpeg -filters` 关键 filter 是否可用；(3) 渲染 worker 在生成 ffmpeg 命令时优先使用稳定 filter 组合，避免依赖偏门参数；(4) 实现期为关键 filter 写最小 smoke fixture 锁定行为。 |
+| **R-142** | 多视频合成时分辨率 / 帧率 / 音轨不一致风险：用户选择来自不同源视频的剪辑结果合成时，分辨率 / 帧率 / 像素格式 / 音频采样率可能不一致，直接 concat 会失败或输出参数错乱。 | (1) 合成 worker 必须在拼接前做规格归一化（scale + pad / fps + 像素格式统一，audio 统一采样率 + 声道数）；(2) 归一化基准来源在配置层集中（默认以第一段为基准，或全局配置目标分辨率 / 帧率 / 采样率）；(3) 归一化阶段失败时整段合成任务标记 `failed`，error_message 指明哪段、哪个维度不兼容。实现期由 P11.T8 落实。 |
+
+> 风险编号衔接 R-137 之后，从 R-138 开始连续编号。R-138 ~ R-142 仅为本次规划阶段记录，实际控制措施在 P11.T1 ~ P11.T9 进入实现时再细化与闭合。
+
+### 是否只是文档更新
+
+**是**。本次仅修改 `docs/requirements.md` / `docs/design.md` / `docs/tasks.md` / `docs/progress.md` 四个文档，未触动任何代码、迁移、API、worker、前端、依赖、配置。CLAUDE.md §1（先文档后代码）要求满足；P10 阶段产物完整保留；红线未触发。
+
+### 是否可以提交本次文档变更
+
+可以。变更内容只在 `docs/` 下，无构建 / 测试 / lint 链路影响。建议 commit 消息模板：
+
+```
+docs(p11): plan audio processing + audio library + multi-video composition (P11 scoping)
+
+- requirements.md: extend §7.13/§7.14, add §7.19 audio library, §7.20 multi-video composition,
+  data models §8.10/§8.11, API §9.5/§9.7, stage §14, acceptance §15.4
+- design.md: §3.3 API points, §4.2 schema, §5.2 storage layout (audio_library/* + compositions),
+  §8.3 audioPolicy in render plan, §8.5 audio library + ffmpeg, §8.6 composition, §14 mapping
+- tasks.md: P11 split into T1-T9 (all LATER), index updated
+- progress.md: record doc-only update, new risks R-138 .. R-142
+
+No code, migration, API, worker, frontend, or dependency changes.
+```
+
+下一步取决于产品决策是否拍板进入 P11.T1 实现。在拍板前不动代码。

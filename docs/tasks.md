@@ -280,13 +280,38 @@
 
 ## 阶段 11：视频智能剪辑（后续）
 
-> requirements §7.13 / §7.14 / §14 阶段 11。LATER。
+> requirements §7.13 / §7.14 / §7.19 / §7.20 / §14 阶段 11。LATER。
+>
+> **规划范围（2026-05-25 文档同步）**：P11 在原“视频智能剪辑”基础上扩展为三块能力——视频基础优化与剪辑、音频处理 + 音频库、多视频合成。所有子任务保持 LATER 标记，尚未进入实现阶段。新增风险见 `docs/progress.md` 中的 R-138 ~ R-142。
 
 - [ ] **P11.T1 [LATER]** 视频基础优化（转码 / 防抖 / 音量归一化）
-- [ ] **P11.T2 [LATER]** 剪辑方案生成（规则引擎 + 可选 AI）
-- [ ] **P11.T3 [LATER]** `POST /api/videos/:id/generate-edit-plan`、`POST /api/videos/:id/render`
-- [ ] **P11.T4 [LATER]** 前端：方案预览 / 调整 / 输出多时长版本
-- [ ] **P11.T5 [LATER]** 阶段验收：§7.14 验收 5 条
+  - 范围：对候选保留的视频片段 / 剪辑输入做转码、统一分辨率与帧率、轻度防抖、音量归一化。
+  - 输出新文件，写 `media_versions`，原视频不被覆盖。
+  - 配套 requirements §7.13 验收。
+- [ ] **P11.T2 [LATER]** 音频处理基础能力
+  - 范围：在视频渲染管线中支持移除原声、淡入淡出、按目标时长裁剪、音频循环填充、替换背景音乐。
+  - 实现层使用 FFmpeg filter（`afade` / `aloop` / `atrim` / `loudnorm` / `-an` / `-shortest`），不引入额外服务。
+  - 与 P11.T1 共享转码 / 音量归一化工具链，但单独可调用，用于剪辑方案中的 `audioPolicy`。
+- [ ] **P11.T3 [LATER]** 音频库 Audio Library（schema + 系统默认音频导入）
+  - 范围：新增 migration 创建 `audio_library` 表，按 design.md §8.5.1 字段；在服务启动 / 部署时把系统内置音频写入 `audio_library/system/` 并 seed 默认行。
+  - 不包含任何 API 与前端：本任务只搭 schema + seed，配合 P11.T6 暴露 API、P11.T7 暴露 UI。
+- [ ] **P11.T4 [LATER]** 剪辑方案生成（规则引擎 + 可选 AI）
+  - 范围：基于候选 `video_segments` 生成顺序 / 起止 / 总时长，方案中必须包含 `audioPolicy`（mode + audioLibraryId + normalize / fade / loop / trim 子字段）。
+  - 规则引擎：贪心选取高质量片段 + 满足目标总时长；AI 可选介入但需在未配置时回退到规则引擎。
+- [ ] **P11.T5 [LATER]** 视频渲染 API
+  - 范围：`POST /api/videos/:id/generate-edit-plan`、`POST /api/videos/:id/render`，渲染按 `audioPolicy` 处理音频，输出新的 `media_versions` 行（`version_type='edited'` 或等价），落到 `outputs/edits/`，原视频和既有 edit 版本不被覆盖。
+- [ ] **P11.T6 [LATER]** 音频库 API
+  - 范围：`GET /api/audio-library`、`POST /api/audio-library/upload`、`POST /api/audio-library/import-url`、`DELETE /api/audio-library/:id`。
+  - URL 导入路径必须先下载到 `audio_library/imported/`，再写表；MIME / 大小 / 超时校验在下载阶段完成；下载失败事务回滚不留半成品行。
+  - 删除前检查是否被进行中的渲染任务 / `video_compositions` 引用；系统默认音频不可经此接口删除。
+- [ ] **P11.T7 [LATER]** 前端：剪辑方案预览与音频替换
+  - 范围：剪辑方案预览页（片段顺序、起止、原因、目标时长）+ 手动编辑界面（替换默认音频为音频库其他音频）+ 多时长版本输出入口。
+  - 未配置 AI 时仍能基于规则引擎生成方案 + 渲染。
+- [ ] **P11.T8 [LATER]** 多个已剪辑视频合成为一个视频
+  - 范围：新增 `video_compositions` schema、合成渲染 worker、`POST /api/videos/compose` 端点、前端选择多个剪辑视频 + 顺序调整 + 音频策略（保留各段音频 / 统一替换配乐 / 静音）。
+  - 实现端必须做规格归一化（分辨率 / 帧率 / 像素格式 / 音频参数），输入剪辑视频和原视频不被覆盖。
+- [ ] **P11.T9 [LATER]** 阶段验收：§7.14 验收 8 条 + §7.19 验收 7 条 + §7.20 验收 7 条 + §15.4 验收 9 条
+  - 端到端 smoke 覆盖：去原声替换默认配乐、上传音频、URL 导入音频、手动替换剪辑音频、多视频合成、原视频不被覆盖、失败任务有明确错误信息。
 
 ---
 
@@ -318,10 +343,12 @@
 | §7.11 视频上传 | P9.T2–T3 |
 | §7.12 抽帧/切分 | P9.T5–T7 |
 | §7.13 视频优化 | P11.T1 |
-| §7.14 智能剪辑 | P11.T2–T4 |
+| §7.14 智能剪辑 | P11.T2 / P11.T4 / P11.T5 / P11.T7 |
 | §7.15 相册展示 | P1.T6 / P2.T7 / P3.T6 / P5.T6 |
 | §7.16 封面 | P6.T7 |
 | §7.17 任务状态 | P4.* |
 | §7.18 删除/恢复 | P7.* |
+| §7.19 音频库 | P11.T3 / P11.T6 |
+| §7.20 多视频合成 | P11.T8 |
 
 每完成一组任务后，回到 [design.md](design.md) §1 / §13 检查是否需要回填实际偏差。
