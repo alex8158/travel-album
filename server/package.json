@@ -67,7 +67,8 @@
     "smoke:migration-012": "tsx src/scripts/migration-012-smoke.ts",
     "smoke:ai-provider": "tsx src/scripts/ai-provider-smoke.ts",
     "smoke:media-ai-refine-trigger": "tsx src/scripts/media-ai-refine-trigger-smoke.ts",
-    "smoke:ai-quota-trigger": "tsx src/scripts/ai-quota-trigger-smoke.ts"
+    "smoke:ai-quota-trigger": "tsx src/scripts/ai-quota-trigger-smoke.ts",
+    "smoke:image-ai-refine-worker": "tsx src/scripts/image-ai-refine-worker-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

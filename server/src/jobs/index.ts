@@ -111,6 +111,17 @@ export {
   type EnhanceSettings,
   type ImageEnhanceHandlerDeps,
 } from "./imageEnhanceWorker.js";
+// P10.T5: image_ai_refine worker — consumes pending ai_invocations
+// audit rows + invokes AIProvider + writes
+// `media_versions(version_type='ai_refined')`. Registered on the
+// image channel alongside enhance / thumbnail / metadata.
+export {
+  DEFAULT_IMAGE_AI_REFINE_SETTINGS,
+  IMAGE_AI_REFINE_JOB_TYPE,
+  makeImageAiRefineHandler,
+  type ImageAiRefineHandlerDeps,
+  type ImageAiRefineSettings,
+} from "./imageAiRefineWorker.js";
 // P9.T2 — `video_metadata` worker (ffprobe). Registered on the
 // video channel (not image), per design.md §6.10
 // (VIDEO_WORKER_CONCURRENCY=1).

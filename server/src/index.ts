@@ -10,6 +10,7 @@ import { closeDatabase, openDatabase, type DbHandle } from "./db/connection.js";
 import { runMigrations, type MigrationResult } from "./db/migrate.js";
 import { DedupEngine, DedupService, DuplicateGroupsRepository } from "./dedup/index.js";
 import {
+  IMAGE_AI_REFINE_JOB_TYPE,
   IMAGE_ENHANCE_JOB_TYPE,
   IMAGE_HASH_JOB_TYPE,
   IMAGE_QUALITY_BLUR_JOB_TYPE,
@@ -25,6 +26,7 @@ import {
   VIDEO_PROXY_JOB_TYPE,
   VIDEO_SEGMENT_QUALITY_JOB_TYPE,
   VIDEO_SEGMENTS_JOB_TYPE,
+  makeImageAiRefineHandler,
   makeImageEnhanceHandler,
   makeImageHashHandler,
   makeImageMetadataHandler,
@@ -393,6 +395,27 @@ async function main(): Promise<void> {
         jpegQuality: config.quality.enhance.jpegQuality,
         workerVersion: config.quality.enhance.workerVersion,
       },
+      logger,
+    }),
+  );
+  // P10.T5 image_ai_refine handler — consumes pending
+  // ai_invocations audit rows + invokes the live AIProvider +
+  // writes media_versions(version_type='ai_refined'). Runs on the
+  // image channel alongside enhance / thumbnail / metadata. The
+  // handler ALWAYS receives the live `aiProvider` instance; when
+  // AI is disabled it's a NoopProvider and the worker fails the
+  // job with a clear "provider not available" audit message (the
+  // route gate prevents enqueue in the first place, but a job
+  // queued under different config could still arrive after a
+  // rollback — defence in depth).
+  imageHandlers.set(
+    IMAGE_AI_REFINE_JOB_TYPE,
+    makeImageAiRefineHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      aiInvocationsRepo,
+      aiProvider,
       logger,
     }),
   );

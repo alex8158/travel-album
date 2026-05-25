@@ -40,6 +40,8 @@ export { NoopProvider } from "./NoopProvider.js";
 export {
   AiInvocationsRepository,
   type AiInvocationInsertData,
+  type AiInvocationMarkFailedArgs,
+  type AiInvocationMarkSuccessArgs,
   type AiInvocationRow,
 } from "./aiInvocationsRepository.js";
 
