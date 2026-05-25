@@ -52,6 +52,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { NoopProvider } from "../ai/index.js";
 import { closeDatabase, openDatabase, type SqliteDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { DuplicateGroupsRepository } from "../dedup/index.js";
@@ -679,7 +680,13 @@ async function main(): Promise<void> {
       const app = express();
       app.use(express.json({ limit: "1mb" }));
       app.use(requestIdMiddleware);
-      app.use("/api", makeMediaRouter({ uploadService, mediaService }));
+      // P10.T3 added an `aiProvider` dep on the media router; pass a
+      // NoopProvider so the existing P8.T4 smoke doesn't have to care
+      // about the AI surface (it never hits /ai-refine anyway).
+      app.use(
+        "/api",
+        makeMediaRouter({ uploadService, mediaService, aiProvider: new NoopProvider() }),
+      );
       app.use(notFoundHandler);
       app.use(makeErrorHandler(logger));
 

@@ -183,15 +183,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // 6b) AI provider (P10.T1). Default is `NoopProvider` — base
-  // features must work without AI (CLAUDE.md §2.8). The factory
+  // 6b) AI provider (P10.T1 + P10.T3). Default is `NoopProvider` —
+  // base features must work without AI (CLAUDE.md §2.8). The factory
   // logs its choice (INFO when disabled, WARN when an unknown
-  // provider id was requested). The instance is held here for
-  // future P10.T3+ wiring (HTTP `POST /api/media/:id/ai-refine`
-  // + the image_ai_refine worker); P10.T1 does not yet attach it
-  // to `CreateAppOptions`.
+  // provider id was requested). The instance is now wired into
+  // `CreateAppOptions` so the P10.T3 `POST /api/media/:id/ai-refine`
+  // route can gate availability before enqueueing (R-123 closed).
   const aiProvider: AIProvider = createAIProviderFromConfig(config.ai, logger);
-  void aiProvider;
 
   // 7) Domain services. The TripService is stateless beyond the DB
   // handle; UploadService composes media + job repositories and the
@@ -577,6 +575,7 @@ async function main(): Promise<void> {
     jobService,
     dedupService,
     videoService,
+    aiProvider,
     debugRoutes: config.nodeEnv !== "production",
   });
 

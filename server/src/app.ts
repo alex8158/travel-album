@@ -17,6 +17,7 @@
 // routes exist if no longer needed.
 
 import express, { type Express } from "express";
+import type { AIProvider } from "./ai/index.js";
 import type { DedupService } from "./dedup/index.js";
 import { AppError } from "./errors/AppError.js";
 import { ERROR_CODES } from "./errors/errorCodes.js";
@@ -65,6 +66,14 @@ export interface CreateAppOptions {
   /** Video API (P9.T8) — segments list / detail / user_decision PATCH / process. */
   readonly videoService: VideoService;
   /**
+   * AIProvider (P10.T1) — read at the Media router to gate
+   * `POST /api/media/:id/ai-refine` (P10.T3). Defaults to
+   * `NoopProvider` so `available === false` and the endpoint returns
+   * 501 + `AI_NOT_CONFIGURED` until a real provider is wired
+   * (CLAUDE.md §2.8 — base features must work without AI).
+   */
+  readonly aiProvider: AIProvider;
+  /**
    * Mount `/__debug/*` verification endpoints. Should be true only for
    * development/test environments — never in production.
    */
@@ -84,6 +93,7 @@ export function createApp(opts: CreateAppOptions): Express {
     jobService,
     dedupService,
     videoService,
+    aiProvider,
     debugRoutes,
   } = opts;
 
@@ -107,10 +117,13 @@ export function createApp(opts: CreateAppOptions): Express {
   // Trip CRUD (P1.T3) + derived cover_url (P3.T8).
   app.use("/api/trips", makeTripsRouter({ service: tripService, tripRepo, mediaRepo, logger }));
 
-  // Media routes (P2.T4 upload + P2.T5 read). Mounted at /api so this
-  // router can own paths like /trips/:tripId/media/upload and
-  // /media/:id without colliding with the Trip CRUD router above.
-  app.use("/api", makeMediaRouter({ uploadService, mediaService }));
+  // Media routes (P2.T4 upload + P2.T5 read + P10.T3 ai-refine).
+  // Mounted at /api so this router can own paths like
+  // /trips/:tripId/media/upload and /media/:id without colliding
+  // with the Trip CRUD router above. `aiProvider` is plumbed
+  // through so the ai-refine endpoint can gate availability before
+  // touching the queue.
+  app.use("/api", makeMediaRouter({ uploadService, mediaService, aiProvider }));
 
   // Job API (P4.T4). Mounted at /api/jobs — list / single / retry /
   // cancel. Retry / cancel are pure DB mutations; the JobQueue

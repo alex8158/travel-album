@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SqliteDatabase } from "../db/connection.js";
 import type { DuplicateGroupsRepository } from "../dedup/index.js";
+import { IMAGE_AI_REFINE_JOB_TYPE } from "../ai/index.js";
 import { BadRequestError, NotFoundError } from "../errors/AppError.js";
 import { IMAGE_ENHANCE_JOB_TYPE, type JobRepository } from "../jobs/index.js";
 import type { Logger } from "../logger.js";
@@ -155,6 +156,34 @@ export interface ReprocessResult {
  *                 the handler. `reason` carries the explanation.
  */
 export interface EnhanceMediaResult {
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly outcome: ReprocessOutcome;
+  /** Job row id (newly created or pre-existing). */
+  readonly jobId: string;
+  /** When outcome === "skipped", why (e.g. "already pending"). */
+  readonly reason?: string;
+}
+
+/**
+ * Outcome envelope for {@link MediaService.aiRefineMedia} (P10.T3).
+ *
+ * Same shape as {@link EnhanceMediaResult} — single-slot enqueue
+ * with `created` / `reset` / `skipped` semantics. The AI availability
+ * gate (`AI_ENABLED=true` + `provider.available=true`) is enforced
+ * at the route layer before this method is called; this method
+ * itself is the domain-layer gate (media must exist, must be an
+ * image, must not have a duplicate pending/running row).
+ *
+ * Cross-task red lines (CLAUDE.md §2.4, §2.8, §3.9):
+ *   * Enqueue only — no real AI call here (P10.T5 worker territory).
+ *   * Never writes user_decision (the AI refine worker will write
+ *     `media_versions(version_type='ai_refined')` per design.md §7.6;
+ *     `user_decision` stays under user control).
+ *   * Idempotent: a pending / running `image_ai_refine` row blocks
+ *     a second enqueue.
+ */
+export interface AiRefineMediaResult {
   readonly mediaId: string;
   readonly jobType: string;
   readonly outcome: ReprocessOutcome;
@@ -331,6 +360,83 @@ export class MediaService {
     // `slot.reason` is exactOptionalPropertyTypes-friendly — we only
     // spread it back when it exists so the caller doesn't see an
     // explicit `reason: undefined` field.
+    return slot.reason !== undefined
+      ? {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+          reason: slot.reason,
+        }
+      : {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+        };
+  }
+
+  /**
+   * P10.T3 — enqueue an `image_ai_refine` job for one image media.
+   *
+   * Single-slot wrapper around the same `reprocessOneJobType`
+   * primitive that `enhanceMedia` uses. The handler that consumes
+   * this row will land in P10.T5; this method just manipulates the
+   * queue so the user's "AI Refine" click stays snappy and the
+   * heavy (paid) external call happens off-request.
+   *
+   * **Availability check is the route's responsibility, not this
+   * service's.** The route layer reads `aiProvider.available` and
+   * raises `AI_NOT_CONFIGURED` (HTTP 501) before reaching here, so
+   * `aiRefineMedia` may assume AI is configured at call time.
+   * Putting the availability gate at the route layer mirrors how
+   * the design.md §11.2 error-code table treats `AI_NOT_CONFIGURED`
+   * as an infrastructure-level condition (501 Not Implemented),
+   * distinct from `NotFoundError` / `BadRequestError` (404 / 400
+   * domain errors raised here).
+   *
+   * Failure modes:
+   *   * `NotFoundError` — media row missing OR soft-deleted
+   *     (active-only read; matches the P7 recycle-bin contract —
+   *     a soft-deleted media has no user-facing AI refine path).
+   *   * `BadRequestError` — `media.type !== 'image'`. Per
+   *     requirements §7.10 AI refine is image-only; video AI work
+   *     is design.md §8.3 (later phase) and `unknown`-typed media
+   *     have no original bytes to refine (P3 Upload_Manager
+   *     discards them).
+   *
+   * Idempotency: re-calling on a media whose latest `image_ai_refine`
+   * row is pending / running yields `outcome='skipped'` (the user
+   * cannot accidentally double-bill themselves with a frantic
+   * double-click). Calling after a terminal row (success / failed /
+   * cancelled / retrying) yields `outcome='reset'` — the same
+   * "retry from scratch" semantics as `reprocess` / `enhance`.
+   * Note: `reset` uses the same job row id; a fresh attempt does
+   * NOT spawn a new id. Audit-trail-wise, P10.T5 worker will write
+   * a NEW `ai_invocations` row per attempt (so per-attempt cost is
+   * traceable) keyed on `job_id`, but the `processing_jobs` row
+   * cycles in place.
+   *
+   * Does NOT block on the actual AI call. The future AI-channel
+   * executor (P10.T5+) polls pending rows independently.
+   */
+  aiRefineMedia(mediaIdInput: unknown): AiRefineMediaResult {
+    if (this.jobRepo === undefined) {
+      throw new Error("MediaService: jobRepo not configured; cannot enqueue ai-refine");
+    }
+    const safeId = parseOrThrow(entityIdSchema, mediaIdInput, "id");
+    const media = this.repo.findById(safeId);
+    if (media === null) {
+      throw new NotFoundError(`Media not found: ${safeId}`, { id: safeId });
+    }
+    if (media.type !== "image") {
+      throw new BadRequestError(
+        `ai-refine is only supported for image media; this row is '${media.type}'`,
+        { mediaId: safeId, type: media.type },
+      );
+    }
+    const now = new Date().toISOString();
+    const slot = this.reprocessOneJobType(safeId, IMAGE_AI_REFINE_JOB_TYPE, now);
     return slot.reason !== undefined
       ? {
           mediaId: safeId,

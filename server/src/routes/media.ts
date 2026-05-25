@@ -22,6 +22,9 @@
 import { Router } from "express";
 import { z } from "zod";
 
+import type { AIProvider } from "../ai/index.js";
+import { AppError } from "../errors/AppError.js";
+import { ERROR_CODES } from "../errors/errorCodes.js";
 import type { MediaService } from "../media/index.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { entityIdSchema } from "../trips/index.js";
@@ -31,6 +34,14 @@ import { parseOrThrow } from "../util/zodParse.js";
 export interface MediaRouterDeps {
   readonly uploadService: UploadService;
   readonly mediaService: MediaService;
+  /**
+   * P10.T3 — read at the `POST /api/media/:id/ai-refine` entry point
+   * to gate availability. `available === false` short-circuits to
+   * 501 + `AI_NOT_CONFIGURED` BEFORE touching the queue, so the
+   * disabled default state (CLAUDE.md §2.8) cannot accidentally
+   * enqueue jobs for a worker that will never run.
+   */
+  readonly aiProvider: AIProvider;
 }
 
 /**
@@ -168,6 +179,67 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     asyncHandler((req, res) => {
       const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
       const result = deps.mediaService.enhanceMedia(id);
+      res.status(200).json(result);
+    }),
+  );
+
+  // POST /api/media/:id/ai-refine (P10.T3).
+  //
+  // Enqueue an `image_ai_refine` job for one image media. The
+  // response mirrors `EnhanceMediaResult` — flat envelope with
+  // `outcome`, `jobId`, optional `reason`.
+  //
+  // Availability gate (BEFORE touching the queue):
+  //   * `AI_ENABLED=false` (default) ⇒ provider is the `NoopProvider`
+  //     and `available === false`. Returns 501 + `AI_NOT_CONFIGURED`.
+  //   * `AI_ENABLED=true` + unknown / unwired provider id ⇒ factory
+  //     also returns `NoopProvider`. Same 501.
+  //   * `available === true` ⇒ continue into the service.
+  // The 501 status follows design.md §11.2 "功能未启用" rubric —
+  // distinct from `BAD_REQUEST` (400) and `NOT_FOUND` (404), which
+  // are domain errors raised by the service. P10.T7 acceptance
+  // will surface the same condition via `/api/health`.
+  //
+  // Domain gates (in MediaService.aiRefineMedia):
+  //   * Media missing or soft-deleted ⇒ 404. Recycle-bin members
+  //     cannot be ai-refined; the user must restore first
+  //     (matches the P7 contract used everywhere else).
+  //   * Media not an image ⇒ 400. AI refine is image-only per
+  //     requirements §7.10; video AI is design.md §8.3 (later
+  //     phase) and `unknown`-typed media have no original bytes.
+  //
+  // Idempotency:
+  //   * Latest `image_ai_refine` row is pending / running ⇒
+  //     `outcome='skipped'`. The user cannot accidentally double-
+  //     bill themselves with a frantic double-click.
+  //   * Terminal-ish row ⇒ `outcome='reset'` (re-routes through
+  //     `retrying`; P4.T2 R-40 canonical re-entry).
+  //   * No prior row ⇒ `outcome='created'`.
+  //
+  // Synchronous from the API's POV: returns 200 once the row is
+  // in the queue. P10.T3 ships the enqueue path only; the actual
+  // AI handler is P10.T5.
+  router.post(
+    "/media/:id/ai-refine",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      // R-122-aligned: an unknown / wrong AI_PROVIDER token falls
+      // back to NoopProvider with `available === false`, so this
+      // single check covers both "AI explicitly disabled" and
+      // "AI enabled but no provider implemented yet".
+      if (!deps.aiProvider.available) {
+        throw new AppError(
+          ERROR_CODES.AI_NOT_CONFIGURED,
+          "AI provider is not configured. Set AI_ENABLED=true and a supported AI_PROVIDER to enable AI refine.",
+          {
+            statusCode: 501,
+            details: {
+              providerName: deps.aiProvider.name,
+            },
+          },
+        );
+      }
+      const result = deps.mediaService.aiRefineMedia(id);
       res.status(200).json(result);
     }),
   );

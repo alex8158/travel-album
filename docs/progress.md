@@ -2886,9 +2886,96 @@ export interface AIProvider {
 
 继续保留：R-74 ~ R-77 / R-79 / R-80 (P7)、R-82 ~ R-92 (P8)、R-93 / R-94 (P9.T1)、R-95 / R-96 / R-97 (P9.T2)、R-98 / R-99 / R-100 (P9.T3)、R-101 / R-102 / R-103 (P9.T4)、R-104 / R-105 / R-106 (P9.T5)、R-108 / R-109 (P9.T6)、R-110 / R-111 / R-112 / R-113 (P9.T7)、R-114 / R-115 / R-116 (P9.T8)、R-117 / R-118 / R-119 (P9.T9)、R-120 (P9.T10)。R-78 / R-81 / R-107 已闭合。
 
+### P10.T3 POST /api/media/:id/ai-refine 入队端点 实现结果
+
+阶段：已完成。日期：2026-05-25。
+
+#### 改动文件
+
+- `server/src/ai/index.ts`（**修改**）— 新增 `IMAGE_AI_REFINE_JOB_TYPE = "image_ai_refine"` 常量导出。三处对齐（AIRequestType TS union ↔ migration 012 `request_type` CHECK enum ↔ JobQueue 注册时 worker handler 的 jobType 字符串）现在汇聚到这一个常量，R-121 的 drift 风险被 import-time 类型化缩到三行紧邻。
+- `server/src/media/mediaService.ts`（**修改**）— 新方法 `aiRefineMedia(mediaIdInput)` + 公开 `AiRefineMediaResult` 类型。复用 `reprocessOneJobType` 单 slot 入队 + 同 `enhanceMedia` 的幂等语义（created / reset / skipped + reason）。注释明确"可用性检查是 route 层的责任，不是 service 的"——AI_NOT_CONFIGURED 是 infrastructure-level 错误（501），与 NotFoundError (404) / BadRequestError (400) 的 domain 错误正交。
+- `server/src/media/index.ts`（**修改**）— 重导出 `AiRefineMediaResult`。
+- `server/src/routes/media.ts`（**修改**）— `MediaRouterDeps` 增加 `aiProvider: AIProvider` 字段；新增 `POST /api/media/:id/ai-refine` route handler：(1) 先读 `deps.aiProvider.available`，false → throw `AppError(AI_NOT_CONFIGURED, statusCode=501, details: { providerName })`，shadows 所有 domain 检查（design.md §11.2 "功能未启用"）；(2) 通过则调 `mediaService.aiRefineMedia(id)`，返回 200 + `AiRefineMediaResult` envelope。
+- `server/src/app.ts`（**修改**）— `CreateAppOptions.aiProvider: AIProvider` 字段加上、解构、传入 `makeMediaRouter`。
+- `server/src/index.ts`（**修改**）— **R-123 闭合**：删除 `void aiProvider` 占位，直接把 `aiProvider` 加进 `createApp({ ..., aiProvider })`；P10.T1 的注释也同步更新。
+- `server/src/scripts/media-versions-api-smoke.ts`（**修改**）— 向后兼容：`makeMediaRouter` 调用加 `aiProvider: new NoopProvider()`（这个 smoke 不打 /ai-refine endpoint，所以 Noop 是 the correct safe default）。新增 `import { NoopProvider } from "../ai/index.js"`。
+- `server/src/scripts/media-ai-refine-trigger-smoke.ts`（**新增**）— 27/27 PASS smoke：12 个 service 层 case（包含 fresh created / 4 种状态 skipped+reset / 幂等 / missing 404 / soft-deleted 404 / video 400 / unknown 400 / scope-guard）+ 真 Express server 6 个 HTTP case（NoopProvider 双场景 501 + AvailableTestProvider stub 200 + 幂等 + missing 404 + video 400 + soft-deleted 404）。
+- `server/package.json`（**修改**）— 注册 `smoke:media-ai-refine-trigger`。
+- `docs/tasks.md` / `docs/progress.md`（**修改**）— P10.T3 标 `[x]`、R-123 闭合、本节实现结果。
+
+#### `POST /api/media/:id/ai-refine` 行为
+
+| 场景 | HTTP | body | 备注 |
+| --- | --- | --- | --- |
+| `AI_ENABLED=false`（默认）| **501** | `{"error":{"code":"AI_NOT_CONFIGURED",...,"details":{"providerName":"noop"}}}` | gate 在 route 层；route 不调 service |
+| `AI_ENABLED=true` + 未知 AI_PROVIDER（factory fallback → Noop）| **501** | 同上 | R-122 的天然覆盖：未知 provider 就是 `available=false` |
+| AI 可用 + media 不存在 | **404** | `{"error":{"code":"NOT_FOUND",...}}` | service 抛 NotFoundError |
+| AI 可用 + media 已软删 | **404** | 同上 | P7 contract |
+| AI 可用 + media 是 video / unknown | **400** | `{"error":{"code":"BAD_REQUEST",...}}` | service 抛 BadRequestError |
+| AI 可用 + image media + 无既有 job | **200** | `{ mediaId, jobType:"image_ai_refine", outcome:"created", jobId }` | 入队 1 行 pending |
+| AI 可用 + image media + 既有 pending/running | **200** | `{ ..., outcome:"skipped", reason:"already pending" or "already running" }` | 不重复入队 |
+| AI 可用 + image media + 既有 failed/success/cancelled | **200** | `{ ..., outcome:"reset" }` | 同 jobId 重 retry 路径 |
+
+`AI_NOT_CONFIGURED` 返 501 的条件：`deps.aiProvider.available === false`。由于 P10.T1 factory 已经把 disabled / unknown / empty / 'noop' 等所有"不可用"情形统一映射到 NoopProvider（available=false），这单一布尔检查覆盖所有不可用状态——无需在 route 重新枚举 config 字段。
+
+#### `aiProvider` 注入路径（R-123 闭合）
+
+```
+bootstrap (src/index.ts)
+   └── createAIProviderFromConfig(config.ai, logger)
+        ↓ AIProvider 实例
+   └── createApp({ ..., aiProvider })
+        ↓ CreateAppOptions.aiProvider
+   └── makeMediaRouter({ uploadService, mediaService, aiProvider })
+        ↓ MediaRouterDeps.aiProvider
+   └── router.post("/media/:id/ai-refine", h) { deps.aiProvider.available... }
+```
+
+零未消费变量。`void aiProvider` 占位删除。所有现有 smoke 通过：47 / 47。
+
+#### 避免重复入队
+
+复用 P8.T1 已经验证的 `reprocessOneJobType` 入队原语，对 `IMAGE_AI_REFINE_JOB_TYPE` 这个 job_type 做单 slot 入队：
+- 既有 `image_ai_refine` 是 `pending` / `running` → `outcome='skipped'`，response 含原 jobId + `reason`，**不创建新行**。
+- 既有 `image_ai_refine` 是 `failed` / `success` / `cancelled` / `retrying` → 走 `resetToRetrying`（P4.T2 R-40 canonical 路径），同 jobId 翻到 retrying，**不创建新行**。
+- 无既有 → 插一行 pending，`outcome='created'`。
+
+smoke 双重保险：service 层 case 验证 `outcome` + DB 行数；HTTP 层 case 验证一次 POST 后 jobs count=1，第二次 POST 后 count 仍为 1 + `outcome='skipped'`。
+
+#### 执行过的测试命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净
+- `cd server && npm run smoke:media-ai-refine-trigger` — **27/27 PASS**
+- `cd server && npm run smoke:ai-provider` — 18/18 PASS（无回归）
+- `cd server && npm run smoke:migration-012` — 31/31 PASS（无回归）
+- `cd server && npm run smoke:media-enhance-trigger` — 27/27 PASS（对称 P8.T1 路径无回归）
+- `cd server && npm run smoke:media-versions-api` — 35/35 PASS（mediaRouter 新依赖兼容）
+- `cd server && npm run smoke:p9-acceptance` — 36/36 PASS（P9 端到端无回归）
+- `cd server && npm run smoke:video-api` — 48/48 PASS
+- **完整 47 个 server smoke 全绿**（含 P3/P4/P5/P6/P7/P8/P9 全套 + P10.T1+T2+T3）
+
+#### R-121 / R-122 状态重审
+
+| 风险 | P10.T3 当下状态 |
+| --- | --- |
+| **R-121**（job_type / request_type / TS union 三处对齐） | 缓解：`IMAGE_AI_REFINE_JOB_TYPE` 常量已成为唯一文字字符串源。AIRequestType union 和 migration 012 enum 仍然各自维护文字，但 worker 注册（P10.T5）将必须 import 这个常量——drift 在 grep 视野内。 |
+| **R-122**（未知 provider 静默 → Noop） | 缓解：P10.T3 的 501 + body.error.details.providerName 让操作员从 HTTP 响应直接看到 "providerName: 'noop'"——如果他们配置了 `AI_PROVIDER='openia'` 期望走真实 provider，得到的 501 + providerName=noop 已经能引导排错。P10.T7 验收时仍建议在 /api/health 加 ai.provider 字段。 |
+| **R-123**（aiProvider 未注入 createApp）| **已闭合**：本任务删 `void aiProvider`、加 `CreateAppOptions.aiProvider`、route 层直接消费。 |
+
+#### P10.T3 剩余风险
+
+| ID | 风险 | 缓解 |
+| --- | --- | --- |
+| **R-124** | `aiRefineMedia` service 方法依赖 route 层先做 availability 检查；若未来另一个调用者（比如 cron / batch 入队）直接调用 service 而忘了检查 `aiProvider.available`，会创建一个 worker 永远不会执行的 pending job（P10.T1 NoopProvider 没注册 handler 给 image_ai_refine）。 | V1 接受：service 方法 jsdoc 明确文档化这一点；P10.T5 worker 落地时本身会再检查 provider，给二次防御。如未来发现多个调用者风险变高，可在 service 方法构造时持有 `aiProvider` 引用并复制 route 的 gate 逻辑。 |
+| **R-125** | 501 + `AI_NOT_CONFIGURED` body 中 `details.providerName` 总是 'noop'（V1 没有其他 provider），从客户端角度该信息当前价值有限；P10.T6 前端会读 `available` 字段做置灰，不依赖这个 detail。 | 接受：当真实 provider 落地时，failure case（比如配置错 provider 但 health 显示 ai 可用）会变得有价值。 |
+| **R-126** | `AvailableTestProvider` stub 在 smoke 中 `invoke()` 故意 throw 以防 P10.T3 路径意外触发真实 AI 调用。该断言是负向断言（"如果走到了就失败"），smoke 通过时只意味着"没走到"。如果未来在 service 中真的塞了 invoke 调用，会被 smoke 抓住，但只在 happy / 幂等场景；其他分支（404/400/501）天然不会走到 invoke，所以测试覆盖在那里是对称的。 | V1 接受：现状已经是"P10.T3 不该调 invoke"，P10.T5 worker 接管 invoke。 |
+
+继续保留：R-74 ~ R-77 / R-79 / R-80 (P7)、R-82 ~ R-92 (P8)、R-93 / R-94 (P9.T1)、R-95 / R-96 / R-97 (P9.T2)、R-98 / R-99 / R-100 (P9.T3)、R-101 / R-102 / R-103 (P9.T4)、R-104 / R-105 / R-106 (P9.T5)、R-108 / R-109 (P9.T6)、R-110 / R-111 / R-112 / R-113 (P9.T7)、R-114 / R-115 / R-116 (P9.T8)、R-117 / R-118 / R-119 (P9.T9)、R-120 (P9.T10)、R-121 / R-122 (P10.T1+T2)。R-78 / R-81 / R-107 / R-123 已闭合。
+
 ## 下一阶段入口
 
-继续 **P10.T3 [MUST]**：`POST /api/media/:id/ai-refine` 端点 + 入队 `image_ai_refine` 任务（仅在 `AI_ENABLED=true` 时入队）。本任务把 `aiProvider` 注入 `CreateAppOptions`（关闭 R-123），并在端点入口检查 `provider.available` —— 关闭则返 501 + 错误码 `AI_NOT_CONFIGURED`（design.md §11.2）。P10.T1 已经把 `AIProvider` 接口 + `NoopProvider` + 配置 + audit 表 + 错误码全部 wire 好；P10.T3 只需消费它们。注意：P10.T3 不写 worker（那是 P10.T5）、不写前端（那是 P10.T6）、不写真实 provider（保留给后续 PR）。
+继续 **P10.T4 [MUST]**：调用上限（每日 / 每 Trip 配额）—— 在入队前检查 `ai_invocations` 表里今日 / 本 Trip 已有的 'success' + 'pending' + 'running' 计数对照 `AI_DAILY_LIMIT` / `AI_TRIP_LIMIT`，超额则返 429 + `AI_QUOTA_EXCEEDED`（design.md §11.2 / errorCodes.ts 已经预留）。P10.T3 已经把 `POST /api/media/:id/ai-refine` 端点稳定下来；P10.T4 在同一端点里加配额 gate，不改其它端点。注意：P10.T4 不写 worker（P10.T5）、不写前端（P10.T6）。
 
 ---
 

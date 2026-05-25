@@ -38,6 +38,27 @@ export {
 } from "./AIProvider.js";
 export { NoopProvider } from "./NoopProvider.js";
 
+/**
+ * `processing_jobs.job_type` token for the image-channel AI refine
+ * worker (P10.T3 enqueue path; P10.T5 worker handler).
+ *
+ * Kept as a single string constant so the route layer, the future
+ * worker registry, and the smoke harness all import it from one
+ * place — drift between the route's enqueue and the worker's
+ * registration would surface immediately as "no handler for job
+ * type 'image_ai_refine'" at runtime, but compile-time alignment
+ * via this const eliminates the typo class entirely.
+ *
+ * Matches the closed-set value `'image_ai_refine'` in:
+ *   * `AIRequestType` (TS union in AIProvider.ts).
+ *   * `ai_invocations.request_type` CHECK enum (migration 012).
+ * R-121 (progress.md): these three are hand-aligned today; a
+ * future refactor can extract a single source-of-truth constant
+ * the SQL CHECK reads too. For P10.T3 the three-way alignment is
+ * the minimum invariant.
+ */
+export const IMAGE_AI_REFINE_JOB_TYPE = "image_ai_refine";
+
 /** Subset of `Config['ai']` the factory needs. Imported as a
  * structural type to avoid a circular dep with the config module. */
 export interface AIProviderFactoryConfig {

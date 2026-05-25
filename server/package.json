@@ -65,7 +65,8 @@
     "smoke:video-api": "tsx src/scripts/video-api-smoke.ts",
     "smoke:p9-acceptance": "tsx src/scripts/p9-acceptance-smoke.ts",
     "smoke:migration-012": "tsx src/scripts/migration-012-smoke.ts",
-    "smoke:ai-provider": "tsx src/scripts/ai-provider-smoke.ts"
+    "smoke:ai-provider": "tsx src/scripts/ai-provider-smoke.ts",
+    "smoke:media-ai-refine-trigger": "tsx src/scripts/media-ai-refine-trigger-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

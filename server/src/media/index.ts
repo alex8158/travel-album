@@ -9,6 +9,7 @@
 export { MediaRepository } from "./mediaRepository.js";
 export {
   MediaService,
+  type AiRefineMediaResult,
   type EnhanceMediaResult,
   type MediaSoftDeleteDeps,
   type ReprocessJobResult,
