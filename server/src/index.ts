@@ -56,7 +56,11 @@ import {
   VideoSegmentsRepository,
   VideoService,
 } from "./media/index.js";
-import { createAIProviderFromConfig, type AIProvider } from "./ai/index.js";
+import {
+  AiInvocationsRepository,
+  createAIProviderFromConfig,
+  type AIProvider,
+} from "./ai/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
@@ -217,16 +221,32 @@ async function main(): Promise<void> {
   });
   const jobService = new JobService(jobRepo);
   const duplicateGroupsRepo = new DuplicateGroupsRepository(dbHandle.db);
-  // MediaService takes the P7.T1 soft-delete bundle last; pulling
-  // duplicateGroupsRepo out before instantiation so the dep is
-  // available here. The bundle is optional on the type so smokes /
-  // tests can still build a minimal service.
-  const mediaService = new MediaService(mediaRepo, tripService, mediaVersionsRepo, jobRepo, {
-    db: dbHandle.db,
-    tripRepo,
-    duplicateGroupsRepo,
-    logger,
-  });
+  // P10.T4 — ai_invocations audit repository. Holds the row writer
+  // + the two quota counters. Construct early so MediaService can
+  // hold it (the only consumer until P10.T5 lands the worker).
+  const aiInvocationsRepo = new AiInvocationsRepository(dbHandle.db);
+  // MediaService composes the P7.T1 soft-delete bundle AND the
+  // P10.T4 ai-refine bundle. Both are optional on the constructor
+  // so smokes / tests can still build a minimal service; the
+  // corresponding entry points throw a clear "not configured"
+  // error if the bundle was omitted.
+  const mediaService = new MediaService(
+    mediaRepo,
+    tripService,
+    mediaVersionsRepo,
+    jobRepo,
+    {
+      db: dbHandle.db,
+      tripRepo,
+      duplicateGroupsRepo,
+      logger,
+    },
+    {
+      aiInvocationsRepo,
+      dailyLimit: config.ai.dailyLimit,
+      tripLimit: config.ai.tripLimit,
+    },
+  );
   const dedupEngine = new DedupEngine({ mediaRepo, duplicateGroupsRepo, logger });
   const dedupService = new DedupService(
     dedupEngine,

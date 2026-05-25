@@ -2973,9 +2973,143 @@ smoke 双重保险：service 层 case 验证 `outcome` + DB 行数；HTTP 层 ca
 
 继续保留：R-74 ~ R-77 / R-79 / R-80 (P7)、R-82 ~ R-92 (P8)、R-93 / R-94 (P9.T1)、R-95 / R-96 / R-97 (P9.T2)、R-98 / R-99 / R-100 (P9.T3)、R-101 / R-102 / R-103 (P9.T4)、R-104 / R-105 / R-106 (P9.T5)、R-108 / R-109 (P9.T6)、R-110 / R-111 / R-112 / R-113 (P9.T7)、R-114 / R-115 / R-116 (P9.T8)、R-117 / R-118 / R-119 (P9.T9)、R-120 (P9.T10)、R-121 / R-122 (P10.T1+T2)。R-78 / R-81 / R-107 / R-123 已闭合。
 
+### P10.T4 AI 配额计数 + 429 Gate 实现结果
+
+阶段：已完成。日期：2026-05-25。
+
+#### 改动文件
+
+- `server/src/ai/aiInvocationsRepository.ts`（**新增**）— `AiInvocationsRepository` 类：4 个 prepared statements (`insert` / `countSinceStmt` / `countByTripIdStmt` / `findByIdStmt`)。`countByTripId` 用 `INNER JOIN media_items ON ai.media_id = m.id` —— 孤儿审计行（媒体已 hard-delete、FK SET NULL）自然 drop out，无法 charge 给已 hard-delete 的 trip。公开类型 `AiInvocationInsertData` / `AiInvocationRow`。
+- `server/src/ai/index.ts`（**修改**）— 重导出 repo + 类型。
+- `server/src/media/mediaService.ts`（**修改**）— 重写 `aiRefineMedia`，新增 `AiRefineDeps` + `AiRefineOptions` 接口；构造函数加可选第 6 参数 `aiRefineDeps`；`AiRefineMediaResult` 加可选 `aiInvocationId` 字段；末尾加 `startOfUtcDayIso(at)` 辅助函数算 UTC 自然日边界。
+- `server/src/media/index.ts`（**修改**）— 重导出 `AiRefineDeps` + `AiRefineOptions`。
+- `server/src/routes/media.ts`（**修改**）— `/ai-refine` 端点传 `providerName: deps.aiProvider.name` 给 service 以便 audit 行记录实际 provider 名。
+- `server/src/index.ts`（**修改**）— 构造 `aiInvocationsRepo`，传给 MediaService 第 6 参数（用现有 `config.ai.dailyLimit` / `config.ai.tripLimit`）。
+- `server/src/scripts/media-ai-refine-trigger-smoke.ts`（**修改**）— 升级 MediaService 构造调用，传 `aiRefineDeps` (dailyLimit=0, tripLimit=0 — 不影响原 P10.T3 case)，引入 `AiInvocationsRepository`。
+- `server/src/scripts/ai-quota-trigger-smoke.ts`（**新增**）— `smoke:ai-quota-trigger` 24/24 PASS，覆盖所有 quota 行为路径。
+- `server/package.json`（**修改**）— 注册 `smoke:ai-quota-trigger`。
+- `docs/tasks.md` / `docs/progress.md`（**修改**）— 标 P10.T4 `[x]`、本节实现结果。
+
+#### 新增 quota 配置（复用既有）
+
+不新增 env 旋钮——复用 design.md §11.1 已经声明的：
+
+| Env | 默认 | 语义 |
+| --- | --- | --- |
+| `AI_DAILY_LIMIT` | `0` | 全局每 UTC 自然日 ai_invocations 上限；`0` 表示不限 |
+| `AI_TRIP_LIMIT` | `0` | 同一 trip 累计 ai_invocations 上限（终身计数）；`0` 表示不限 |
+
+CLAUDE.md §2.8 红线：默认 `0` = 不限，未配置 quota 时主流程必须可用 — 已通过 `unlimited` smoke case 验证。
+
+#### 入队顺序（实现锚定）
+
+```
+POST /api/media/:id/ai-refine
+   1. media 是否存在                      → 否 → 404 NOT_FOUND          (不计 quota)
+   2. media 是否 soft-deleted             → 是 → 404 NOT_FOUND          (不计 quota；P7 contract)
+   3. media 是否 image                    → 否 → 400 BAD_REQUEST        (不计 quota)
+   4. aiProvider.available === true       → 否 → 501 AI_NOT_CONFIGURED  (不计 quota；P10.T3 route gate)
+   5. 既有 pending/running 任务            → 是 → 200 outcome='skipped'   (不计 quota；幂等)
+   6. dailyLimit > 0 & used >= limit      → 是 → 429 AI_QUOTA_EXCEEDED   (kind=daily)
+   7. tripLimit > 0 & used >= limit       → 是 → 429 AI_QUOTA_EXCEEDED   (kind=trip)
+   8. 入队 image_ai_refine + INSERT 一行 ai_invocations(status='pending')
+   → 200 outcome=created|reset + aiInvocationId
+```
+
+5 → 6 顺序的关键：**幂等先于 quota**。双击 / 自动化重发对同一 pending job 不会被扣额度（CLAUDE.md §3.9 友好），但对新 media 的请求会被扣。
+
+#### Daily quota 如何统计
+
+```sql
+SELECT COUNT(*) FROM ai_invocations
+WHERE created_at >= ?       -- ? = startOfUtcDayIso(now)
+```
+
+边界用 UTC 自然日（`Date.UTC(y, m, d, 0, 0, 0, 0)`），避免服务器跨时区跳动 / fleet 多区域间不一致。`created_at` 列由 migration 012 的 `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` 默认值填，字符串字典序与时序一致。
+
+计数包含**所有 status**（pending / success / failed）—— "已接受的 AI 请求"语义：进了队列就计数，因为成本可能已经被 incurred。failed 也计入（保守计费）。
+
+`AI_DAILY_LIMIT=0` 时跳过整个 daily gate 块。
+
+Smoke `daily-gate` case 用 `now()` clock override pin 到 `2030-01-15` → 3 次入队达到 limit=3 → 第 4 次 throw；切到 `2030-01-16` → 计数重置 → 入队又通过。
+
+#### Per-trip quota 如何统计
+
+```sql
+SELECT COUNT(*) FROM ai_invocations ai
+INNER JOIN media_items m ON ai.media_id = m.id
+WHERE m.trip_id = ?
+```
+
+INNER JOIN 保证：媒体已 hard-delete 后（FK SET NULL → ai.media_id=NULL），孤儿行不再 count，等价于"trip 历史已部分释放"——合理：操作员主动删除媒体后那些已计费的调用不应锁定后续 trip 配额。
+
+计数同上跨所有 status。**未按自然日重置**——这是 `AI_TRIP_LIMIT` 的语义（design.md §11.1 名字里没 "DAILY" 字样）；如果操作员想要"每 trip 每日"语义，目前没实现（需要 trip + 日双 key 计数，可放进 P10.T7 验收后续讨论）。
+
+`AI_TRIP_LIMIT=0` 时跳过 trip gate 块。
+
+Smoke `trip-gate` case：limit=2，trip A 内 2 次成功 + 第 3 次 429（kind=trip + tripId 透传）；trip B 不受影响。
+
+#### `429 AI_QUOTA_EXCEEDED` 返回条件
+
+```
+HTTP 429
+{
+  "error": {
+    "code": "AI_QUOTA_EXCEEDED",
+    "message": "AI daily quota exceeded (3/3)"   // or "AI trip quota exceeded (2/2)"
+    "requestId": "...",
+    "details": {
+      "kind": "daily",                            // or "trip"
+      "limit": 3,
+      "used": 3,
+      "sinceIso": "2030-01-15T00:00:00.000Z"     // daily only
+      "tripId": "<uuid>"                          // trip only
+    }
+  }
+}
+```
+
+`details.kind` 让前端区分两种 quota 弹错文案；`limit` / `used` 让前端展示 "今日 3/3 已用满"；`sinceIso` 给操作员看 UTC 日边界（避免"我刚到家凌晨怎么也算超额"困惑）；`tripId` 让前端跳转回 trip 详情。
+
+#### 哪些失败请求**不会**计入 quota
+
+| 失败类型 | HTTP | 是否计 quota | 原因 |
+| --- | --- | --- | --- |
+| AI 未启用 / provider unavailable | 501 | ❌ | route gate 在 service 之前，没进 ai_invocations |
+| media 不存在 | 404 | ❌ | service 在 quota gate 前先 NotFoundError throw |
+| media 已 soft-deleted | 404 | ❌ | 同上 |
+| 非 image media | 400 | ❌ | service 在 quota gate 前先 BadRequestError throw |
+| 既有 pending/running 任务（双击） | 200 outcome='skipped' | ❌ | idempotency 先于 quota；不写新 ai_invocations 行 |
+| quota 命中 | 429 | ❌ | 拒绝 = 没入队 = 没写 ai_invocations |
+| 入队成功 created/reset | 200 | ✅ | 写一行 status='pending' |
+
+Smoke `no-count(404)` / `no-count(400)` / `HTTP+Noop` / `skipped-no-count` 都断言"audit count 不变"。
+
+#### 执行过的测试命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（修复了一个未使用 import 的 warning）
+- `cd server && npm run smoke:ai-quota-trigger` — **24/24 PASS**（8 case：unlimited / daily=3 第4次429 / next UTC day 重置 / trip=2 第3次429 + 不同trip OK / 同media双击skipped 不扣 quota / 404 不扣 / 400 不扣 / HTTP 501 不扣 / HTTP 429 body shape）
+- `cd server && npm run smoke:media-ai-refine-trigger` — 27/27 PASS（P10.T3 case 不回归）
+- `cd server && npm run smoke:ai-provider` — 18/18 PASS
+- `cd server && npm run smoke:migration-012` — 31/31 PASS
+- `cd server && npm run smoke:media-versions-api` — 35/35 PASS（mediaRouter aiProvider 兼容路径不动）
+- **完整 48 个 server smoke 全绿**（含 P3-P9 全套契约 + P10.T1-T4）
+
+#### P10.T4 剩余风险
+
+| ID | 风险 | 缓解 |
+| --- | --- | --- |
+| **R-127** | `AI_TRIP_LIMIT` 是"trip 终身"而非"trip 每日"。操作员如果期望"per-trip-per-day"语义需要应用层叠加 daily quota 来近似；否则一个长期 trip 累计很多调用后会永远 429。 | V1 接受：design.md §11.1 命名暗示终身上限。如未来需要 per-trip-per-day，加 `AI_TRIP_DAILY_LIMIT` env + 查询条件加 `created_at >= ?` 即可（不动 schema）。在 progress.md 记录以提醒 P10.T7 验收注意。 |
+| **R-128** | failed audit 行也计 quota——保守计费策略。如果操作员希望"failed 不计入，免费重试"，目前不支持。 | V1 接受：进了队就计费更接近真实 AI 厂商账单语义（很多厂商对失败请求仍收 inference 费）。可在未来加 `AI_QUOTA_INCLUDE_FAILED=true` 旋钮。 |
+| **R-129** | daily quota 用 UTC 自然日；UTC+8 用户在凌晨 8:00 看到的"今日"会与服务器认为的"今日"差 8 小时，导致 used 计数与用户直觉不符。 | V1 接受：UTC 是 fleet 一致性的最优解；前端在 429 body 里看到 `sinceIso` 可以自行换算成本地时间展示。如未来强烈需要本地日历，需要 `AI_DAILY_QUOTA_TIMEZONE` env + 边界计算重写。 |
+| **R-130** | quota check 与 enqueue 之间存在 TOCTOU 窗口（毫秒级）：两个并发请求都看到 used=limit-1 然后都入队，导致超过 limit 一次。SQLite 单线程串行化让窗口极小但非零。 | V1 接受：并发风险有限（前端去重 + JobQueue concurrency=1）。可在 P10.T7 验收时压测；如发现实际越限再加 `transaction()` 包裹 count + insert（better-sqlite3 的事务能保证窗口内可重复读）。 |
+
+继续保留：R-74 ~ R-77 / R-79 / R-80 (P7)、R-82 ~ R-92 (P8)、R-93 / R-94 (P9.T1)、R-95 / R-96 / R-97 (P9.T2)、R-98 / R-99 / R-100 (P9.T3)、R-101 / R-102 / R-103 (P9.T4)、R-104 / R-105 / R-106 (P9.T5)、R-108 / R-109 (P9.T6)、R-110 / R-111 / R-112 / R-113 (P9.T7)、R-114 / R-115 / R-116 (P9.T8)、R-117 / R-118 / R-119 (P9.T9)、R-120 (P9.T10)、R-121 / R-122 (P10.T1+T2)、R-124 / R-125 / R-126 (P10.T3)。R-78 / R-81 / R-107 / R-123 已闭合。
+
 ## 下一阶段入口
 
-继续 **P10.T4 [MUST]**：调用上限（每日 / 每 Trip 配额）—— 在入队前检查 `ai_invocations` 表里今日 / 本 Trip 已有的 'success' + 'pending' + 'running' 计数对照 `AI_DAILY_LIMIT` / `AI_TRIP_LIMIT`，超额则返 429 + `AI_QUOTA_EXCEEDED`（design.md §11.2 / errorCodes.ts 已经预留）。P10.T3 已经把 `POST /api/media/:id/ai-refine` 端点稳定下来；P10.T4 在同一端点里加配额 gate，不改其它端点。注意：P10.T4 不写 worker（P10.T5）、不写前端（P10.T6）。
+继续 **P10.T5 [MUST]**：`image_ai_refine` worker —— 取 ai_invocations status='pending' 的行 + 配 `processing_jobs` 的 job_type='image_ai_refine'，调 `AIProvider.invoke({ requestType: 'image_ai_refine', mediaId, jobId, inputBytes: 原图字节 })` 拿 `AISuccessResponse.outputBytes` → 用 `storage.putDerived` 写到 `derived/{mediaId}/ai_refined.jpg` → upsert `media_versions(version_type='ai_refined', model_name=...)` → UPDATE `ai_invocations` SET status='success', cost_estimate, duration_ms, model_name, response_summary。失败时 status='failed' + error_message。注意：P10.T5 仍不实现真实 provider（V1 只 Noop）——本任务给"如果未来真有 provider，worker 该怎么写"打底子；可以用 `LocalMockProvider`（available=true + invoke 返回原图副本）作为本地测试 fixture。CLAUDE.md §2.4 红线：原图永不覆盖、user_decision 永不覆盖。CLAUDE.md §2.8：未配置 AI 时主流程仍可用——即 P10.T5 worker 只有在 AI 启用时才尝试执行。
 
 ---
 

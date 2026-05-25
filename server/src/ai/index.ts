@@ -37,6 +37,11 @@ export {
   type AISuccessResponse,
 } from "./AIProvider.js";
 export { NoopProvider } from "./NoopProvider.js";
+export {
+  AiInvocationsRepository,
+  type AiInvocationInsertData,
+  type AiInvocationRow,
+} from "./aiInvocationsRepository.js";
 
 /**
  * `processing_jobs.job_type` token for the image-channel AI refine

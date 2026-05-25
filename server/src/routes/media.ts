@@ -239,7 +239,12 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
           },
         );
       }
-      const result = deps.mediaService.aiRefineMedia(id);
+      // P10.T4: pass the live provider name so the audit row
+      // records who would have served the call. The model name is
+      // a placeholder filled by the future P10.T5 worker.
+      const result = deps.mediaService.aiRefineMedia(id, {
+        providerName: deps.aiProvider.name,
+      });
       res.status(200).json(result);
     }),
   );

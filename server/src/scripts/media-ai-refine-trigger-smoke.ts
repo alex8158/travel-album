@@ -51,6 +51,7 @@ import path from "node:path";
 import express from "express";
 
 import {
+  AiInvocationsRepository,
   IMAGE_AI_REFINE_JOB_TYPE,
   NoopProvider,
   type AIProvider,
@@ -272,12 +273,22 @@ async function main(): Promise<void> {
       duplicateGroupsRepo,
       logger,
     };
+    // P10.T4: aiRefineDeps with quotas=0 (unlimited) so the P10.T3
+    // cases in this smoke still exercise the enqueue happy paths
+    // exactly the same. The quota gate is exercised separately by
+    // smoke:ai-quota-trigger.
+    const aiInvocationsRepo = new AiInvocationsRepository(dbHandle.db);
     const mediaService = new MediaService(
       mediaRepo,
       tripService,
       mediaVersionsRepo,
       jobRepo,
       softDeleteDeps,
+      {
+        aiInvocationsRepo,
+        dailyLimit: 0,
+        tripLimit: 0,
+      },
     );
 
     // -----------------------------------------------------------------

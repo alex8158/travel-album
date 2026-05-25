@@ -20,8 +20,9 @@ import { randomUUID } from "node:crypto";
 
 import type { SqliteDatabase } from "../db/connection.js";
 import type { DuplicateGroupsRepository } from "../dedup/index.js";
-import { IMAGE_AI_REFINE_JOB_TYPE } from "../ai/index.js";
-import { BadRequestError, NotFoundError } from "../errors/AppError.js";
+import { IMAGE_AI_REFINE_JOB_TYPE, type AiInvocationsRepository } from "../ai/index.js";
+import { AppError, BadRequestError, NotFoundError } from "../errors/AppError.js";
+import { ERROR_CODES } from "../errors/errorCodes.js";
 import { IMAGE_ENHANCE_JOB_TYPE, type JobRepository } from "../jobs/index.js";
 import type { Logger } from "../logger.js";
 import { QUALITY_SELECTOR_JOB_TYPE, encodeQualitySelectorPayload } from "../quality/index.js";
@@ -191,6 +192,52 @@ export interface AiRefineMediaResult {
   readonly jobId: string;
   /** When outcome === "skipped", why (e.g. "already pending"). */
   readonly reason?: string;
+  /** P10.T4 — id of the fresh `ai_invocations` audit row when
+   * outcome === 'created' / 'reset'. Omitted on 'skipped' (no
+   * audit row is written because the existing call is being
+   * re-used; the original audit row from its first attempt
+   * stays put). */
+  readonly aiInvocationId?: string;
+}
+
+/**
+ * P10.T4 cross-domain bundle for AI quota + audit-row writing.
+ *
+ * `MediaService.aiRefineMedia` requires this bundle to be wired
+ * when called — at boot the bootstrap composes it; smokes that
+ * don't exercise ai-refine can leave it `undefined` and the method
+ * throws a programmer-friendly "not configured" error.
+ *
+ * Quota knobs follow design.md §11.1 (`AI_DAILY_LIMIT`,
+ * `AI_TRIP_LIMIT`). Both default to `0 = unlimited` so a fresh
+ * deployment doesn't accidentally rate-limit its only user
+ * (CLAUDE.md §2.8: AI is opt-in, base features must work).
+ */
+export interface AiRefineDeps {
+  readonly aiInvocationsRepo: AiInvocationsRepository;
+  /** Max ai_invocations rows in the current calendar day (UTC). 0
+   * disables the gate. */
+  readonly dailyLimit: number;
+  /** Max ai_invocations rows per trip across the trip's lifetime.
+   * 0 disables the gate. Orphaned rows (media hard-deleted, FK
+   * flipped to NULL) drop out of the count by design — they
+   * cannot be re-charged to a trip the operator may no longer
+   * know about. */
+  readonly tripLimit: number;
+  /** Override for tests / smokes; defaults to `() => new Date()`. */
+  readonly now?: () => Date;
+}
+
+/**
+ * Optional caller-supplied context for {@link MediaService.aiRefineMedia}.
+ * The route layer passes the live `AIProvider.name` so the audit
+ * row records who would have served the call; service-layer direct
+ * callers (smokes / scripts) can omit it and the audit row records
+ * `"unknown"` as a placeholder. The future P10.T5 worker UPDATEs the
+ * row with the real model name once it picks one.
+ */
+export interface AiRefineOptions {
+  readonly providerName?: string;
 }
 
 /**
@@ -222,6 +269,14 @@ export class MediaService {
      * unchanged.
      */
     private readonly softDeleteDeps?: MediaSoftDeleteDeps,
+    /**
+     * Optional bundle for {@link aiRefineMedia} (P10.T4). Carries
+     * the `ai_invocations` repo + the daily / per-trip quota knobs.
+     * Smokes that don't exercise ai-refine can leave it
+     * `undefined` and the method throws a programmer-friendly
+     * "not configured" error.
+     */
+    private readonly aiRefineDeps?: AiRefineDeps,
   ) {}
 
   /**
@@ -420,10 +475,24 @@ export class MediaService {
    * Does NOT block on the actual AI call. The future AI-channel
    * executor (P10.T5+) polls pending rows independently.
    */
-  aiRefineMedia(mediaIdInput: unknown): AiRefineMediaResult {
+  aiRefineMedia(
+    mediaIdInput: unknown,
+    options: AiRefineOptions = {},
+  ): AiRefineMediaResult {
     if (this.jobRepo === undefined) {
       throw new Error("MediaService: jobRepo not configured; cannot enqueue ai-refine");
     }
+    if (this.aiRefineDeps === undefined) {
+      throw new Error(
+        "MediaService: aiRefineDeps not configured; cannot enqueue ai-refine (P10.T4 audit row + quota gate require AiInvocationsRepository)",
+      );
+    }
+    const jobRepo = this.jobRepo;
+    const refineDeps = this.aiRefineDeps;
+
+    // ---- Domain gates (404 / 400). Order matters: media lookup
+    // first, then type check. These throw BEFORE the quota gate so
+    // failed requests do NOT count against quota.
     const safeId = parseOrThrow(entityIdSchema, mediaIdInput, "id");
     const media = this.repo.findById(safeId);
     if (media === null) {
@@ -435,8 +504,120 @@ export class MediaService {
         { mediaId: safeId, type: media.type },
       );
     }
-    const now = new Date().toISOString();
-    const slot = this.reprocessOneJobType(safeId, IMAGE_AI_REFINE_JOB_TYPE, now);
+
+    // ---- Idempotency peek (P10.T4 ordering): look at the latest
+    // image_ai_refine row WITHOUT mutating yet. If it is pending /
+    // running, return 'skipped' immediately — we MUST do this
+    // before the quota gate so a duplicate click on a job already
+    // in-flight is not penalised against the user's quota.
+    const latestJob = jobRepo.findLatestByMediaIdAndType(safeId, IMAGE_AI_REFINE_JOB_TYPE);
+    if (
+      latestJob !== null &&
+      (latestJob.status === "pending" || latestJob.status === "running")
+    ) {
+      return {
+        mediaId: safeId,
+        jobType: IMAGE_AI_REFINE_JOB_TYPE,
+        outcome: "skipped",
+        jobId: latestJob.id,
+        reason: `already ${latestJob.status}`,
+      };
+    }
+
+    // ---- P10.T4 quota gate. Counts ai_invocations rows (the
+    // audit table is the canonical source of "AI calls accepted").
+    // `0` (the default for both knobs) disables the corresponding
+    // gate so a fresh deployment isn't accidentally throttled.
+    // Failed and pending and success rows all count — the call was
+    // accepted into the queue, so it counts toward the operator's
+    // budget regardless of eventual outcome.
+    const clock = refineDeps.now ?? (() => new Date());
+    const today = clock();
+    if (refineDeps.dailyLimit > 0) {
+      const sinceIso = startOfUtcDayIso(today);
+      const usedToday = refineDeps.aiInvocationsRepo.countSinceTimestamp(sinceIso);
+      if (usedToday >= refineDeps.dailyLimit) {
+        throw new AppError(
+          ERROR_CODES.AI_QUOTA_EXCEEDED,
+          `AI daily quota exceeded (${usedToday}/${refineDeps.dailyLimit})`,
+          {
+            statusCode: 429,
+            details: {
+              kind: "daily",
+              limit: refineDeps.dailyLimit,
+              used: usedToday,
+              sinceIso,
+            },
+          },
+        );
+      }
+    }
+    if (refineDeps.tripLimit > 0) {
+      const usedTrip = refineDeps.aiInvocationsRepo.countByTripId(media.tripId);
+      if (usedTrip >= refineDeps.tripLimit) {
+        throw new AppError(
+          ERROR_CODES.AI_QUOTA_EXCEEDED,
+          `AI trip quota exceeded (${usedTrip}/${refineDeps.tripLimit})`,
+          {
+            statusCode: 429,
+            details: {
+              kind: "trip",
+              limit: refineDeps.tripLimit,
+              used: usedTrip,
+              tripId: media.tripId,
+            },
+          },
+        );
+      }
+    }
+
+    // ---- Enqueue + audit insert. At this point quota is in
+    // budget and the latest job is either missing or terminal-ish.
+    // `reprocessOneJobType` handles created / reset semantics; the
+    // pending/running branch is unreachable here (we already
+    // short-circuited above) but the primitive is unchanged for
+    // simplicity.
+    const nowIso = today.toISOString();
+    const slot = this.reprocessOneJobType(safeId, IMAGE_AI_REFINE_JOB_TYPE, nowIso);
+
+    // Defensive: if the primitive raced with a parallel write and
+    // returned `skipped` here (very rare — would require a
+    // concurrent enqueue between our peek and the SQL), don't write
+    // an audit row — the existing call's audit row is the source
+    // of truth.
+    if (slot.outcome === "skipped") {
+      return slot.reason !== undefined
+        ? {
+            mediaId: safeId,
+            jobType: slot.jobType,
+            outcome: slot.outcome,
+            jobId: slot.jobId,
+            reason: slot.reason,
+          }
+        : {
+            mediaId: safeId,
+            jobType: slot.jobType,
+            outcome: slot.outcome,
+            jobId: slot.jobId,
+          };
+    }
+
+    // Write the audit row. `provider` is the live AIProvider.name
+    // passed in by the route (or `"unknown"` for direct service
+    // callers in smokes); `model_name` is a placeholder updated by
+    // the future P10.T5 worker once it picks a model.
+    const aiInvocationId = randomUUID();
+    refineDeps.aiInvocationsRepo.insert({
+      id: aiInvocationId,
+      mediaId: safeId,
+      jobId: slot.jobId,
+      provider: options.providerName ?? "unknown",
+      modelName: "pending",
+      requestType: "image_ai_refine",
+      status: "pending",
+      now: nowIso,
+    });
+
     return slot.reason !== undefined
       ? {
           mediaId: safeId,
@@ -444,12 +625,14 @@ export class MediaService {
           outcome: slot.outcome,
           jobId: slot.jobId,
           reason: slot.reason,
+          aiInvocationId,
         }
       : {
           mediaId: safeId,
           jobType: slot.jobType,
           outcome: slot.outcome,
           jobId: slot.jobId,
+          aiInvocationId,
         };
   }
 
@@ -973,4 +1156,20 @@ function buildVersionsView(
     activeVersionType: media.activeVersionType,
     versions: out,
   };
+}
+
+/**
+ * Format the UTC start-of-day for a given moment as the canonical
+ * ISO-8601 timestamp the daily-quota count query expects. UTC is
+ * chosen over local time so a server moving zones (or a fleet
+ * spanning zones) computes the same boundary every time. The
+ * existing audit-row `created_at` uses the same UTC-ms format
+ * (`strftime(%Y-%m-%dT%H:%M:%fZ, ...)` in migration 012) so
+ * string ordering matches chronological ordering.
+ */
+function startOfUtcDayIso(at: Date): string {
+  const y = at.getUTCFullYear();
+  const m = at.getUTCMonth();
+  const d = at.getUTCDate();
+  return new Date(Date.UTC(y, m, d, 0, 0, 0, 0)).toISOString();
 }
