@@ -478,6 +478,57 @@ export async function enhanceMedia(id: string): Promise<EnhanceMediaResult> {
 }
 
 /**
+ * P10.T3 / P10.T5 — enqueue an `image_ai_refine` job for one image
+ * media. Mirrors the server's `AiRefineMediaResult` envelope; same
+ * `created` / `reset` / `skipped` outcome semantics as
+ * `enhanceMedia`, plus an optional `aiInvocationId` (the audit row
+ * id the P10.T4 enqueue path writes, surfaced for diagnostics).
+ *
+ * The server gates this endpoint:
+ *   * 501 `AI_NOT_CONFIGURED` — `AI_ENABLED=false` or `AI_PROVIDER`
+ *     unwired. The UI should pre-empt this by reading `aiEnabled`
+ *     from `/api/health`, but the call still goes through and
+ *     surfaces the error in the response banner if the server's
+ *     view of "available" diverged from health.
+ *   * 429 `AI_QUOTA_EXCEEDED` — daily / per-trip quota hit. The
+ *     `details.kind` discriminator (`'daily' | 'trip'`) + `limit`
+ *     / `used` numbers in the error body let the UI tell the user
+ *     "today" vs "this trip" without parsing the message string.
+ *   * 400 / 404 — non-image / missing / soft-deleted media; same
+ *     as `enhanceMedia`.
+ *
+ * The job is asynchronous — `outcome` confirms the enqueue but the
+ * P10.T5 worker runs on the image channel afterwards. The UI
+ * typically tells the user "Submitted — refresh in a moment" and
+ * the `ai_refined` version row will appear in the versions list
+ * once the worker UPSERTs it.
+ */
+export type AiRefineOutcome = "created" | "reset" | "skipped";
+
+export interface AiRefineMediaResult {
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly outcome: AiRefineOutcome;
+  readonly jobId: string;
+  readonly reason?: string;
+  /** Populated by P10.T4 when `outcome` is created/reset; omitted
+   * on `skipped` (no fresh audit row is written when the existing
+   * pending/running call is reused). */
+  readonly aiInvocationId?: string;
+}
+
+export async function aiRefineMedia(id: string): Promise<AiRefineMediaResult> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}/ai-refine`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res));
+  }
+  return (await res.json()) as AiRefineMediaResult;
+}
+
+/**
  * P8.T4 — one user-selectable version entry. Mirrors the server-side
  * `MediaVersionView` projection. `id` is `null` for the synthesized
  * 'original' entry (no `media_versions` row exists for it — it's

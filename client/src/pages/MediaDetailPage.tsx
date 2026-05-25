@@ -34,10 +34,12 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
+  aiRefineMedia,
   enhanceMedia,
   reprocessMedia,
   selectMediaVersion,
   softDeleteMedia,
+  type AiRefineMediaResult,
   type EnhanceMediaResult,
   type MediaActiveVersionType,
   type MediaAnalysisProjection,
@@ -49,6 +51,7 @@ import {
   type SelectVersionResult,
 } from "../api/media";
 import { setTripCover } from "../api/trips";
+import { useHealth } from "../hooks/useHealth";
 import { useMediaDetail } from "../hooks/useMediaDetail";
 import { useMediaVersions } from "../hooks/useMediaVersions";
 
@@ -102,6 +105,25 @@ export default function MediaDetailPage(): JSX.Element {
   const [enhancePending, setEnhancePending] = useState(false);
   const [selectPending, setSelectPending] = useState<MediaActiveVersionType | null>(null);
   const [enhanceFeedback, setEnhanceFeedback] = useState<EnhanceFeedback | null>(null);
+
+  // P10.T6 — AI Refine state. We track three things separately so a
+  // pending /ai-refine call doesn't block the user from also doing
+  // the (much cheaper) /enhance, and so the confirmation modal can
+  // open/close idempotently. The confirmation modal is mandatory
+  // per the prompt (AI is paid + slow); the user explicitly
+  // acknowledges before we POST.
+  const [aiRefinePending, setAiRefinePending] = useState(false);
+  const [aiRefineConfirmOpen, setAiRefineConfirmOpen] = useState(false);
+  // `aiRefineFeedback` is folded into the shared `enhanceFeedback`
+  // banner via a discriminated union so the user only sees one
+  // banner under the section header (not three competing rows).
+  // The discriminant `kind` carries the "which action" identity.
+
+  // P10.T6 — Health snapshot (used to grey out the AI Refine button
+  // when AI_ENABLED=false at the server). Failure-soft: any error
+  // surfaces in `health.error` but we still render the page.
+  const health = useHealth();
+  const aiEnabledOnServer = health.data?.capabilities.aiEnabled ?? false;
 
   function openDelete(): void {
     setDeleteError(null);
@@ -200,6 +222,51 @@ export default function MediaDetailPage(): JSX.Element {
       setEnhanceFeedback({ kind: "error", op: "select", message });
     } finally {
       setSelectPending(null);
+    }
+  }
+
+  // P10.T6 — open the confirmation modal. The actual POST happens
+  // only after the user clicks "Run AI Refine" inside the modal.
+  function openAiRefineConfirm(): void {
+    setEnhanceFeedback(null);
+    setAiRefineConfirmOpen(true);
+  }
+  function closeAiRefineConfirm(): void {
+    if (aiRefinePending) return; // don't close mid-submit
+    setAiRefineConfirmOpen(false);
+  }
+
+  // P10.T6 — POST /api/media/:id/ai-refine after the user confirmed
+  // the cost / wait dialog. The handler:
+  //   * Bails if no id or a refine call is already in flight (the
+  //     button is also disabled, this is defence-in-depth).
+  //   * Lifts the server's error message into the banner verbatim
+  //     so 501 AI_NOT_CONFIGURED, 429 AI_QUOTA_EXCEEDED, 400 / 404
+  //     all surface with the server's text (which includes the
+  //     "X/Y used (daily)" or "X/Y used (trip)" hint for 429).
+  //   * Refetches versions on success — the P10.T5 worker runs
+  //     asynchronously on the image channel, so the `ai_refined`
+  //     row appears on the next poll once the worker drains.
+  async function handleAiRefineConfirmed(): Promise<void> {
+    if (id === undefined || aiRefinePending) return;
+    setAiRefinePending(true);
+    setEnhanceFeedback(null);
+    try {
+      const result = await aiRefineMedia(id);
+      setEnhanceFeedback({ kind: "ai-refine-success", result });
+      setAiRefineConfirmOpen(false);
+      // Schedule a versions refetch so the freshly-created
+      // ai_refined row surfaces once the P10.T5 worker drains. The
+      // hook's stale-while-revalidate keeps the previous list
+      // visible during the fetch.
+      refetchVersions();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setEnhanceFeedback({ kind: "error", op: "ai-refine", message });
+      // Keep the modal open on error so the user sees the cause
+      // inline; only close on success.
+    } finally {
+      setAiRefinePending(false);
     }
   }
 
@@ -379,12 +446,16 @@ export default function MediaDetailPage(): JSX.Element {
           enhancePending={enhancePending}
           selectPending={selectPending}
           feedback={enhanceFeedback}
+          aiRefinePending={aiRefinePending}
+          aiEnabledOnServer={aiEnabledOnServer}
+          healthLoading={health.loading}
           onEnhance={() => {
             void handleEnhance();
           }}
           onSelect={(t) => {
             void handleSelectVersion(t);
           }}
+          onAiRefineClick={openAiRefineConfirm}
         />
       ) : null}
 
@@ -502,6 +573,60 @@ export default function MediaDetailPage(): JSX.Element {
           </div>
         </div>
       )}
+
+      {aiRefineConfirmOpen && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-refine-title"
+          aria-describedby="ai-refine-body"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeAiRefineConfirm();
+          }}
+        >
+          <div className="modal-card">
+            <h2 id="ai-refine-title">Run AI Refine?</h2>
+            <p id="ai-refine-body">
+              This sends the image to the configured AI provider for refinement. It counts
+              against your daily / per-trip quota and may incur provider cost. The refine
+              runs asynchronously on the image worker — the new <code>ai_refined</code>{" "}
+              version will appear in the Versions block once the worker completes (refresh
+              the page or wait a moment).
+            </p>
+            <p id="ai-refine-body-2" className="status-text">
+              Your original file is never modified. You can switch back to it any time using
+              the <strong>Use original</strong> button.
+            </p>
+            {enhanceFeedback?.kind === "error" && enhanceFeedback.op === "ai-refine" && (
+              <p className="form-error" role="alert">
+                {enhanceFeedback.message}
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={closeAiRefineConfirm}
+                disabled={aiRefinePending}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => {
+                  void handleAiRefineConfirmed();
+                }}
+                disabled={aiRefinePending}
+              >
+                {aiRefinePending ? "Submitting…" : "Run AI Refine"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -555,8 +680,23 @@ interface EnhancementSectionProps {
   readonly enhancePending: boolean;
   readonly selectPending: MediaActiveVersionType | null;
   readonly feedback: EnhanceFeedback | null;
+  /** P10.T6 — async POST /ai-refine in flight. Disables AI Refine
+   * button + "Adopt AI refined" button while true. */
+  readonly aiRefinePending: boolean;
+  /** P10.T6 — server's `AI_ENABLED` flag, read from /api/health.
+   * False ⇒ grey out the AI Refine button + tooltip "AI is not
+   * configured". The server still 501s on the actual POST as a
+   * second line of defence. */
+  readonly aiEnabledOnServer: boolean;
+  /** P10.T6 — true on the very first render before /api/health
+   * has resolved. Used to disable the AI Refine button while we
+   * don't yet know the server's stance. */
+  readonly healthLoading: boolean;
   readonly onEnhance: () => void;
   readonly onSelect: (versionType: MediaActiveVersionType) => void;
+  /** P10.T6 — open the confirm-cost modal. The actual POST only
+   * fires after the user clicks "Run AI Refine" inside that modal. */
+  readonly onAiRefineClick: () => void;
 }
 
 function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
@@ -568,8 +708,12 @@ function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
     enhancePending,
     selectPending,
     feedback,
+    aiRefinePending,
+    aiEnabledOnServer,
+    healthLoading,
     onEnhance,
     onSelect,
+    onAiRefineClick,
   } = props;
 
   // Active version: prefer the dedicated versions endpoint's value
@@ -583,6 +727,24 @@ function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
   const cells = versions?.versions ?? [];
   const original = cells.find((v) => v.versionType === "original") ?? null;
   const enhanced = cells.find((v) => v.versionType === "enhanced") ?? null;
+  const aiRefined = cells.find((v) => v.versionType === "ai_refined") ?? null;
+
+  // P10.T6 — pre-flight gate. The button is greyed out when:
+  //   * /api/health is still loading (don't show a "click me!"
+  //     button while the server hasn't confirmed AI is on)
+  //   * AI_ENABLED=false on the server (default)
+  //   * an AI-refine call is already in flight
+  //   * a version-switch call is in flight (can't switch + queue
+  //     simultaneously; matches the enhance button's policy)
+  const aiRefineDisabled =
+    healthLoading || !aiEnabledOnServer || aiRefinePending || selectPending !== null;
+  const aiRefineTooltip = healthLoading
+    ? "Checking AI availability…"
+    : !aiEnabledOnServer
+      ? "AI provider is not configured on this server. Set AI_ENABLED=true + AI_PROVIDER to enable AI Refine."
+      : aiRefinePending
+        ? "AI Refine submission in flight…"
+        : "Run AI Refine on this image. Counts against daily / per-trip AI quota. Original file stays untouched.";
 
   return (
     <section className="trip-detail-section media-enhance-section">
@@ -633,6 +795,32 @@ function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
               </p>
             </div>
           )}
+          {aiRefined !== null ? (
+            <VersionCell
+              label="AI refined"
+              cell={aiRefined}
+              active={active === "ai_refined"}
+              mediaType={media.type}
+            />
+          ) : (
+            <div className="media-enhance-cell media-enhance-cell--empty">
+              <div className="media-enhance-cell-head">
+                <span className="media-enhance-cell-label">AI refined</span>
+                <span className="quality-pill" data-tone="neutral">
+                  Not yet
+                </span>
+              </div>
+              <div className="media-enhance-cell-placeholder" aria-hidden="true">
+                🤖
+              </div>
+              <p className="status-text">
+                No AI-refined version yet. Click <em>AI Refine</em> below
+                {aiEnabledOnServer
+                  ? " to enqueue the image_ai_refine worker; the output lands here when the P10.T5 worker finishes."
+                  : " — available once an operator enables AI on the server."}
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -675,6 +863,47 @@ function EnhancementSection(props: EnhancementSectionProps): JSX.Element {
           title="Re-enqueue the sharp pipeline for this media. Existing original file stays untouched."
         >
           {enhancePending ? "Submitting…" : enhanced === null ? "Enhance" : "Re-enhance"}
+        </button>
+        {/* P10.T6 — AI Refine controls. The "Adopt AI refined" button
+         * appears only when an ai_refined version exists; the
+         * "AI Refine" button is always visible but greyed out when
+         * the server reports AI_ENABLED=false (the tooltip explains
+         * the gate). Clicking "AI Refine" opens a confirmation
+         * modal — the actual POST happens after the user
+         * acknowledges the cost / wait. */}
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => onSelect("ai_refined")}
+          disabled={
+            aiRefined === null ||
+            active === "ai_refined" ||
+            selectPending !== null ||
+            enhancePending ||
+            aiRefinePending
+          }
+          title={
+            aiRefined === null
+              ? "No AI-refined version available yet"
+              : active === "ai_refined"
+                ? "Already using the AI-refined version"
+                : "Switch this media to use the AI-refined version"
+          }
+        >
+          {selectPending === "ai_refined" ? "Adopting…" : "Adopt AI refined"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onAiRefineClick}
+          disabled={aiRefineDisabled}
+          title={aiRefineTooltip}
+        >
+          {aiRefinePending
+            ? "Submitting…"
+            : aiRefined === null
+              ? "AI Refine"
+              : "Re-AI-refine"}
         </button>
       </div>
     </section>
@@ -752,11 +981,21 @@ function VersionCell({ label, cell, active, mediaType }: VersionCellProps): JSX.
 type EnhanceFeedback =
   | { readonly kind: "enhance-success"; readonly result: EnhanceMediaResult }
   | { readonly kind: "select-success"; readonly result: SelectVersionResult }
-  | { readonly kind: "error"; readonly op: "enhance" | "select"; readonly message: string };
+  | { readonly kind: "ai-refine-success"; readonly result: AiRefineMediaResult }
+  | {
+      readonly kind: "error";
+      readonly op: "enhance" | "select" | "ai-refine";
+      readonly message: string;
+    };
 
 function EnhanceFeedbackBanner({ feedback }: { feedback: EnhanceFeedback }): JSX.Element {
   if (feedback.kind === "error") {
-    const prefix = feedback.op === "enhance" ? "Enhance failed" : "Switch failed";
+    const prefix =
+      feedback.op === "enhance"
+        ? "Enhance failed"
+        : feedback.op === "ai-refine"
+          ? "AI Refine failed"
+          : "Switch failed";
     return (
       <p className="form-error" role="alert">
         {prefix}: {feedback.message}
@@ -774,6 +1013,29 @@ function EnhanceFeedbackBanner({ feedback }: { feedback: EnhanceFeedback }): JSX
     return (
       <p className="status-text" aria-live="polite">
         Enhance: {human} Refresh the page after a moment to see the result.
+      </p>
+    );
+  }
+  if (feedback.kind === "ai-refine-success") {
+    // P10.T6 — surface jobId + outcome + auditId. The user sees
+    // exactly what got enqueued; debugging an asynchronous AI call
+    // becomes possible without diving into server logs.
+    const { outcome, jobId, reason, aiInvocationId } = feedback.result;
+    const human =
+      outcome === "created"
+        ? "Submitted — the AI refine worker will run on the image channel."
+        : outcome === "reset"
+          ? "Resubmitted — the previous AI refine job will rerun on the image channel."
+          : `Skipped — ${reason ?? "an AI refine job is already pending or running"}.`;
+    return (
+      <p className="status-text" aria-live="polite">
+        AI Refine: {human} <span className="mono">job={jobId.slice(0, 8)}…</span>{" "}
+        {aiInvocationId !== undefined ? (
+          <>
+            <span className="mono">audit={aiInvocationId.slice(0, 8)}…</span>{" "}
+          </>
+        ) : null}
+        Refresh the page after a moment to see the <code>ai_refined</code> version.
       </p>
     );
   }
