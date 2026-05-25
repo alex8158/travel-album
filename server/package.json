@@ -63,7 +63,9 @@
     "smoke:video-segments-worker": "tsx src/scripts/video-segments-worker-smoke.ts",
     "smoke:video-segment-quality-worker": "tsx src/scripts/video-segment-quality-worker-smoke.ts",
     "smoke:video-api": "tsx src/scripts/video-api-smoke.ts",
-    "smoke:p9-acceptance": "tsx src/scripts/p9-acceptance-smoke.ts"
+    "smoke:p9-acceptance": "tsx src/scripts/p9-acceptance-smoke.ts",
+    "smoke:migration-012": "tsx src/scripts/migration-012-smoke.ts",
+    "smoke:ai-provider": "tsx src/scripts/ai-provider-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

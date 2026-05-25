@@ -56,6 +56,7 @@ import {
   VideoSegmentsRepository,
   VideoService,
 } from "./media/index.js";
+import { createAIProviderFromConfig, type AIProvider } from "./ai/index.js";
 import { detectCapabilities, type Capabilities } from "./runtime/capabilities.js";
 import { LocalStorageProvider } from "./storage/index.js";
 import { TripRepository, TripService } from "./trips/index.js";
@@ -181,6 +182,16 @@ async function main(): Promise<void> {
     logger.fatal({ err: serializeReason(err) }, "capability detection failed unexpectedly");
     process.exit(1);
   }
+
+  // 6b) AI provider (P10.T1). Default is `NoopProvider` — base
+  // features must work without AI (CLAUDE.md §2.8). The factory
+  // logs its choice (INFO when disabled, WARN when an unknown
+  // provider id was requested). The instance is held here for
+  // future P10.T3+ wiring (HTTP `POST /api/media/:id/ai-refine`
+  // + the image_ai_refine worker); P10.T1 does not yet attach it
+  // to `CreateAppOptions`.
+  const aiProvider: AIProvider = createAIProviderFromConfig(config.ai, logger);
+  void aiProvider;
 
   // 7) Domain services. The TripService is stateless beyond the DB
   // handle; UploadService composes media + job repositories and the
