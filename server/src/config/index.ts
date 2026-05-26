@@ -459,6 +459,14 @@ const schema = z
     VIDEO_AUDIO_LOUDNORM_ENABLED: boolDefault(true),
     VIDEO_AUDIO_FADE_IN_SECONDS: numNonNeg(1.5),
     VIDEO_AUDIO_FADE_OUT_SECONDS: numNonNeg(2),
+    // P11.T3 — when true, the bootstrap MAY call
+    // `AudioLibraryService.seedDefaultDirectory(...)` once at
+    // startup. V1 default is `false` — seeding is an operator
+    // action (run the smoke / a future CLI), not an implicit
+    // side-effect of every server start. The config knob exists
+    // here so a future task can wire it into `index.ts` without
+    // another config change; P11.T3 does NOT touch bootstrap.
+    AUDIO_LIBRARY_SEED_ON_STARTUP: boolDefault(false),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -962,12 +970,15 @@ export interface Config {
       workerVersion: string;
     };
     /** P11.T2 audio-processor toolkit knobs (NOT a worker; reusable
-     * FFmpeg helpers consumed by future render / compose workers). */
+     * FFmpeg helpers consumed by future render / compose workers).
+     * P11.T3 added the `seedOnStartup` knob; bootstrap does NOT
+     * consume it yet (operator-controlled action). */
     audio: {
       defaultLibraryDir: string;
       loudnormEnabled: boolean;
       fadeInSeconds: number;
       fadeOutSeconds: number;
+      seedOnStartup: boolean;
     };
   };
   meta: {
@@ -1125,6 +1136,7 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         loudnormEnabled: raw.VIDEO_AUDIO_LOUDNORM_ENABLED,
         fadeInSeconds: raw.VIDEO_AUDIO_FADE_IN_SECONDS,
         fadeOutSeconds: raw.VIDEO_AUDIO_FADE_OUT_SECONDS,
+        seedOnStartup: raw.AUDIO_LIBRARY_SEED_ON_STARTUP,
       },
     },
     meta: { loadedDotenvFiles },

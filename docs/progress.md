@@ -3898,3 +3898,202 @@ feat(server): audio processing toolkit (strip / trim / fade / loudnorm / loop / 
 NOT a worker (no JobQueue / media_versions side-effects). No new API,
 no migration, no frontend. P11.T3~T9 stay LATER.
 ```
+
+---
+
+## 2026-05-26 · P11.T3 音频库 Audio Library（schema + repository + service + seed runner）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T3 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T4 ~ P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- migration 014 `audio_library` 表（STRICT，15 列 / 8 CHECK / 3 索引 / 与 media_items 完全解耦）
+- `AudioLibraryRepository`（CRUD + upsert-by-(source_type, checksum) 关键 idempotency 主轴）
+- `AudioLibraryService`（`listSystemAudio` / `findById` / `seedDefaultDirectory`）
+- 默认音频目录约定 `server/assets/audio/default/`（P11.T2 已建占位）下文件的发现 → checksum → 可选 ffprobe duration → UPSERT
+- `AUDIO_LIBRARY_SEED_ON_STARTUP=false` 配置占位（**不接入 bootstrap**；hook 留给 P11.T6+）
+- smoke 端到端覆盖 36/36 PASS
+
+**显式不做**（留给 P11.T4 ~ T9）：
+- 任何 HTTP route / API（P11.T6）
+- 用户上传 / URL 导入（P11.T6，含 SSRF / 版权 metadata）
+- 前端 UI（P11.T7）
+- 启动时自动 seed（hook 已留但本轮不接入 bootstrap）
+- 与剪辑方案 / `audioPolicy` 集成（P11.T4 / P11.T5）
+- 多视频合成（P11.T8）
+- AI 选音乐 / ducking / 多轨混音
+
+### 修改 / 新增的文件
+
+**新增（4）**：
+- `server/migrations/014_create_audio_library.sql` — STRICT 表，15 列 / 8 CHECK / 3 索引。无 FK（音频库与 media_items 解耦，design.md §8.5.1 显式约定）。
+- `server/src/media/audioLibraryRepository.ts` — `AudioLibraryRepository` 类含 7 个 prepared statement + 8 个公开类型。所有 SQL 在此一处，service / smoke / 未来 route 只看 view shape。
+- `server/src/media/audioLibraryService.ts` — `AudioLibraryService` 类（`listSystemAudio` / `findById` / `seedDefaultDirectory`）+ 私有 helper `seedOneCandidate` / `sha256OfFile` (streaming) / `probeAudio` (ffprobe, 15s 超时) / `slugify`。
+- `server/src/scripts/audio-library-seed-smoke.ts` — 端到端 smoke 36 个 case。
+
+**修改（4）**：
+- `server/src/media/index.ts` — re-export 8 个公开符号（repo + service + 5 types + 1 outcome enum）。
+- `server/src/config/index.ts` — 加 `AUDIO_LIBRARY_SEED_ON_STARTUP=false` env + `config.video.audio.seedOnStartup` 字段（**bootstrap 不消费**，hook 留给 P11.T6+）。
+- `server/package.json` — 加 `smoke:audio-library-seed` 脚本。
+- `.env.example` — 加 P11.T3 段落注释 + 默认值。
+
+**文档（2）**：`docs/tasks.md`（P11.T3 标 [x]） + `docs/progress.md`（本节）。
+
+**未触碰的领域**：
+- 任何 route / API（与 P11.T2 同样的红线 — P11.T6 territory）
+- 客户端代码（0 行）
+- bootstrap (`server/src/index.ts`) — 即使 config 加了 `seedOnStartup` 字段也没接入
+- `media_versions` / `processing_jobs` / `media_items`
+- P11.T1 / P11.T2 / P10 / P9 / P8 / P7 任何阶段产物
+
+### audio_library schema 摘要
+
+```
+audio_library (STRICT)
+├── id                   TEXT NOT NULL PRIMARY KEY
+├── name                 TEXT NOT NULL                  -- slugified handle (e.g. demo-track)
+├── display_name         TEXT NOT NULL                  -- human label (e.g. Demo-Track)
+├── source_type          TEXT NOT NULL CHECK ∈ {'system','user'}
+├── file_path            TEXT NOT NULL                  -- absolute on-disk
+├── relative_path        TEXT                           -- relative to storage root when present
+├── mime_type            TEXT
+├── duration_seconds     REAL                           -- nullable: ffprobe-fail degrades to NULL
+├── size_bytes           INTEGER NOT NULL CHECK ≥ 0
+├── checksum             TEXT NOT NULL                  -- sha256 hex (64 chars)
+├── is_active            INTEGER NOT NULL DEFAULT 1 CHECK ∈ {0,1}
+├── tags                 TEXT                           -- comma-separated
+├── metadata_json        TEXT                           -- JSON; license / author / source_url etc. live here
+├── created_at, updated_at
+└── INDEX (source_type, checksum) UNIQUE  -- idempotency key
+    INDEX (source_type, is_active)        -- typical read path (BGM picker)
+    INDEX (checksum)                       -- cross-source dedup advisory
+```
+
+### 默认音频 seed 流程
+
+```
+seedDefaultDirectory(dir, opts?):
+  1. fs.stat(dir) -> directoryExisted: boolean (ENOENT → false, graceful)
+  2. findDefaultAudioCandidates(dir) -> filtered audio files (graceful)
+       [from P11.T2; auto-skips .gitkeep / non-audio / dotfiles]
+  3. For each candidate (serial):
+       a. fs.stat -> size_bytes
+       b. sha256OfFile -> checksum (streaming read; arbitrary file size)
+       c. probeAudio(ffprobePath, 15s timeout) -> duration_seconds
+            ↓ on error: degrade to duration_seconds=null (NOT a row failure)
+       d. mime = AUDIO_MIME_BY_EXT[ext] ?? "application/octet-stream"
+       e. slugify(basename) -> name; basename -> display_name
+       f. upsertBySourceTypeAndChecksum(...) -> 'inserted' | 'updated' | 'unchanged'
+            ↓ on update: bytes-of-truth refreshed, operator-surface preserved
+  4. Return summary { directory, directoryExisted, scanned, inserted, updated,
+                       unchanged, skipped, failed, items[] }
+```
+
+### 关键设计决策
+
+1. **UPSERT 主轴是 `(source_type, checksum)`，不是 `id`**：同一份音频文件内容（同 source_type）只对应一行。重命名 / 移动文件不会创建新行，只刷新 file_path / relative_path / size / mime / duration / updated_at。**operator-edited 列（display_name / tags / metadata_json / is_active / name / created_at / id）永不被 seed 覆盖**（CLAUDE.md §3.9 user_decision 精神延伸到 audio_library 的运营手编内容）。
+2. **ffprobe 故障 graceful**：单文件 probe 失败只导致 `duration_seconds=null`，整体 seed pass 不挂；smoke 端到端验证了 ffprobe 不可用 + 0 byte 损坏文件 + corrupted MP3 三种降级路径。
+3. **无 FK**：音频库与 media_items 完全解耦，design.md §8.5.1 显式约定（"音频库每个条目"独立于 trip / media）。多视频复用同一音频 / 跨 trip 复用 / 媒体删除不级联音频的语义都自然成立。
+4. **不接入 bootstrap**：`AUDIO_LIBRARY_SEED_ON_STARTUP` 配置加了但 `server/src/index.ts` 不读，因为操作员手动跑 smoke / 未来 CLI 比每次 server 启动隐式 seed 更可控。Hook 已留给 P11.T6 落地真实 admin API 时启用。
+5. **mime by ext**：ffprobe 的 `format_name`（如 "mp3" / "mov,mp4"）不能直接映射 MIME，所以 service 用一个小的 ext → mime 表（mp3 → audio/mpeg / m4a → audio/mp4 / aac → audio/aac / wav → audio/wav / flac → audio/flac / ogg → audio/ogg / opus → audio/opus）。其他扩展名落到 `application/octet-stream` 防御（行还是写得进去）。
+6. **slugify name vs human display_name**：`name` 是机器 handle（`demo-track`），`display_name` 是 UI 标题（`Demo-Track`）。两者独立 + 第一次 seed 后都不再被覆盖；让操作员能改 display_name 不会破坏 logging / API 引用。
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` — 干净
+- `cd server && npm run smoke:audio-library-seed` — **36/36 PASS**
+- 邻近回归 3 个 smoke 全绿：
+  - `smoke:audio-processor` — 34/34 PASS（P11.T2 未影响）
+  - `smoke:video-optimize-worker` — 52/52 PASS（P11.T1 未影响）
+  - `smoke:p10-acceptance` — 37/37 PASS（P10 AI 未影响）
+- `cd client && npm run lint` / `typecheck` / `build` — 干净（无客户端改动）
+
+### Smoke 测试覆盖（36 PASS / 0 FAIL）
+
+| 区段 | case 数 | 关键断言 |
+| --- | --- | --- |
+| Migration shape | 5 | 表存在 / 15 列齐全 / `(source_type, checksum)` UNIQUE / `(source_type, is_active)` 索引 / source_type CHECK 拒 invalid |
+| Repository CRUD | 7 | findById / listActive / listAll / setActive(false) 隐藏 + 保留 / setActive 返回 changes=1 |
+| Repository upsert idempotency | 8 | outcome='updated' / id 保留（不是新 UUID）/ file_path / size_bytes / relative_path 刷新 / display_name / tags / metadata_json / is_active 全部 preserved |
+| Service: graceful fallback | 3 | missing dir directoryExisted=false / 仅 .gitkeep / non-audio+dotfile 全部 scanned=0 |
+| Service: happy seed + 元数据 | 3 | 第一次 seed 1 inserted + mime/duration/size/checksum 正确 + name slug + display_name 保留原 case |
+| Service: re-seed 幂等 | 2 | 第二次 seed outcome='updated' / 同一文件只 1 行 |
+| Service: 跨 seed 保留 operator 编辑 | 1 | re-seed 后 operator-edited display_name + tags + metadata_json 全部保留 |
+| Service: ffprobe 降级 | 2 | ffprobe 不可用 binary → duration=null + size/checksum/mime 仍正确 |
+| Service: per-file 失败不级联 | 2 | mixed batch (good + 0-byte corrupt) → 2 inserted / 0 failed |
+| Integrity | 2 | PRAGMA foreign_key_check 0 行 + PRAGMA integrity_check 'ok' |
+
+**关键 invariants 已锁**：
+- migration 014 fresh-DB + upgrade-from-013 都能跑（runMigrations 在 smoke 启动时调用，验证 011→012→013→014 完整链）
+- operator-edited 列绝不被 seed 覆盖（4 字段单测）
+- ffprobe 故障不级联（3 个降级测试用例）
+
+### 新增风险
+
+新增 1 条风险（R-145），衔接 R-138 ~ R-144 之后。
+
+| ID | 风险 | 控制措施 |
+| --- | --- | --- |
+| **R-145** | seed runner 未实现 "deactivate missing audio"：操作员从 `assets/audio/default/` 删了文件后再 seed，原行的 `is_active` 保持 1 + `file_path` 仍指向不存在的文件。未来 render worker 调用时会 ffmpeg fail-to-open，从而失败该次渲染。 | (1) V1 显式接受这个状态：行保留 + is_active 不动 + file_path 不刷新（因为 file 不存在，checksum 无法重算，seed 根本不知道该删哪个旧行）；(2) 未来 polish：可加一个独立 cleanup job 扫描 `audio_library WHERE source_type='system' AND is_active=1` + `fs.access` 检测 + `setActive(false)`，但要先确认没有进行中的 render 引用该行；(3) 操作员可以手动 `setActive(false, ...)`（已暴露 API）+ 通过 admin 工具看 file_path 是否仍存在。**短期变通**：操作员先 setActive(false) 再删文件，比反过来安全。 |
+
+### 当前已知限制
+
+1. **默认音乐库为空**：`server/assets/audio/default/` 仅含 `.gitkeep`。`listSystemAudio()` 在没人手动放音频 / 跑 seed 时返回 `[]`。这是按设计的 graceful state；P11.T6 落地 user 上传后整体音乐库就有内容了。R-138（版权 metadata）也要在 P11.T3 之后真实采购音频时一并解决。
+2. **ffprobe 不可用时 `duration_seconds=null`**：smoke 验证降级路径正确，但下游 render（P11.T5）若要根据 duration 决定 BGM 循环 / 截断长度，遇 null 需要回退到 fallback 时长或拒绝渲染。设计原则不变：null 不阻塞 seed，render 时再处理。
+3. **未做 deactivate missing audio**：见 R-145。
+4. **未做 startup auto-seed**：`AUDIO_LIBRARY_SEED_ON_STARTUP` 配置加了 hook 但 `server/src/index.ts` 不读 — 等 P11.T6 真实 admin API 落地时再决定接入方式。
+5. **未做 audio 文件移动到 storage tree**：默认音频留在 `server/assets/audio/default/`（git 跟踪的项目资产），不复制进 `storage/` 运行时目录。`relative_path` 因此为 NULL；`file_path` 是绝对路径。P11.T6 用户上传时 `relative_path` 才会填值（落到 `storage/audio/...` 之类）。
+
+R-138 ~ R-144 全部保留：
+- **R-138 音频版权风险** — 仍待 P11.T6 真实采购音频 + metadata 字段使用时落实（schema 已预留 `metadata_json`，本次 seed 写入 `{seededFromDirectory, originalFilename, extension}` 占位，未来可加 license/author/source_url）
+- **R-139 URL 导入 SSRF** — 待 P11.T6
+- **R-140 长视频合成耗时** — 待 P11.T8
+- **R-141 ffmpeg 音频 filter 兼容性** — P11.T2 部分缓解
+- **R-142 多视频合成规格不一致** — 待 P11.T8
+- **R-143 长视频 optimize 堵塞 video 通道** — P11.T1 已记
+- **R-144 单 pass loudnorm dB 偏差** — P11.T2 已记，待 P11.T5
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1 已完成（commit `73adae0`，video_optimize）
+- ✅ T2 已完成（commit `99f7be0`，audio toolkit）
+- ✅ T3 已完成（本轮，audio_library schema + repository + service + seed runner）
+- ⬜ T4 ~ T9 仍为 LATER
+
+下一步任务候选（按 docs/tasks.md P11 顺序）：
+- **P11.T4 剪辑方案生成** — 基于 `video_segments` + `audioPolicy` 出 plan；rule engine 优先 + AI 可选
+- **P11.T5 视频渲染 API** — 第一个真正消费 P11.T1 / T2 / T3 三块产物的 worker（video_optimize 转码 + audioProcessor 工具链 + audio_library 选音乐）
+- **P11.T6 音频库 API** — 给 audio_library 加 list / upload / import-url / delete 路由（用户面）
+
+由产品决策选定下一项再执行。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): audio_library schema + seed runner + repository/service (P11.T3)
+
+- migration 014: audio_library STRICT table (15 cols / 8 CHECKs / 3 indexes)
+  - (source_type, checksum) UNIQUE — the idempotency main axis
+  - no FK to media_items (audio is cross-trip / cross-media reusable)
+- repository: AudioLibraryRepository — findById / listActive*BySourceType /
+  upsertBySourceTypeAndChecksum (preserves operator-edited surface) / setActive
+- service: AudioLibraryService — listSystemAudio / findById / seedDefaultDirectory
+  - graceful: missing dir, empty dir, .gitkeep, non-audio files all yield scanned=0
+  - per-file ffprobe failure degrades to duration=null (NOT a row failure)
+  - SHA256 via streaming createReadStream (handles arbitrary file size)
+  - operator-edited columns (display_name / tags / metadata_json / is_active)
+    are NEVER clobbered by a re-seed
+- config: AUDIO_LIBRARY_SEED_ON_STARTUP=false (hook reserved; bootstrap NOT wired)
+- smoke: smoke:audio-library-seed — 36/36 PASS
+- new risk R-145 (deactivate-missing-audio) recorded
+
+No HTTP route, no frontend, no bootstrap wiring. P11.T4~T9 stay LATER.
+```

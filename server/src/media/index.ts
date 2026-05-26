@@ -7,6 +7,24 @@
 // preview / enhanced / ai_refined writes) all live here.
 
 export { MediaRepository } from "./mediaRepository.js";
+// P11.T3 — Audio Library data layer. Repository + Service +
+// seed-default-directory runner. No HTTP surface (P11.T6 territory).
+export {
+  AudioLibraryRepository,
+  type AudioLibraryInsertData,
+  type AudioLibrarySourceType,
+  type AudioLibraryUpsertData,
+  type AudioLibraryUpsertOutcome,
+  type AudioLibraryUpsertResult,
+  type AudioLibraryView,
+} from "./audioLibraryRepository.js";
+export {
+  AudioLibraryService,
+  type AudioLibrarySeedItem,
+  type AudioLibrarySeedOutcome,
+  type AudioLibrarySeedSummary,
+  type SeedDefaultDirectoryOptions,
+} from "./audioLibraryService.js";
 export {
   MediaService,
   type AiRefineDeps,

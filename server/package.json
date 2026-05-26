@@ -71,7 +71,8 @@
     "smoke:image-ai-refine-worker": "tsx src/scripts/image-ai-refine-worker-smoke.ts",
     "smoke:p10-acceptance": "tsx src/scripts/p10-acceptance-smoke.ts",
     "smoke:video-optimize-worker": "tsx src/scripts/video-optimize-worker-smoke.ts",
-    "smoke:audio-processor": "tsx src/scripts/audio-processor-smoke.ts"
+    "smoke:audio-processor": "tsx src/scripts/audio-processor-smoke.ts",
+    "smoke:audio-library-seed": "tsx src/scripts/audio-library-seed-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
