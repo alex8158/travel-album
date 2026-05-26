@@ -53,10 +53,12 @@ import {
   makeQualitySelectorHandler,
 } from "./quality/index.js";
 import {
+  AudioLibraryRepository,
   MediaAnalysisRepository,
   MediaRepository,
   MediaService,
   MediaVersionsRepository,
+  VideoEditPlanService,
   VideoSegmentsRepository,
   VideoService,
 } from "./media/index.js";
@@ -268,6 +270,25 @@ async function main(): Promise<void> {
   // P9.T5 keyframes manifest off disk, writes `user_decision`
   // (only — never scores), and enqueues the P9.T5/T6/T7 jobs.
   const videoService = new VideoService(mediaRepo, videoSegmentsRepo, jobRepo, storage);
+  // P11.T3 — audio library repo (used by P11.T4 plan generator for
+  // background-audio lookups, and later by P11.T6 admin API).
+  const audioLibraryRepo = new AudioLibraryRepository(dbHandle.db);
+  // P11.T4 — video edit plan generator service. Reads media + audio
+  // library; never renders. AI refinement is gated by
+  // `config.video.editPlan.aiEnabled` and defaults to the noop
+  // refiner (V1 default keeps AI off — CLAUDE.md §2.8).
+  const videoEditPlanService = new VideoEditPlanService({
+    tripService,
+    mediaRepo,
+    audioLibraryRepo,
+    audioDefaults: {
+      loudnormEnabled: config.video.audio.loudnormEnabled,
+      fadeInSeconds: config.video.audio.fadeInSeconds,
+      fadeOutSeconds: config.video.audio.fadeOutSeconds,
+    },
+    aiEnabled: config.video.editPlan.aiEnabled,
+    logger,
+  });
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel
@@ -660,6 +681,7 @@ async function main(): Promise<void> {
     jobService,
     dedupService,
     videoService,
+    videoEditPlanService,
     aiProvider,
     debugRoutes: config.nodeEnv !== "production",
   });

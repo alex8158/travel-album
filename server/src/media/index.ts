@@ -25,6 +25,54 @@ export {
   type AudioLibrarySeedSummary,
   type SeedDefaultDirectoryOptions,
 } from "./audioLibraryService.js";
+// P11.T4 — Video edit plan generator (rule engine) + service +
+// schema. Generates an edit-plan JSON document the future P11.T5
+// render worker will consume. NEVER renders / writes processing_jobs
+// / writes media_versions / calls real AI in V1.
+export {
+  EDIT_PLAN_DEFAULT_ASPECT_RATIO,
+  EDIT_PLAN_DEFAULT_RESOLUTION,
+  EDIT_PLAN_DEFAULT_STYLE,
+  EDIT_PLAN_DEFAULT_TRANSITION,
+  EDIT_PLAN_STYLE_TARGETS,
+  EDIT_PLAN_VERSION,
+  MIN_CLIP_DURATION_SECONDS,
+  aiRefinePlan,
+  buildEditPlan,
+  computePerClipCapSeconds,
+  noopPlanRefiner,
+  resolveAudioPolicy,
+  type AiRefinePlanInput,
+  type AiRefinePlanRefiner,
+  type AudioPolicyResolutionInput,
+  type AudioPolicyResolutionResult,
+  type BuildEditPlanInput,
+  type EditPlanAspectRatio,
+  type EditPlanAudioMode,
+  type EditPlanAudioPolicy,
+  type EditPlanCandidate,
+  type EditPlanClip,
+  type EditPlanResolution,
+  type EditPlanStyle,
+  type EditPlanTransition,
+  type EditPlanTransitionKind,
+  type EditPlanWarning,
+  type EditPlanWarningCode,
+  type VideoEditPlan,
+} from "./videoEditPlan.js";
+export {
+  VideoEditPlanService,
+  type GeneratePlanOptions,
+  type VideoEditPlanServiceDeps,
+} from "./videoEditPlanService.js";
+export {
+  editPlanAspectRatioSchema,
+  editPlanAudioModeSchema,
+  editPlanResolutionSchema,
+  editPlanStyleSchema,
+  generateEditPlanBodySchema,
+  type GenerateEditPlanInput,
+} from "./videoEditPlanSchemas.js";
 export {
   MediaService,
   type AiRefineDeps,

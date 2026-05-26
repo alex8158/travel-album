@@ -4097,3 +4097,237 @@ feat(server): audio_library schema + seed runner + repository/service (P11.T3)
 
 No HTTP route, no frontend, no bootstrap wiring. P11.T4~T9 stay LATER.
 ```
+
+---
+
+## 2026-05-26 · P11.T4 剪辑方案生成（rule engine + audioPolicy + AI refine hook）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T4 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T5 ~ P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- Edit plan JSON 结构（`VideoEditPlan` 14 字段 + 子结构 `EditPlanClip` / `EditPlanTransition` / `EditPlanAudioPolicy` / `EditPlanWarning`）
+- 纯函数 rule engine（`buildEditPlan` / `computePerClipCapSeconds` / `resolveAudioPolicy` —— 不触 DB，可单测）
+- `VideoEditPlanService` —— DB lookup 包装 + warning 收集 + AI refiner gate
+- `POST /api/trips/:tripId/generate-edit-plan` —— 返回 plan JSON，不渲染
+- audioPolicy 三种 mode：`keep_original` / `mute` / `replace_with_library` + bg-audio 缺失 graceful 降级
+- AI refiner 接口预留（`aiRefinePlan` + `noopPlanRefiner`）+ `VIDEO_EDIT_PLAN_AI_ENABLED=false` 配置（V1 默认 off）
+
+**显式不做**（留给 P11.T5 ~ T9）：
+- 任何 ffmpeg 调用 / 实际渲染
+- `processing_jobs` / `media_versions` 写入
+- 真实 AI 模型调用
+- 前端预览 UI（P11.T7）
+- 多视频合成（P11.T8）
+- ducking / 智能精彩片段识别 / 复杂转场（fade / crossfade）
+
+### 修改 / 新增的文件
+
+**新增（5）**：
+- `server/src/media/videoEditPlan.ts` — 14 个公开类型 + 4 个常量 + 5 个纯函数。无 DB 依赖、无 ffmpeg 依赖；可单测。
+- `server/src/media/videoEditPlanService.ts` — `VideoEditPlanService` 类（构造接受 deps bundle + audioDefaults + aiEnabled + 可选 refiner + 可选 logger）。
+- `server/src/media/videoEditPlanSchemas.ts` — zod body schema + 4 个闭合枚举 schema。
+- `server/src/routes/videoEditPlan.ts` — 单 endpoint route（`makeVideoEditPlanRouter`）。
+- `server/src/scripts/video-edit-plan-smoke.ts` — 33 个 case smoke（pure + service + HTTP 三层）。
+
+**修改（6）**：
+- `server/src/media/index.ts` — re-export 22 个公开符号（types + constants + 函数 + service + schemas）。
+- `server/src/config/index.ts` — 加 `VIDEO_EDIT_PLAN_AI_ENABLED=false` env + `config.video.editPlan.aiEnabled` 字段。
+- `server/src/app.ts` — `CreateAppOptions` 加 `videoEditPlanService` + mount route。
+- `server/src/index.ts` — 构造 `AudioLibraryRepository` + `VideoEditPlanService` + 注入 createApp。
+- `server/package.json` — 加 `smoke:video-edit-plan` 脚本。
+- `.env.example` — 加 P11.T4 段落注释 + 默认值。
+
+**文档（2）**：`docs/tasks.md`（P11.T4 标 [x]） + `docs/progress.md`（本节）。
+
+**未触碰的领域**：
+- 任何既有 worker / handler / migration
+- 客户端代码（0 行）
+- `processing_jobs` / `media_versions` / `video_segments`
+- `media_items` 的任何列（user_decision / active_version_type 等）
+- P9 / P10 / P11.T1 / P11.T2 / P11.T3 任何阶段产物
+
+### Edit plan JSON 结构示例
+
+由 `buildEditPlan` 在 3 个视频 (12s / 20s / 8s) 上、target=30s、`replace_with_library` BGM 模式生成（cumulative 28s < 30s 触发 insufficient warning）：
+
+```jsonc
+{
+  "version": "1.0",
+  "tripId": "trip-demo",
+  "style": "standard",
+  "targetDurationSec": 30,
+  "totalDurationSec": 28,
+  "resolution": "1080p",
+  "aspectRatio": "16:9",
+  "sourceMediaIds": ["vid-a", "vid-b", "vid-c"],
+  "clips": [
+    { "mediaId": "vid-a", "sourcePath": "trips/trip-demo/originals/vid-a.mp4",
+      "startSec": 0, "endSec": 10, "durationSec": 10, "order": 0,
+      "reason": "first 10s of source (rule_engine_v1)" },
+    { "mediaId": "vid-b", "sourcePath": "trips/trip-demo/originals/vid-b.mp4",
+      "startSec": 0, "endSec": 10, "durationSec": 10, "order": 1,
+      "reason": "first 10s of source (rule_engine_v1)" },
+    { "mediaId": "vid-c", "sourcePath": "trips/trip-demo/originals/vid-c.mp4",
+      "startSec": 0, "endSec": 8,  "durationSec": 8,  "order": 2,
+      "reason": "first 8s of source (rule_engine_v1)" }
+  ],
+  "transitions": [
+    { "fromClipOrder": 0, "toClipOrder": 1, "kind": "none", "durationSec": 0 },
+    { "fromClipOrder": 1, "toClipOrder": 2, "kind": "none", "durationSec": 0 }
+  ],
+  "audioPolicy": {
+    "mode": "replace_with_library",
+    "backgroundAudioId": "audio-7f3c",
+    "removeOriginalAudio": true,
+    "loudnorm": true,
+    "fadeInSeconds": 1.5,
+    "fadeOutSeconds": 2,
+    "loopToFit": true,
+    "targetDurationSec": 30
+  },
+  "warnings": [
+    {
+      "code": "insufficient_source_material",
+      "message": "Selected clips total 28s, short of the 30s target. Consider lowering the target duration or adding more source videos.",
+      "details": { "achievedSec": 28, "targetSec": 30, "clipCount": 3 }
+    }
+  ],
+  "createdAt": "2026-05-26T04:00:00.000Z",
+  "aiRefined": false
+}
+```
+
+### Rule engine 当前规则（V1）
+
+```
+buildEditPlan(input):
+  1. resolve target = input.targetDurationSec ?? STYLE_TARGETS[style] ?? 30
+  2. perClipCap = max(MIN_CLIP_DURATION_SECONDS=3, target / N)
+  3. for each candidate in order (mediaRepo.list 默认 created_at DESC):
+       clipDur = min(durationSec, perClipCap)
+       if cumulative + clipDur > target: clipDur = target - cumulative (truncate)
+       push clip { startSec: 0, endSec: clipDur, durationSec: clipDur, order, reason }
+       cumulative += clipDur
+       if cumulative >= target: break
+  4. if cumulative < target: warn 'insufficient_source_material' with details
+  5. emit N-1 transitions (kind='none', durationSec=0)
+```
+
+**为什么"取每段开头 N 秒"而非中段 / 末段**：
+- 不需要 per-segment 评分基础设施（那是 video_segments + P9.T7 的领域；P11.T4 不依赖 P9.T7 跑过）
+- 视频开头通常含场景定调 / 镜头建立 / 起手动作，剪辑感觉自然
+- 完全确定性 + 可重现（同样输入产同样输出，便于 smoke 锁定）
+- 未来可升级：消费 P9.T7 `video_segment_quality` 选高分段、用 `is_recommended=1` 段优先
+
+### audioPolicy 设计
+
+| requested.mode | bg audio | resolved.mode | 备注 |
+| --- | --- | --- | --- |
+| undefined | null | `keep_original` | 默认 |
+| undefined | provided + active | `replace_with_library` | 推断 |
+| `mute` | any | `mute` | `removeOriginalAudio=true`, fade=0 |
+| `keep_original` | any | `keep_original` | bg audio 被忽略 |
+| `replace_with_library` | null / inactive | `keep_original` + warning | graceful 降级 |
+| `replace_with_library` | provided + active | `replace_with_library` | 完整启用 |
+
+**字段语义**（已在类型 jsdoc 详述）：
+- `backgroundAudioId` —— 非空仅当 mode=`replace_with_library`
+- `removeOriginalAudio` —— `mute`/`replace_with_library` 时 true（duplicate signal 让 renderer 不必再编码 mode→strip 逻辑）
+- `loudnorm` —— 来自 `config.video.audio.loudnormEnabled`，仅 `replace_with_library` 有效消费
+- `fadeInSeconds` / `fadeOutSeconds` —— 来自 `config.video.audio.fadeIn/Out`，所有模式都保留默认（让未来 worker 想 fade `keep_original` 也有数据）
+- `loopToFit` —— `replace_with_library` true / 其他 false
+- `targetDurationSec` —— 镜像 plan 顶层，让 renderer 单点调用 `prepareBackgroundMusic(target=this)`
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` — 干净
+- `cd server && npm run smoke:video-edit-plan` — **33/33 PASS**
+- 邻近回归 5 个 smoke 全绿：
+  - `smoke:audio-library-seed` — 36/36 PASS（P11.T3 未影响）
+  - `smoke:audio-processor` — 34/34 PASS（P11.T2 未影响）
+  - `smoke:video-optimize-worker` — 52/52 PASS（P11.T1 未影响）
+  - `smoke:p10-acceptance` — 37/37 PASS
+  - `smoke:p9-acceptance` — 36/36 PASS
+- `cd client && npm run lint` / `typecheck` / `build` — 干净（无前端改动）
+
+### Smoke 测试覆盖（33 PASS / 0 FAIL）
+
+| 层 | case 数 | 关键断言 |
+| --- | --- | --- |
+| Pure rule engine | 13 | computePerClipCapSeconds（3 case，含 N=0 / floor 3）+ resolveAudioPolicy 4 mode 转换表 + buildEditPlan 6 场景（0 cand / 1×120s @ target=30 → cap=30 / 1×5s @ target=30 → warning / 4 long → 4×7.5s / 3 short → cumulative < target / 字段携带 + N-1 transitions） |
+| Service + DB | 17 | empty trip / image-only / happy 2 video → 2×15s / sourcePath+order+reason / style→target 映射（short=15/long=60）/ 显式 targetDurationSec override / audioMode=mute / backgroundAudioId 隐含 replace_with_library / bg-audio 不存在降级 + warning / bg-audio inactive 降级 + warning / 显式 mediaIds 跨 trip / 缺失 id / 非 video / 有效 mediaIds 仍出可用 plan / 缺失 trip 404 / 未知 body key 400 / 越界 targetDurationSec 400 / 未知 style enum 400 |
+| HTTP 层 | 3 | POST happy 200 + body shape 14 字段齐全 / POST 缺失 trip 404 + envelope.code='NOT_FOUND' / POST 未知 key 400 + envelope.code='VALIDATION_FAILED' |
+
+### 新增风险
+
+新增 1 条风险（R-146），衔接 R-138 ~ R-145 之后。
+
+| ID | 风险 | 控制措施 |
+| --- | --- | --- |
+| **R-146** | rule engine V1 没有真正的"精彩片段"识别 —— "取每段开头 N 秒"对游记 / 旅行视频（前几秒往往是开场画面 / 调机位）可能截到无意义片段。用户期望的"高光集锦"需要 video_segment_quality（P9.T7）或 AI refiner 才能真正智能化。 | (1) V1 接受：plan 是 JSON 可由用户在前端（P11.T7）手动调整 startSec / endSec / 重排 / 删段；rule engine 只负责"开箱即有方案"；(2) 未来 polish：消费 `video_segments` + `is_recommended=1` 过滤明显垃圾段（black / blurry / waste），按 `quality_score DESC` 排序选高分；(3) 真正 AI refiner 落地（不是 V1 noop）时把 plan 喂给视觉理解模型做语义重排 —— 这要等到 P11.T5+ 或独立 P12 阶段。 |
+
+### 当前已知限制
+
+1. **只生成方案，不渲染**：P11.T5 才真正消费 plan + 调 ffmpeg 输出视频。
+2. **rule engine 简单**：见 R-146；后续可加 video_segment_quality 评分 + AI 语义。
+3. **AI refiner 仅接口预留**：`VIDEO_EDIT_PLAN_AI_ENABLED=false` 默认；即便 true 也只在 bootstrap 注入了真实 refiner 时才调用（V1 始终是 noop pass-through）。
+4. **转场默认 `none`**：V1 渲染 P11.T5 也只支持 concat；复杂转场（fade / crossfade）留给 P11.T5+ render polish。
+5. **不消费 video_segments**：rule engine 只读 `media_items.duration`；P9.T7 已经写了 `is_recommended` / `quality_score` 但本轮不消费（避免范围蔓延）。R-146 disposition 指向未来升级路径。
+6. **clips 顺序按 `created_at DESC`**：mediaRepo.list 默认顺序；与 gallery 一致但非"按拍摄时间"。未来 P11.T7 前端可让用户拖拽重排。
+7. **mediaIds 跨 trip 静默拒绝**：emit `media_not_found` warning 而不是显式 `cross_trip_media`；与"不暴露其他 trip 的 media 存在性"安全策略一致。
+
+R-138 ~ R-145 全部保留：
+- **R-138 音频版权风险** — 待 P11.T6 / 真实采购音频
+- **R-139 URL 导入 SSRF** — 待 P11.T6
+- **R-140 长视频合成耗时** — 待 P11.T8
+- **R-141 ffmpeg 音频 filter 兼容性** — P11.T2 部分缓解
+- **R-142 多视频合成规格不一致** — 待 P11.T8
+- **R-143 长视频 optimize 堵塞 video 通道** — P11.T1 已记
+- **R-144 单 pass loudnorm dB 偏差** — P11.T2 已记
+- **R-145 deactivate missing audio** — P11.T3 已记
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1 已完成（commit `73adae0`，video_optimize）
+- ✅ T2 已完成（commit `99f7be0`，audio toolkit）
+- ✅ T3 已完成（commit `e90eead`，audio_library schema + seed runner）
+- ✅ T4 已完成（本轮，edit plan rule engine + route）
+- ⬜ T5 ~ T9 仍为 LATER
+
+下一步任务候选（按 docs/tasks.md P11 顺序）：
+- **P11.T5 视频渲染 API** —— 第一个真正消费 P11.T1 / T2 / T3 / T4 全套产物的 worker（plan → ffmpeg concat + audio toolkit 应用 audioPolicy + 写 `media_versions(version_type='edited')`）
+- **P11.T6 音频库 API** —— 给 audio_library 加 user-facing CRUD 路由
+- **P11.T7 前端剪辑预览** —— UI 调用 P11.T4 生成 plan → 显示 → 用户调整 → P11.T5 渲染
+
+由产品决策选定下一项再执行。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): edit plan rule engine + POST /api/trips/:tripId/generate-edit-plan (P11.T4)
+
+- media/videoEditPlan.ts: pure types + rule engine + audioPolicy resolver
+  - buildEditPlan (no DB / no ffmpeg) — deterministic clip selection
+  - resolveAudioPolicy — keep_original / mute / replace_with_library + graceful fallback
+  - aiRefinePlan + noopPlanRefiner — AI hook reserved, V1 noop
+- media/videoEditPlanService.ts: DB lookup wrapper + warning collection
+  - trip 404 / mediaIds cross-trip / non-video / null-duration handling
+  - background_audio not_found / inactive → graceful keep_original fallback
+- media/videoEditPlanSchemas.ts: .strict() body schema + 4 closed enums
+- routes/videoEditPlan.ts: POST /api/trips/:tripId/generate-edit-plan
+- config: VIDEO_EDIT_PLAN_AI_ENABLED=false (hook reserved; V1 noop refiner)
+- smoke: smoke:video-edit-plan — 33/33 PASS (pure + service + HTTP)
+- new risk R-146 (rule engine has no highlight detection) recorded
+
+No render, no ffmpeg, no processing_jobs / media_versions writes,
+no real AI, no frontend. P11.T5~T9 stay LATER.
+```

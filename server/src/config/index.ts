@@ -467,6 +467,13 @@ const schema = z
     // here so a future task can wire it into `index.ts` without
     // another config change; P11.T3 does NOT touch bootstrap.
     AUDIO_LIBRARY_SEED_ON_STARTUP: boolDefault(false),
+    // P11.T4 — when true, `VideoEditPlanService.generatePlan(...)`
+    // routes through an injected `AiRefinePlanRefiner` after the
+    // rule engine produces the plan. V1 default is `false`; even
+    // when set to true, the service stays on `noopPlanRefiner`
+    // unless a real refiner is explicitly injected at boot
+    // (CLAUDE.md §2.8 — base features must work without AI).
+    VIDEO_EDIT_PLAN_AI_ENABLED: boolDefault(false),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -980,6 +987,11 @@ export interface Config {
       fadeOutSeconds: number;
       seedOnStartup: boolean;
     };
+    /** P11.T4 video edit plan knobs. `aiEnabled` is a hook for
+     * future AI-driven plan refinement; V1 default is `false`. */
+    editPlan: {
+      aiEnabled: boolean;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -1137,6 +1149,9 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         fadeInSeconds: raw.VIDEO_AUDIO_FADE_IN_SECONDS,
         fadeOutSeconds: raw.VIDEO_AUDIO_FADE_OUT_SECONDS,
         seedOnStartup: raw.AUDIO_LIBRARY_SEED_ON_STARTUP,
+      },
+      editPlan: {
+        aiEnabled: raw.VIDEO_EDIT_PLAN_AI_ENABLED,
       },
     },
     meta: { loadedDotenvFiles },

@@ -26,13 +26,19 @@ import type { Logger } from "./logger.js";
 import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
-import type { MediaRepository, MediaService, VideoService } from "./media/index.js";
+import type {
+  MediaRepository,
+  MediaService,
+  VideoEditPlanService,
+  VideoService,
+} from "./media/index.js";
 import { makeDedupRouter } from "./routes/dedup.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeJobsRouter } from "./routes/jobs.js";
 import { makeMediaRouter } from "./routes/media.js";
 import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
+import { makeVideoEditPlanRouter } from "./routes/videoEditPlan.js";
 import { makeVideoRouter } from "./routes/video.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
@@ -65,6 +71,10 @@ export interface CreateAppOptions {
   readonly dedupService: DedupService;
   /** Video API (P9.T8) — segments list / detail / user_decision PATCH / process. */
   readonly videoService: VideoService;
+  /** Video edit plan generator (P11.T4) — backs
+   * `POST /api/trips/:tripId/generate-edit-plan`. Pure planning;
+   * does NOT render or write any DB row. */
+  readonly videoEditPlanService: VideoEditPlanService;
   /**
    * AIProvider (P10.T1) — read at the Media router to gate
    * `POST /api/media/:id/ai-refine` (P10.T3). Defaults to
@@ -93,6 +103,7 @@ export function createApp(opts: CreateAppOptions): Express {
     jobService,
     dedupService,
     videoService,
+    videoEditPlanService,
     aiProvider,
     debugRoutes,
   } = opts;
@@ -146,6 +157,13 @@ export function createApp(opts: CreateAppOptions): Express {
   // order and threads the optional `force` flag into the segments
   // worker payload.
   app.use("/api", makeVideoRouter({ videoService }));
+
+  // Video edit plan generation (P11.T4). Mounted at /api so the
+  // route is `/api/trips/:tripId/generate-edit-plan`. Pure plan
+  // production — never renders, never writes any DB row. The
+  // future P11.T5 render endpoint consumes plan JSON the client
+  // gets back from this call.
+  app.use("/api", makeVideoEditPlanRouter({ videoEditPlanService }));
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file
