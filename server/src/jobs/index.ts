@@ -203,5 +203,31 @@ export {
   type VideoOptimizeHandlerDeps,
   type VideoOptimizeSettings,
 } from "./videoOptimizeWorker.js";
+// P11.T2 — audio processing toolkit (FFmpeg building blocks). NOT
+// a JobHandler — utilities consumed by future render / compose
+// workers (P11.T5 / P11.T8). Pure filter builders + bounded async
+// runners; refuses `targetDurationSec <= 0` to block runaway
+// `-stream_loop -1` encodes.
+export {
+  DEFAULT_AUDIO_LOUDNORM_I,
+  DEFAULT_AUDIO_LOUDNORM_LRA,
+  DEFAULT_AUDIO_LOUDNORM_TP,
+  DEFAULT_AUDIO_PROCESSOR_SETTINGS,
+  buildAfadeFilter,
+  buildAtrimFilter,
+  buildLoudnormFilter,
+  findDefaultAudioCandidates,
+  joinAfChain,
+  prepareBackgroundMusic,
+  replaceVideoAudio,
+  stripAudio,
+  trimAudio,
+  type AudioProcessorSettings,
+  type DefaultAudioCandidate,
+  type PrepareBackgroundMusicOptions,
+  type ReplaceVideoAudioOptions,
+  type StripAudioOptions,
+  type TrimAudioOptions,
+} from "./audioProcessor.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

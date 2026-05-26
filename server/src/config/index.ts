@@ -436,6 +436,29 @@ const schema = z
     VIDEO_OPTIMIZE_AUDIO_BITRATE_KBPS: intPositive(160),
     VIDEO_OPTIMIZE_TIMEOUT_MS: intPositive(600_000),
     VIDEO_OPTIMIZE_WORKER_VERSION: strDefault("1.0"),
+    // P11.T2 audio processor — reusable FFmpeg building blocks for
+    // future P11.T5 render / P11.T8 composition workers. NOT a
+    // JobHandler; settings are consumed by the toolkit functions
+    // (`stripAudio` / `prepareBackgroundMusic` / `replaceVideoAudio`
+    // etc.). Defaults follow the P11.T2 prompt:
+    //
+    //   * DEFAULT_AUDIO_LIBRARY_DIR — relative-or-absolute path
+    //     to the bundled default-music directory. Missing /
+    //     empty / non-readable → toolkit gracefully reports
+    //     "no candidates" so base features stay green
+    //     (CLAUDE.md §2.8 spirit). Bundled music files are NOT
+    //     required for V1; operators may add them later or wait
+    //     for P11.T3 user-uploaded audio.
+    //   * VIDEO_AUDIO_LOUDNORM_ENABLED — single-pass `loudnorm`
+    //     on by default. Two-pass measurement is a P11.T5 polish
+    //     (recorded as R-144 in progress.md).
+    //   * VIDEO_AUDIO_FADE_IN_SECONDS / VIDEO_AUDIO_FADE_OUT_SECONDS
+    //     — `afade=t=in` / `afade=t=out` defaults. 0 disables.
+    //     Capped at 30s upper to avoid degenerate envelopes.
+    DEFAULT_AUDIO_LIBRARY_DIR: strDefault("server/assets/audio/default"),
+    VIDEO_AUDIO_LOUDNORM_ENABLED: boolDefault(true),
+    VIDEO_AUDIO_FADE_IN_SECONDS: numNonNeg(1.5),
+    VIDEO_AUDIO_FADE_OUT_SECONDS: numNonNeg(2),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -717,6 +740,22 @@ const schema = z
         message: `VIDEO_OPTIMIZE_TARGET_HEIGHT (${cfg.VIDEO_OPTIMIZE_TARGET_HEIGHT}) must be ≥ 144; below that the optimized output isn't a video.`,
       });
     }
+    // P11.T2 audio processor guards. Both fade durations clamped
+    // to a sane [0, 30] range — 0 disables the fade, 30s is a
+    // generous upper bound (longer fades become noise floor rather
+    // than a perceived transition).
+    for (const [key, value] of [
+      ["VIDEO_AUDIO_FADE_IN_SECONDS", cfg.VIDEO_AUDIO_FADE_IN_SECONDS],
+      ["VIDEO_AUDIO_FADE_OUT_SECONDS", cfg.VIDEO_AUDIO_FADE_OUT_SECONDS],
+    ] as const) {
+      if (value > 30) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} (${value}) must be ≤ 30 seconds; longer fades become noise floor and likely indicate a mis-set env.`,
+        });
+      }
+    }
     // sharpen.flat (m1) and sharpen.jagged (m2) cap at 3 per sharp
     // docs; sigma should stay below 10 to keep the operation a sharpen
     // rather than a blur-detect.
@@ -922,6 +961,14 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P11.T2 audio-processor toolkit knobs (NOT a worker; reusable
+     * FFmpeg helpers consumed by future render / compose workers). */
+    audio: {
+      defaultLibraryDir: string;
+      loudnormEnabled: boolean;
+      fadeInSeconds: number;
+      fadeOutSeconds: number;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -1072,6 +1119,12 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         audioBitrateKbps: raw.VIDEO_OPTIMIZE_AUDIO_BITRATE_KBPS,
         timeoutMs: raw.VIDEO_OPTIMIZE_TIMEOUT_MS,
         workerVersion: raw.VIDEO_OPTIMIZE_WORKER_VERSION,
+      },
+      audio: {
+        defaultLibraryDir: raw.DEFAULT_AUDIO_LIBRARY_DIR,
+        loudnormEnabled: raw.VIDEO_AUDIO_LOUDNORM_ENABLED,
+        fadeInSeconds: raw.VIDEO_AUDIO_FADE_IN_SECONDS,
+        fadeOutSeconds: raw.VIDEO_AUDIO_FADE_OUT_SECONDS,
       },
     },
     meta: { loadedDotenvFiles },

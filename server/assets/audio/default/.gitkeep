@@ -1,0 +1,9 @@
+# Bundled default-audio directory (P11.T2 placeholder).
+#
+# Drop royalty-free / CC0 audio files here (.mp3 / .m4a / .aac / .wav
+# / .flac / .ogg / .opus) and `findDefaultAudioCandidates()` will
+# discover them. An empty directory is fine — the toolkit gracefully
+# returns no candidates and base features keep working (CLAUDE.md
+# §2.8 spirit). License / source metadata must be tracked separately
+# (see R-138 in docs/progress.md); the P11.T3 audio_library schema
+# will add per-row fields for this once it lands.

@@ -3747,3 +3747,154 @@ feat(server): video_optimize worker + POST /api/media/:id/optimize-video (P11.T1
 No audio policy, library, URL import, or composition (P11.T2~T9 stay LATER).
 No frontend changes (P11.T7).
 ```
+
+---
+
+## 2026-05-26 · P11.T2 音频处理基础能力（FFmpeg 工具链）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T2 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T3 ~ P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- 去原声（`-an`）
+- 音频截取（`atrim` + `asetpts=PTS-STARTPTS`）
+- 淡入淡出（`afade=t=in` / `afade=t=out`，clamp short-clip）
+- 单 pass loudnorm（EBU R128：I=-16 LUFS / TP=-1.5 dBTP / LRA=11）
+- 背景音乐循环 + 截断（`-stream_loop -1` + `-t <target>`，前置非有限值守卫）
+- 视频音轨替换（`-map 0:v -map 1:a -c:v copy -c:a aac -b:a 160k -shortest`，`musicPath=null` 等价 `stripAudio`）
+- 默认音乐库目录约定（`server/assets/audio/default/`，缺失优雅 fallback）
+
+**显式不做**（留给 P11.T3 ~ T9）：
+- audio_library SQLite schema / repository / API（P11.T3 / P11.T6）
+- URL 导入音频（P11.T6，含 SSRF 守卫）
+- 剪辑方案生成 / audioPolicy 绑定 / render orchestration（P11.T4 / P11.T5）
+- 多视频合成（P11.T8）
+- 前端音频选择 UI（P11.T7）
+- ducking / vocal preservation / 多轨混音 / AI 选音乐（明确提示词排除）
+
+### 修改 / 新增的文件
+
+**新增（3）**：
+- `server/src/jobs/audioProcessor.ts`：纯函数 4 个（`buildAtrimFilter` / `buildAfadeFilter` / `buildLoudnormFilter` / `joinAfChain`）+ async runner 4 个（`stripAudio` / `trimAudio` / `prepareBackgroundMusic` / `replaceVideoAudio`）+ 发现助手 1 个（`findDefaultAudioCandidates`）+ 配置类型 `AudioProcessorSettings` + `DEFAULT_AUDIO_PROCESSOR_SETTINGS`。NOT a JobHandler — 是工具链，未来 P11.T5/T8 worker 调用。
+- `server/src/scripts/audio-processor-smoke.ts`：14 个 case 纯函数 + 10 个 case ffmpeg + 8 个 case 无限循环守卫 + 1 个 case spawn 失败 = **34/34 PASS**。
+- `server/assets/audio/default/.gitkeep`：占位目录 + 约定说明（操作员可放 audio 文件，缺失时主流程不中断）。
+
+**修改（4）**：
+- `server/src/config/index.ts`：加 4 个 env (`DEFAULT_AUDIO_LIBRARY_DIR` / `VIDEO_AUDIO_LOUDNORM_ENABLED` / `VIDEO_AUDIO_FADE_IN_SECONDS` / `VIDEO_AUDIO_FADE_OUT_SECONDS`) + `Config.video.audio: {…}` slice + superRefine 守卫（两个 fade ≤ 30s 上限）。
+- `server/src/jobs/index.ts`：re-export 13 个公开符号（4 runner + 1 discovery + 3 常量 + 5 类型）。
+- `server/package.json`：加 `smoke:audio-processor` 脚本。
+- `.env.example`：加 P11.T2 段落注释 + 4 个默认值。
+
+**文档（2）**：`docs/tasks.md`（P11.T2 标 [x]） + `docs/progress.md`（本节）。
+
+**未触碰的领域**：
+- migration（无新 schema）
+- 任何 API route（service / route 层零改动）
+- 客户端代码（0 行）
+- `media_versions` / `processing_jobs` 写入
+- P11.T1 video_optimize worker
+- P9.T2~T7 既有 video pipeline
+- P10 AI / P8 enhance / P7 软删除 / 任何前期阶段产物
+
+### 关键设计决策
+
+1. **路径注入 hard-block**：所有 ffmpeg 调用走 `spawn("ffmpeg", [argv...])` 数组形式，**绝不**做 `${path}` 字符串拼接 → 系统级 shell 不参与；filter 字符串构造集中在纯函数里（可单测形状），由 `-af "<filter>"` 单 argv 传入。
+2. **无限循环 hard-block**：`prepareBackgroundMusic(target ≤ 0 | NaN | Infinity)` 在 spawn 前直接 throw。这是 `-stream_loop -1` 失去 `-t` 上限的唯一防护。smoke 显式验证 4 个非法值都被拒 + 输出文件不被产生。
+3. **音乐缺失 graceful**：`findDefaultAudioCandidates` 遇 ENOENT → 返回 `[]` 而不是抛错。配合 P11.T1 video_optimize 不依赖音乐，base feature 不会因为没人放音乐而挂掉（CLAUDE.md §2.8）。
+4. **mute 路径统一**：`replaceVideoAudio(musicPath=null)` 直接调 `stripAudio`，确保 mute 场景与去原声场景共享同一份 spawn / timeout / stderr 处理代码。
+5. **音质默认值**：EBU R128 单 pass loudnorm 默认值与公开行业标准对齐；fade 上限 30s 守卫避免 env 误配置导致整段音乐被压成 fade 噪声。
+6. **toolkit vs worker 分离**：本模块只暴露纯函数 + async runner，不写 `media_versions` / 不入队 / 不改 `processing_jobs`。未来 P11.T5 render worker / P11.T8 compose worker 才会调用这些 building block，并负责 schema 副作用 —— 单一职责清晰。
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` (`tsc -p tsconfig.json`) — 干净
+- `cd server && npm run smoke:audio-processor` — **34/34 PASS**
+- 邻近回归 3 个 smoke 全绿：
+  - `smoke:video-optimize-worker` — 52/52 PASS（P11.T1 未被影响）
+  - `smoke:p10-acceptance` — 37/37 PASS（P10 AI 未被影响）
+  - `smoke:p9-acceptance` — 36/36 PASS（P9 视频流水线未被影响）
+- `cd client && npm run lint` — 干净
+- `cd client && npm run typecheck` (`tsc -b`) — 干净
+- `cd client && npm run build` (`vite + tsc`) — 干净（61 modules / gzip 72.10 kB JS + 4.27 kB CSS / 无客户端 bundle 改动）
+
+### Smoke 测试覆盖（34 PASS / 0 FAIL）
+
+| 类型 | 覆盖项 | 数量 |
+| --- | --- | --- |
+| Pure: buildAtrimFilter | duration only / start+end / all 3 axes / 拒空 / 拒负 | 5 |
+| Pure: buildAfadeFilter | in+out / in-only / 双 disabled→null / clamp short-clip / 拒 total≤0 | 5 |
+| Pure: buildLoudnormFilter | 默认形 / 拒 NaN | 2 |
+| Pure: joinAfChain | join 非 null / 全 null→null | 2 |
+| Pure: findDefaultAudioCandidates | 缺失目录→[] / 空目录→[] / 混合过滤+排序 | 3 |
+| Guard: prepareBackgroundMusic 无限循环防护 | target=0 / -1 / NaN / Infinity 全部 throw + 输出文件未生成 | 8 |
+| ffmpeg: stripAudio | input fixture 有音 → 输出无音轨 | 2 |
+| ffmpeg: trimAudio | 3s → 1s（±0.2s 容差） | 1 |
+| ffmpeg: prepareBackgroundMusic | 2s loop→4s / 3s trim→1s / 全 filter disabled | 3 |
+| ffmpeg: replaceVideoAudio | 视频+新音 / musicPath=null 等价 stripAudio | 2 |
+| ffmpeg: 缺失 binary | 错误形 `ffmpeg spawn failed (stripAudio)` | 1 |
+
+### 新增风险
+
+新增 1 条风险（R-144），衔接 R-138 ~ R-143 之后。
+
+| ID | 风险 | 控制措施 |
+| --- | --- | --- |
+| **R-144** | 单 pass `loudnorm` 在 dB 域不稳定 —— 同一文件多次跑可能产生轻微 LUFS 偏差（典型 ±1 LUFS），混音感观一致性弱于双 pass measure-then-render 流程。 | (1) V1 接受单 pass；目标 `I=-16 LUFS` 对 web 播放足够透明，偏差不会造成可闻 clipping；(2) **未来 polish**：P11.T5 render worker 落地时升级为双 pass —— 第一遍 dry-run 测量 `measured_I / measured_LRA / measured_TP / measured_thresh`，第二遍带 `measured_*` 参数再编码。代价是每次渲染多一次全文件解码。当前 toolkit 接口稳定，升级只需在 `prepareBackgroundMusic` 内部加 `if (twoPassEnabled)` 分支，不破坏现有调用者。 |
+
+### 当前已知限制
+
+1. **默认音乐库为空**：`server/assets/audio/default/` 仅含 `.gitkeep`。运行 `findDefaultAudioCandidates` 返回 `[]`，业务流程不会因此中断；待 P11.T3 / 运营侧补充音频。版权 / 许可证管理由 R-138 跟进（P11.T3 schema 落地时再加 metadata 字段）。
+2. **loudnorm 仅单 pass**：见 R-144。
+3. **长视频音频处理仍需 timeout / concurrency 保护**：本节 runner 已强制 `timeoutMs` 兜底 + SIGKILL；但音频任务尚未接入 JobQueue 的 video 通道（P11.T5 render worker 落地时才会注册到 video channel 共享 `VIDEO_WORKER_CONCURRENCY=1` 预算）。
+4. **toolkit 暂无入口**：没有 API、没有 route、没有 frontend；只能从未来 worker / smoke 调用。这是按提示词刻意设计的（"不要新增正式 API，除非 smoke test 必须最小调用"）；未来 P11.T5 / P11.T8 worker 将作为消费者。
+
+R-138 ~ R-143 全部保留：
+- **R-138 音频版权风险** — 待 P11.T3 / P11.T6 落实
+- **R-139 URL 导入音频 SSRF 风险** — 待 P11.T6 落实
+- **R-140 长视频合成耗时风险** — 待 P11.T8 落实
+- **R-141 ffmpeg 音频 filter 兼容性风险** — **部分缓解**：P11.T2 已确认 `afade` / `aloop`（通过 `-stream_loop`）/ `atrim` / `loudnorm` / `-an` 在本地 ffmpeg 4.4+ 工作正常；smoke 锁定了 argv 形状，可用作 CI 兼容性 fixture
+- **R-142 多视频合成规格不一致风险** — 待 P11.T8 落实
+- **R-143 长视频 optimize 堵塞 video 通道** — P11.T1 已记，控制措施同前
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1 已完成（commit `73adae0`，video_optimize）
+- ✅ T2 已完成（本轮，audio toolkit）
+- ⬜ T3 ~ T9 仍为 LATER
+
+下一步任务候选（按 docs/tasks.md P11 顺序）：
+- **P11.T3 音频库 Audio Library schema + 系统默认音频 seed** — 落 `audio_library` migration（design.md §8.5.1 给出字段），把 `assets/audio/default/` 下的文件（若有）seed 进表
+- **P11.T4 剪辑方案生成** — 基于 `video_segments` + `audioPolicy` 出 plan
+- **P11.T5 视频渲染 API** —— audio toolkit 的第一个真正消费者
+
+由产品决策选定下一项再执行。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): audio processing toolkit (strip / trim / fade / loudnorm / loop / replace) (P11.T2)
+
+- jobs/audioProcessor.ts: pure filter builders + bounded async runners
+  - buildAtrimFilter / buildAfadeFilter / buildLoudnormFilter / joinAfChain
+  - stripAudio / trimAudio / prepareBackgroundMusic / replaceVideoAudio
+  - findDefaultAudioCandidates (graceful ENOENT → []; CLAUDE.md §2.8)
+  - prepareBackgroundMusic refuses targetDurationSec ≤ 0 / NaN / Infinity
+    BEFORE spawn — the only guard against runaway -stream_loop -1 encodes
+  - all ffmpeg invocations via spawn(cmd, [argv...]) — no shell, no
+    path-injection surface
+- config: 4 new VIDEO_AUDIO_* / DEFAULT_AUDIO_LIBRARY_DIR envs + fade ≤ 30s
+- assets: server/assets/audio/default/.gitkeep with conventions doc
+- smoke: smoke:audio-processor — 34/34 PASS (pure 16 + guards 8 + ffmpeg 10)
+- new risk R-144 (single-pass loudnorm vs two-pass) recorded
+
+NOT a worker (no JobQueue / media_versions side-effects). No new API,
+no migration, no frontend. P11.T3~T9 stay LATER.
+```
