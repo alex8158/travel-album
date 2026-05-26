@@ -30,6 +30,7 @@ import type {
   MediaRepository,
   MediaService,
   VideoEditPlanService,
+  VideoRenderService,
   VideoService,
 } from "./media/index.js";
 import { makeDedupRouter } from "./routes/dedup.js";
@@ -39,6 +40,7 @@ import { makeMediaRouter } from "./routes/media.js";
 import { makeStorageRouter } from "./routes/storage.js";
 import { makeTripsRouter } from "./routes/trips.js";
 import { makeVideoEditPlanRouter } from "./routes/videoEditPlan.js";
+import { makeVideoRenderRouter } from "./routes/videoRender.js";
 import { makeVideoRouter } from "./routes/video.js";
 import type { Capabilities } from "./runtime/capabilities.js";
 import type { LocalStorageProvider } from "./storage/index.js";
@@ -75,6 +77,11 @@ export interface CreateAppOptions {
    * `POST /api/trips/:tripId/generate-edit-plan`. Pure planning;
    * does NOT render or write any DB row. */
   readonly videoEditPlanService: VideoEditPlanService;
+  /** Video render service (P11.T5) — backs
+   * `POST /api/trips/:tripId/render`. Enqueues a `video_render`
+   * job; the actual ffmpeg concat / audio mux runs on the video
+   * channel executor. */
+  readonly videoRenderService: VideoRenderService;
   /**
    * AIProvider (P10.T1) — read at the Media router to gate
    * `POST /api/media/:id/ai-refine` (P10.T3). Defaults to
@@ -104,6 +111,7 @@ export function createApp(opts: CreateAppOptions): Express {
     dedupService,
     videoService,
     videoEditPlanService,
+    videoRenderService,
     aiProvider,
     debugRoutes,
   } = opts;
@@ -164,6 +172,15 @@ export function createApp(opts: CreateAppOptions): Express {
   // future P11.T5 render endpoint consumes plan JSON the client
   // gets back from this call.
   app.use("/api", makeVideoEditPlanRouter({ videoEditPlanService }));
+
+  // Video render (P11.T5). Mounted at /api so the route is
+  // `/api/trips/:tripId/render`. Enqueues a video_render job
+  // immediately; the actual ffmpeg encode runs on the video
+  // channel executor (concurrency=1, shared with metadata /
+  // cover / proxy / keyframes / segments / segment_quality /
+  // optimize). HTTP returns the jobId so the client can poll
+  // `GET /api/jobs/:id`.
+  app.use("/api", makeVideoRenderRouter({ videoRenderService }));
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file

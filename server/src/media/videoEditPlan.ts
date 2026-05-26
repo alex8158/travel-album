@@ -179,6 +179,12 @@ export interface EditPlanWarning {
 
 export interface VideoEditPlan {
   readonly version: typeof EDIT_PLAN_VERSION;
+  /** Optional persistence id. Populated by
+   * `VideoEditPlanService.generatePlan` after the plan is written
+   * to `edit_plans` (P11.T5). Pure `buildEditPlan` outputs OMIT
+   * this field; tests / callers using the rule engine directly
+   * keep getting the same shape they did pre-P11.T5. */
+  readonly id?: string;
   readonly tripId: string;
   readonly style: EditPlanStyle;
   readonly targetDurationSec: number;

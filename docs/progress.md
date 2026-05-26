@@ -4331,3 +4331,253 @@ feat(server): edit plan rule engine + POST /api/trips/:tripId/generate-edit-plan
 No render, no ffmpeg, no processing_jobs / media_versions writes,
 no real AI, no frontend. P11.T5~T9 stay LATER.
 ```
+
+---
+
+## 2026-05-26 · P11.T5 Render API + video_render worker（edit plan → ffmpeg → media_versions(edited)）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T5 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T6 ~ P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- 2 个 migration：`015_create_edit_plans` + `016_extend_media_versions_edited`
+- `EditPlansRepository`（plan 持久化）
+- `VideoRenderService.renderTrip(tripId, body)`（HTTP 入口包装）
+- `POST /api/trips/:tripId/render` route
+- `makeVideoRenderHandler`（video-channel worker；ffmpeg 4 stage pipeline）
+- `video_render` job_type 注册到现有 JobQueue video channel（与 metadata/cover/proxy/keyframes/segments/segment_quality/optimize 共享 `VIDEO_WORKER_CONCURRENCY=1`）
+- 配套 P11.T4 `videoEditPlanService` 微调：永远持久化 plan（让 render 路径有稳定输入源）
+- audioPolicy 三 mode 全部落地（keep_original / mute / replace_with_library）
+- 30/30 PASS smoke 端到端覆盖
+
+**显式不做**（留给 P11.T6 ~ T9）：
+- 复杂转场（fade / crossfade）— V1 全 concat
+- 真实 AI 调用
+- 复杂前端 / 剪辑预览 UI（P11.T7）
+- 多视频合成 / multiple edits per trip 历史（P11.T8）
+- progress 进度推送（无 SSE / WebSocket，HTTP 立即返回 jobId，用户用 `GET /api/jobs/:id` 轮询）
+
+### 修改 / 新增的文件
+
+**新增（7）**：
+- `server/migrations/015_create_edit_plans.sql` — STRICT 表 6 列 + 3 CHECK + 1 索引 + FK to trips ON DELETE CASCADE
+- `server/migrations/016_extend_media_versions_edited.sql` — 12 步 STRICT 表重建给 enum 加 `'edited'`
+- `server/src/media/editPlansRepository.ts` — 4 prepared statement，插入 + findById + findLatestByTripId + countByTripId
+- `server/src/media/videoRenderService.ts` — `VideoRenderService` + 4 个公开类型 + `VIDEO_RENDER_JOB_TYPE` 常量
+- `server/src/media/videoRenderSchemas.ts` — zod `.strict()` body schema
+- `server/src/routes/videoRender.ts` — 单 endpoint route
+- `server/src/jobs/videoRenderWorker.ts` — 4-stage ffmpeg pipeline worker
+- `server/src/scripts/video-render-worker-smoke.ts` — 30 个 case smoke
+
+**修改（10）**：
+- `server/src/media/videoEditPlan.ts` — `VideoEditPlan.id?: string` 可选字段（向后兼容）
+- `server/src/media/videoEditPlanService.ts` — 在 refiner 之后 `editPlansRepo.insert(plan)` 并返回带 id 的 plan
+- `server/src/media/index.ts` — re-export 7 个新符号
+- `server/src/jobs/index.ts` — re-export 3 个 worker 符号
+- `server/src/errors/errorCodes.ts` — 加 `EDIT_PLAN_NOT_FOUND`
+- `server/src/app.ts` — `CreateAppOptions.videoRenderService` + mount route
+- `server/src/index.ts` — 构造 `EditPlansRepository` + `VideoRenderService` + 注册 worker
+- `server/src/config/index.ts` — `VIDEO_RENDER_*` 6 个 env + `config.video.render.*` slice + libx264 preset/CRF/fps 守卫
+- `server/package.json` — `smoke:video-render-worker` 脚本
+- `.env.example` — P11.T5 段落 + 默认值
+
+**文档（2）**：`docs/tasks.md`（P11.T5 标 [x]） + `docs/progress.md`（本节）
+
+**未触碰**：客户端代码（0 行）/ media_items / processing_jobs schema / video_segments / 任何 P11.T1~T4 业务路径（除 plan 持久化 + 类型扩展两处明确改动）
+
+### Render 链路图
+
+```
+HTTP layer:
+  POST /api/trips/:tripId/render
+       body { planId?, mode?, overwrite? }
+    │
+    ▼
+Service layer (VideoRenderService.renderTrip):
+  1. zod .strict() validate body                       → 400 ValidationError
+  2. tripService.getTripById(tripId)                   → 404 NotFoundError
+  3. editPlansRepo.findById(planId)
+     OR editPlansRepo.findLatestByTripId(tripId)       → 404 EDIT_PLAN_NOT_FOUND
+  4. JSON.parse(plan_json) + clips.length > 0          → 400 BadRequestError
+  5. mediaRepo.findById(clips[0].mediaId) + type='video' → 400
+  6. Idempotent enqueue ('created'/'skipped'/'reset')
+     OR overwrite=true → 'forced' (fresh jobId)
+  7. Return { tripId, planId, mediaId, jobId, mode, outcome }
+    │ (HTTP 200 immediately — does NOT wait for render)
+    ▼
+JobQueue (video channel, concurrency=1):
+  pending → running → success | failed
+    │
+    ▼
+Worker (makeVideoRenderHandler):
+  Stage 1: Resolve plan + validate every clip's source media
+  Stage 2: For each clip, ffmpeg trim+scale+pad+re-encode → tmp/clip_NN.mp4
+           (libx264 CRF=23 preset=medium yuv420p + aac 160kbps)
+  Stage 3: ffmpeg -f concat -safe 0 -c copy → tmp/concat.mp4
+  Stage 4: Apply audioPolicy:
+             keep_original → ffmpeg -c copy
+             mute → P11.T2 stripAudio()
+             replace_with_library → P11.T2 prepareBackgroundMusic + replaceVideoAudio
+  Stage 5: ffprobe verify → storage.putDerived(derived/{firstMediaId}/edited.mp4, overwrite=true)
+           → UPSERT media_versions(version_type='edited')
+  finally: rm -rf tmpRoot
+```
+
+### 关键设计决策
+
+1. **`edited` row 挂到 `clips[0].mediaId`**：edited 视频是组合产物，没有"单一 source media"。两种选择：(a) 挂到 clips[0]，(b) 新增 `edit_renders` 表。V1 选 (a) 因为：避免新 schema；(media_id, 'edited') UNIQUE 给"最新输出"语义；FK CASCADE 跟随 first-source 删除符合"输入消失则输出无效"。**已知局限**：同一 first-source 只能有一行 edited，多渲染版本无法并存。**R-147** 记录，P11.T8 升级时引入 `video_compositions` 表多版本保留。
+2. **输出路径 `derived/{firstMediaId}/edited.mp4`**：复用现有 storage helper（design.md §5.2 也预留了 `outputs/edits/`，但 V1 走 derived 路径与 P11.T1 `video_optimized.mp4` 同 dir 风格；新 helper 留到 P11.T8 真正需要时再加）。
+3. **plan 永远持久化**：`VideoEditPlanService.generatePlan` 在 refiner 之后总是 `editPlansRepo.insert`，让 render 有稳定输入源；不持久化模式（旧 P11.T4 行为）不再支持。`VideoEditPlan.id` 加可选字段 `id?: string` 保持向后兼容（纯 `buildEditPlan` 输出仍无 id，service 层注入）。
+4. **per-clip 强归一化（Stage 2）**：每个 clip 都重新编码到统一规格（resolution × fps × yuv420p × CRF），让 Stage 3 concat demuxer `-c copy` 一定接受。代价：所有 clips 都至少经过一次再编码（比理想"keyframe-aligned + 跳过 re-encode"慢，但 robust 且无 codec-mismatch 错误）。
+5. **idempotency 4 outcome**：created / skipped / reset / forced —— 与 P11.T1/T3 enhance/aiRefine/optimize/process-segments 同套语义。`overwrite=true` 插入 fresh 行（mirror P9.T8 segments force=true）。
+6. **不退化 audioPolicy**：worker 拿到 `replace_with_library` 但 audio 缺失/inactive 时**直接 fail**（service 层已在 enqueue 时 graceful 降级为 `keep_original`；到 worker 阶段还出现这种状态意味着 plan 期与 render 期之间 audio_library 被人工 disable 了，worker 拒绝静默改语义）。
+7. **`VIDEO_RENDER_JOB_TYPE` 常量位置**：定义在 `media/videoRenderService.ts`，worker 内联同名字符串。这是为了避免 `jobs/` workers value-import `media/index.js` 触发 ESM TDZ 循环初始化（与 `videoService.ts` 在 P9.T8 头部注释的约束一致）。smoke 显式验证 worker 串和 service 串都映射到同一个 DB column。
+8. **mode='preview' vs 'final' 仅 informational**：V1 两种 mode 在 ffmpeg 参数层无差异；mode 字段写入 `params.mode` 让未来 P11.T7 UI / P11.T5+ polish 可以基于此做差异化（如 preview=480p + faster preset）。**R-148** 记录此 V1 simplification。
+9. **不接入 SSE / WebSocket / 进度推送**：HTTP 立即返回 jobId；用户用 `GET /api/jobs/:id` 轮询。stage-边界的结构化 INFO 日志足够运维侧 tail-of-logs 观察 long-running render。**R-149** 记录此 V1 simplification。
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` — tsc 干净
+- `cd server && npm run smoke:video-render-worker` — **30/30 PASS**
+- 邻近回归 6 个 smoke 全绿：
+  - `smoke:video-edit-plan` — 33/33 PASS（P11.T4 plan 持久化 + render service 整合不破坏）
+  - `smoke:audio-library-seed` — 36/36 PASS（P11.T3 未影响）
+  - `smoke:audio-processor` — 34/34 PASS（P11.T2 未影响）
+  - `smoke:video-optimize-worker` — 52/52 PASS（P11.T1 未影响）
+  - `smoke:p10-acceptance` — 37/37 PASS
+  - `smoke:p9-acceptance` — 36/36 PASS
+- `cd client && npm run lint` / `typecheck` / `build` — 干净（无前端改动；bundle 还是 gzip 72.10 kB JS + 4.27 kB CSS）
+
+### Smoke 覆盖（30 PASS / 0 FAIL）
+
+| 区段 | case 数 | 关键断言 |
+| --- | --- | --- |
+| Service-layer（无 ffmpeg） | 9 | trip 404 / no-plans EDIT_PLAN_NOT_FOUND / planId 404 / 0-clip 400 / body 400 / happy 'created' / 'skipped' pending / 'reset' after success / 'forced' overwrite + new jobId |
+| Worker happy path | 7 | claim → success / edited.mp4 落盘 / H.264+AAC ~4s / 720p+16:9 → 1280×720 / media_versions(edited) row 字段齐全 / params 含 planId+clipCount+sourceMediaIds+audioPolicy+transcode knobs / 源视频字节级不变 |
+| Worker idempotency | 3 | reset 同 jobId / re-tick 成功 / UPSERT 单行无重复 |
+| audioPolicy 三 mode | 4 | mute 输出无 audio / replace_with_library 输出 AAC 音轨 + 720p |
+| Worker failure paths | 5 | 缺失 bg-audio failed + error message 含 'backgroundAudio not found' / 源 media 软删 between enqueue+dequeue failed + 'missing/soft-deleted' message / 无 media_versions row 泄漏 |
+| Integrity | 2 | foreign_key_check 0 行 + integrity_check 'ok' |
+
+### 示例 API 调用
+
+```bash
+# 1. 生成 plan（P11.T4，现在永远持久化）
+curl -X POST http://localhost:3000/api/trips/$TRIP_ID/generate-edit-plan \
+  -H 'content-type: application/json' \
+  -d '{"style":"short","backgroundAudioId":"audio-xyz"}'
+# → { id: "plan-uuid", version: "1.0", clips: [...], audioPolicy: {...}, ... }
+
+# 2. 渲染（P11.T5）— 立即返回 jobId
+curl -X POST http://localhost:3000/api/trips/$TRIP_ID/render \
+  -H 'content-type: application/json' \
+  -d '{"planId":"plan-uuid","mode":"final"}'
+# → { tripId, planId, mediaId, jobId, mode:"final", outcome:"created" }
+
+# 3. 轮询 job 状态
+curl http://localhost:3000/api/jobs/$JOB_ID
+# 等到 status: "success" 后，新 edited 行通过 GET /api/media/:firstMediaId/versions 可见
+```
+
+### audioPolicy 支持项（worker 落地的）
+
+| mode | removeOriginalAudio | bg audio | ffmpeg pipeline |
+| --- | --- | --- | --- |
+| `keep_original` | false | n/a | per-clip aac → concat → `-c copy` passthrough |
+| `mute` | true | n/a | per-clip aac → concat → P11.T2 `stripAudio` → final.mp4 |
+| `replace_with_library` | true | required + active | per-clip aac → concat → P11.T2 `prepareBackgroundMusic(target=audioPolicy.targetDurationSec)` → P11.T2 `replaceVideoAudio` → final.mp4 |
+
+复用 P11.T2 toolkit 的部分：
+- `prepareBackgroundMusic`（loudnorm + afade in/out + loop / trim）
+- `replaceVideoAudio`（mux 视频 + 新音轨）
+- `stripAudio`（remove audio track）
+
+均 spawn-args 形式调用，无 shell 字符串拼接。
+
+### 新增风险
+
+新增 3 条风险（R-147 / R-148 / R-149），衔接 R-138 ~ R-146 之后。
+
+| ID | 风险 | 控制措施 |
+| --- | --- | --- |
+| **R-147** | 一个 trip / 一个 first-source media 只能保留一行 edited（`(media_id, 'edited')` UNIQUE 约束 + UPSERT 语义）。用户用同一 first-source 渲染多个不同 plan（不同 audioPolicy / 不同 clip 选择 / 不同 target 时长）时，每次新 render 覆盖前一次 edited 行 + 文件。无法保留 edit 历史 / 多版本并存。 | (1) V1 接受：plan 本身是 versioned（edit_plans 表保留所有历史 plan），用户可通过 planId 重放任意旧 plan 看到结果（重新渲染一次）。(2) **未来 polish（P11.T8）**：引入 `video_compositions` 表显式保留多 render 输出，每行有独立 storage 路径 + 独立 media_versions row（version_type 可能改为 `final_composition`）。当前 `derived/{firstMediaId}/edited.mp4` 文件位置在 P11.T8 时迁移到 `outputs/edits/{renderId}.mp4`（design.md §5.2 预留路径）。(3) 操作员变通：用 P9.T8 `replaceAllForMedia` 那种"force=true"语义已经在 P11.T5 service 里以 `overwrite: true` 暴露，但语义不同（force 是"新 jobId"而非"新 media_versions row"，UNIQUE 仍生效）。 |
+| **R-148** | `mode='preview'` vs `'final'` 在 V1 worker 层无实际差异。两个 mode 走同样的 ffmpeg 参数（CRF=23 / preset=medium / fps=30）。preview 应该更快 + 更小但 V1 没区分。 | (1) V1 接受：mode 字段写入 params.mode 让审计追溯；HTTP / Service 层尊重并返回；只是 worker 没读。(2) **未来 polish**：worker 读 mode 后 preview 用 `crf=28 + preset=veryfast + 480p` 走"草稿"快渲染路径（约 1/4 时间），final 走原默认。需要 schema 上 audioPolicy.targetDurationSec 等字段保持兼容，但 preview 输出文件名建议加后缀（`edited_preview.mp4`）+ 用不同 `version_type='edited_preview'` enum value（migration 017）。本轮接受 simplification。 |
+| **R-149** | 长视频 render 任务可能跑数分钟到十几分钟（4 stage × multiple clips），HTTP 立即返回的 jobId 让用户必须轮询 `GET /api/jobs/:id`。没有 SSE / WebSocket 进度推送 / 没有"render 完成"事件 / 没有阶段性 progress 字段写入 jobs 表。一个 long-running render 期间 video 通道被阻塞（concurrency=1），其他 video 任务（如新视频的 metadata/cover）排队等。 | (1) V1 接受：与 P11.T1 video_optimize 同款限制（R-143 disposition），运维侧可调 `VIDEO_WORKER_CONCURRENCY` 或 preset 加速；(2) worker 在每个 stage 边界打结构化 INFO 日志，运维 tail-of-logs 可观察；(3) **未来 polish**：(a) 加 jobRepo.updateProgress(jobId, percent) + worker 在 stage 边界写 0/20/60/80/95/100；(b) `GET /api/jobs/:id` 响应已含 progress 字段（schema 既有，只是没人写）；(c) SSE 流送 progress 到前端是 P11.T7 frontend 落地时再决定；(d) 长视频可以预先 generate-edit-plan 时把 plan 截短 / 引入"快速 preview render"路径（R-148 升级一并解决）。 |
+
+R-138 ~ R-146 全部保留（未消化）：
+- **R-138** 音频版权风险 — 待 P11.T6 / 真实采购
+- **R-139** URL 导入 SSRF — 待 P11.T6
+- **R-140** 长视频合成耗时 — 待 P11.T8（与本节 R-149 互相关联）
+- **R-141** ffmpeg 音频 filter 兼容性 — P11.T2 部分缓解，P11.T5 在 mute / replace_with_library 路径上进一步验证
+- **R-142** 多视频合成规格不一致 — 待 P11.T8
+- **R-143** 长视频 optimize 堵塞 video 通道 — 与 R-149 同因
+- **R-144** 单 pass loudnorm dB 偏差 — 待 P11.T5+ render polish
+- **R-145** deactivate missing audio — 待 P11.T6 admin path
+- **R-146** rule engine V1 无 highlight detection — 待 P11.T7 / AI refiner
+
+### 当前已知限制
+
+1. 单 first-source 只有一行 edited（R-147）
+2. preview / final mode 无差异（R-148）
+3. 无进度推送 / 长任务期间 video 通道堵塞（R-149）
+4. 不做复杂转场（kind='none' 才被 worker 消费；fade/crossfade 留待未来）
+5. 不做多视频合成（P11.T8）
+6. 不做用户上传 / URL 导入音频 → 渲染时使用（P11.T6 落地后才能在 plan 里用 user 上传的 audio）
+7. 无前端预览 / 调整 / 重排（P11.T7）
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1 已完成（commit `73adae0`，video_optimize）
+- ✅ T2 已完成（commit `99f7be0`，audio toolkit）
+- ✅ T3 已完成（commit `e90eead`，audio_library schema + seed runner）
+- ✅ T4 已完成（commit `f0af928`，edit plan rule engine）
+- ✅ T5 已完成（本轮，render API + worker）
+- ⬜ T6 ~ T9 仍为 LATER
+
+下一步候选（按 docs/tasks.md P11 顺序）：
+- **P11.T6 音频库 API** — `POST /api/audio-library/upload` / `/import-url` / `DELETE /api/audio-library/:id` + 配套 SSRF 守卫（R-139）+ 版权 metadata 字段使用（R-138 收口）
+- **P11.T7 前端剪辑预览** — 现在 backend 已完整（generate-edit-plan + render），前端可以做 plan preview + audio 选择 + 调整 + 渲染按钮
+- **P11.T8 多视频合成** — 引入 `video_compositions` 表（R-147 / R-140 / R-142 收口）
+
+由产品决策选定下一项再执行。
+
+### 是否可以进入 P11.T6
+
+可以。P11.T5 与 P11.T6 无代码依赖（T5 已经把 audio_library 当输入读了；T6 只是给 user-facing 上传 / 删除入口）。R-138 + R-139 在 T6 落地时才需要兜底。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): video render API + worker — POST /api/trips/:tripId/render (P11.T5)
+
+- migration 015 (edit_plans STRICT table) + 016 (media_versions enum + 'edited')
+- repo: EditPlansRepository (insert / findById / findLatestByTripId)
+- service: VideoRenderService.renderTrip (404 / 400 / created / skipped / reset / forced)
+- worker: makeVideoRenderHandler — 4-stage ffmpeg pipeline
+  - Stage 2: per-clip normalisation (scale+pad+re-encode H.264+AAC)
+  - Stage 3: concat demuxer -c copy
+  - Stage 4: audioPolicy (keep_original / mute / replace_with_library)
+  - writes derived/{firstClipMediaId}/edited.mp4 + UPSERT media_versions(edited)
+- error code: EDIT_PLAN_NOT_FOUND (404)
+- P11.T4 service now ALWAYS persists generated plans into edit_plans
+- VideoEditPlan.id? optional field (backward-compatible)
+- config: VIDEO_RENDER_FPS / CRF / PRESET / AUDIO_BITRATE_KBPS / TIMEOUT_MS /
+  WORKER_VERSION + libx264 preset/CRF/fps guards
+- smoke: smoke:video-render-worker — 30/30 PASS (real ffmpeg + audioPolicy
+  three-mode + idempotency + failure paths + integrity)
+- new risks R-147 (one edited row per first-source) / R-148 (preview vs
+  final no-op in V1) / R-149 (no progress push)
+- ALL original source bytes byte-for-byte unchanged (smoke verified)
+- ALL P11.T1~T4 / P10 / P9 / P7 paths regress-clean
+
+No complex transitions, no real AI, no multi-trip composition (P11.T8),
+no frontend (P11.T7). P11.T6~T9 stay LATER.
+```

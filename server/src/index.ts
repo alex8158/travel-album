@@ -41,6 +41,7 @@ import {
   makeVideoMetadataHandler,
   makeVideoOptimizeHandler,
   makeVideoProxyHandler,
+  makeVideoRenderHandler,
   makeVideoSegmentQualityHandler,
   makeVideoSegmentsHandler,
   type JobHandler,
@@ -54,11 +55,14 @@ import {
 } from "./quality/index.js";
 import {
   AudioLibraryRepository,
+  EditPlansRepository,
   MediaAnalysisRepository,
   MediaRepository,
   MediaService,
   MediaVersionsRepository,
+  VIDEO_RENDER_JOB_TYPE,
   VideoEditPlanService,
+  VideoRenderService,
   VideoSegmentsRepository,
   VideoService,
 } from "./media/index.js";
@@ -273,20 +277,36 @@ async function main(): Promise<void> {
   // P11.T3 — audio library repo (used by P11.T4 plan generator for
   // background-audio lookups, and later by P11.T6 admin API).
   const audioLibraryRepo = new AudioLibraryRepository(dbHandle.db);
+  // P11.T5 — edit plans persistence repo. Used by the P11.T4
+  // service to write plans on generation, and by both the P11.T5
+  // render service and worker to read them on enqueue / dequeue.
+  const editPlansRepo = new EditPlansRepository(dbHandle.db);
   // P11.T4 — video edit plan generator service. Reads media + audio
-  // library; never renders. AI refinement is gated by
-  // `config.video.editPlan.aiEnabled` and defaults to the noop
-  // refiner (V1 default keeps AI off — CLAUDE.md §2.8).
+  // library; persists plans via editPlansRepo. Never renders.
+  // AI refinement is gated by `config.video.editPlan.aiEnabled`
+  // and defaults to the noop refiner (V1 default keeps AI off —
+  // CLAUDE.md §2.8).
   const videoEditPlanService = new VideoEditPlanService({
     tripService,
     mediaRepo,
     audioLibraryRepo,
+    editPlansRepo,
     audioDefaults: {
       loudnormEnabled: config.video.audio.loudnormEnabled,
       fadeInSeconds: config.video.audio.fadeInSeconds,
       fadeOutSeconds: config.video.audio.fadeOutSeconds,
     },
     aiEnabled: config.video.editPlan.aiEnabled,
+    logger,
+  });
+  // P11.T5 — render service. Reads plan from editPlansRepo and
+  // enqueues a `video_render` job; the worker (registered below)
+  // does the ffmpeg work on the video channel.
+  const videoRenderService = new VideoRenderService({
+    tripService,
+    mediaRepo,
+    editPlansRepo,
+    jobRepo,
     logger,
   });
 
@@ -629,6 +649,41 @@ async function main(): Promise<void> {
       logger,
     }),
   );
+  // P11.T5 — `video_render` worker (edit plan → ffmpeg trim/concat
+  // + audioPolicy → media_versions(version_type='edited')). Same
+  // video-channel budget; the heaviest task in the whole pipeline
+  // (per-clip re-encode + concat + optional audio remux).
+  videoHandlers.set(
+    VIDEO_RENDER_JOB_TYPE,
+    makeVideoRenderHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      editPlansRepo,
+      audioLibraryRepo,
+      audioProcessor: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        timeoutMs: config.video.render.timeoutMs,
+        loudnormI: -16,
+        loudnormTP: -1.5,
+        loudnormLRA: 11,
+        fadeInSeconds: config.video.audio.fadeInSeconds,
+        fadeOutSeconds: config.video.audio.fadeOutSeconds,
+        loudnormEnabled: config.video.audio.loudnormEnabled,
+      },
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
+        timeoutMs: config.video.render.timeoutMs,
+        fps: config.video.render.fps,
+        crf: config.video.render.crf,
+        preset: config.video.render.preset,
+        audioBitrateKbps: config.video.render.audioBitrateKbps,
+        workerVersion: config.video.render.workerVersion,
+      },
+      logger,
+    }),
+  );
   const channels: JobQueueChannelConfig[] = [
     { name: "image", concurrency: config.workers.imageConcurrency, handlers: imageHandlers },
     { name: "video", concurrency: config.workers.videoConcurrency, handlers: videoHandlers },
@@ -682,6 +737,7 @@ async function main(): Promise<void> {
     dedupService,
     videoService,
     videoEditPlanService,
+    videoRenderService,
     aiProvider,
     debugRoutes: config.nodeEnv !== "production",
   });

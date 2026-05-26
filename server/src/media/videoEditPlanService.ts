@@ -32,7 +32,10 @@ import type { Logger } from "../logger.js";
 import { entityIdSchema, type TripService } from "../trips/index.js";
 import { parseOrThrow } from "../util/zodParse.js";
 
+import { randomUUID } from "node:crypto";
+
 import { AudioLibraryRepository, type AudioLibraryView } from "./audioLibraryRepository.js";
+import { EditPlansRepository } from "./editPlansRepository.js";
 import { MediaRepository } from "./mediaRepository.js";
 import type { MediaItem } from "./mediaTypes.js";
 import {
@@ -58,6 +61,12 @@ export interface VideoEditPlanServiceDeps {
   readonly tripService: TripService;
   readonly mediaRepo: MediaRepository;
   readonly audioLibraryRepo: AudioLibraryRepository;
+  /** P11.T5 — persists generated plans so the render endpoint
+   * can find them by id later. The service ALWAYS persists,
+   * regardless of `aiEnabled`; render-without-persist is not a
+   * supported flow in V1 (the renderer needs a stable plan
+   * source). */
+  readonly editPlansRepo: EditPlansRepository;
   /** Default fade / loudnorm values flowed from `config.video.audio.*`. */
   readonly audioDefaults: {
     readonly loudnormEnabled: boolean;
@@ -182,20 +191,38 @@ export class VideoEditPlanService {
       this.deps.aiEnabled && this.deps.refiner !== undefined ? this.deps.refiner : noopPlanRefiner;
     const refined = await refiner.refine({ plan });
 
+    // P11.T5 — persist the plan so `POST /api/trips/:tripId/render`
+    // can find it by id (or as "latest for this trip") later.
+    // The persisted JSON contains the `id` field too so a future
+    // read can round-trip back to the same shape. We do this AFTER
+    // the AI refiner — refined plans deserve to be persisted just
+    // like rule-engine plans.
+    const planId = randomUUID();
+    const planWithId: VideoEditPlan = { ...refined, id: planId };
+    this.deps.editPlansRepo.insert({
+      id: planId,
+      tripId: planWithId.tripId,
+      planJson: JSON.stringify(planWithId),
+      targetDurationSec: planWithId.targetDurationSec,
+      style: planWithId.style,
+      now: planWithId.createdAt,
+    });
+
     this.deps.logger?.info(
       {
         tripId,
+        planId,
         style,
         targetDurationSec,
-        clipCount: refined.clips.length,
-        warningCount: refined.warnings.length,
-        audioMode: refined.audioPolicy.mode,
-        aiRefined: refined.aiRefined,
+        clipCount: planWithId.clips.length,
+        warningCount: planWithId.warnings.length,
+        audioMode: planWithId.audioPolicy.mode,
+        aiRefined: planWithId.aiRefined,
       },
-      "video-edit-plan: generated",
+      "video-edit-plan: generated + persisted",
     );
 
-    return refined;
+    return planWithId;
   }
 
   // -------------------------------------------------------------------------

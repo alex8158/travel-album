@@ -203,6 +203,23 @@ export {
   type VideoOptimizeHandlerDeps,
   type VideoOptimizeSettings,
 } from "./videoOptimizeWorker.js";
+// P11.T5 — `video_render` worker. Consumes a persisted edit plan,
+// trims + concats clips, applies audioPolicy, writes
+// `media_versions(version_type='edited')`. Registered on the video
+// channel alongside the other video workers; shares the
+// VIDEO_WORKER_CONCURRENCY=1 budget so renders serialise with
+// metadata / cover / proxy / keyframes / segments / optimize.
+// NB: the `VIDEO_RENDER_JOB_TYPE` constant is exported from
+// `media/videoRenderService.ts` (the Service-layer canonical
+// source); the worker inlines the same literal string to avoid
+// the cross-module circular import that `videoService.ts`
+// already documents (P9.T8 header).
+export {
+  DEFAULT_VIDEO_RENDER_SETTINGS,
+  makeVideoRenderHandler,
+  type VideoRenderHandlerDeps,
+  type VideoRenderSettings,
+} from "./videoRenderWorker.js";
 // P11.T2 — audio processing toolkit (FFmpeg building blocks). NOT
 // a JobHandler — utilities consumed by future render / compose
 // workers (P11.T5 / P11.T8). Pure filter builders + bounded async

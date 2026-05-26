@@ -73,7 +73,8 @@
     "smoke:video-optimize-worker": "tsx src/scripts/video-optimize-worker-smoke.ts",
     "smoke:audio-processor": "tsx src/scripts/audio-processor-smoke.ts",
     "smoke:audio-library-seed": "tsx src/scripts/audio-library-seed-smoke.ts",
-    "smoke:video-edit-plan": "tsx src/scripts/video-edit-plan-smoke.ts"
+    "smoke:video-edit-plan": "tsx src/scripts/video-edit-plan-smoke.ts",
+    "smoke:video-render-worker": "tsx src/scripts/video-render-worker-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

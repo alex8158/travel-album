@@ -73,6 +73,28 @@ export {
   generateEditPlanBodySchema,
   type GenerateEditPlanInput,
 } from "./videoEditPlanSchemas.js";
+// P11.T5 — Edit plans repository (persistence for generated plans)
+// + Render service + zod schema. The render worker itself lives
+// under `jobs/`; the repo / service / schema stay here next to the
+// rest of the media domain.
+export {
+  EditPlansRepository,
+  type EditPlanInsertData,
+  type EditPlanRow,
+} from "./editPlansRepository.js";
+export {
+  VIDEO_RENDER_JOB_TYPE,
+  VideoRenderService,
+  type RenderTripOutcome,
+  type RenderTripResult,
+  type VideoRenderJobPayload,
+  type VideoRenderServiceDeps,
+} from "./videoRenderService.js";
+export {
+  renderModeSchema,
+  renderTripBodySchema,
+  type RenderTripInput,
+} from "./videoRenderSchemas.js";
 export {
   MediaService,
   type AiRefineDeps,

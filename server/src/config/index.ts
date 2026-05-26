@@ -474,6 +474,27 @@ const schema = z
     // unless a real refiner is explicitly injected at boot
     // (CLAUDE.md §2.8 — base features must work without AI).
     VIDEO_EDIT_PLAN_AI_ENABLED: boolDefault(false),
+    // P11.T5 video render worker — H.264 / AAC re-encode of each
+    // clip (Stage 2) + concat demuxer (Stage 3) + audioPolicy
+    // (Stage 4). Per-clip normalisation guarantees the concat
+    // demuxer accepts every clip without re-encoding.
+    //
+    //   * FPS / CRF / PRESET — encode knobs for the per-clip
+    //     normalised stream. Matching the optimize defaults
+    //     (CRF=23, preset=medium) keeps the edited output
+    //     visually-transparent on web playback.
+    //   * AUDIO_BITRATE_KBPS — AAC kbps; 160 covers stereo
+    //     music + voice without artifacts.
+    //   * TIMEOUT_MS — per ffmpeg spawn (each stage). With 4
+    //     stages a 10-minute cap gives a generous upper bound;
+    //     bumpable for 4K archival renders.
+    //   * WORKER_VERSION — stamped into media_versions.params.
+    VIDEO_RENDER_FPS: intPositive(30),
+    VIDEO_RENDER_CRF: intNonNeg(23),
+    VIDEO_RENDER_PRESET: strDefault("medium"),
+    VIDEO_RENDER_AUDIO_BITRATE_KBPS: intPositive(160),
+    VIDEO_RENDER_TIMEOUT_MS: intPositive(600_000),
+    VIDEO_RENDER_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -737,6 +758,31 @@ const schema = z
           message: `VIDEO_OPTIMIZE_PRESET ('${cfg.VIDEO_OPTIMIZE_PRESET}') must be one of: ${allowedPresets.join(", ")}.`,
         });
       }
+      // P11.T5 video render reuses the same libx264 preset enum.
+      if (!allowedPresets.includes(cfg.VIDEO_RENDER_PRESET)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["VIDEO_RENDER_PRESET"],
+          message: `VIDEO_RENDER_PRESET ('${cfg.VIDEO_RENDER_PRESET}') must be one of: ${allowedPresets.join(", ")}.`,
+        });
+      }
+    }
+    // P11.T5 video render CRF + fps guards. CRF range from libx264 docs;
+    // fps must be a positive integer (intPositive enforces this but we
+    // add an explicit cap to catch misconfigured envs requesting 240+).
+    if (cfg.VIDEO_RENDER_CRF > 51) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_RENDER_CRF"],
+        message: `VIDEO_RENDER_CRF (${cfg.VIDEO_RENDER_CRF}) must be ≤ 51; libx264's CRF range.`,
+      });
+    }
+    if (cfg.VIDEO_RENDER_FPS > 120) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_RENDER_FPS"],
+        message: `VIDEO_RENDER_FPS (${cfg.VIDEO_RENDER_FPS}) must be ≤ 120; above that is misconfiguration territory for web playback.`,
+      });
     }
     // P11.T1 video_optimize guards. Mirror video_proxy: CRF must be
     // within libx264's 0..51 range; target height ≥ 144 (anything
@@ -992,6 +1038,15 @@ export interface Config {
     editPlan: {
       aiEnabled: boolean;
     };
+    /** P11.T5 video render worker knobs. */
+    render: {
+      fps: number;
+      crf: number;
+      preset: string;
+      audioBitrateKbps: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -1152,6 +1207,14 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
       },
       editPlan: {
         aiEnabled: raw.VIDEO_EDIT_PLAN_AI_ENABLED,
+      },
+      render: {
+        fps: raw.VIDEO_RENDER_FPS,
+        crf: raw.VIDEO_RENDER_CRF,
+        preset: raw.VIDEO_RENDER_PRESET,
+        audioBitrateKbps: raw.VIDEO_RENDER_AUDIO_BITRATE_KBPS,
+        timeoutMs: raw.VIDEO_RENDER_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_RENDER_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },

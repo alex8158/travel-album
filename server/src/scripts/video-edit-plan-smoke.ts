@@ -69,11 +69,13 @@ import { createLogger } from "../logger.js";
 import {
   AudioLibraryRepository,
   AudioLibraryService,
+  EditPlansRepository,
   MediaAnalysisRepository,
   MediaRepository,
   MediaService,
   MediaVersionsRepository,
   VideoEditPlanService,
+  VideoRenderService,
   VideoSegmentsRepository,
   VideoService,
   buildEditPlan,
@@ -511,10 +513,12 @@ async function main(): Promise<void> {
       softDeleteDeps,
     );
 
+    const editPlansRepo = new EditPlansRepository(dbHandle.db);
     const planService = new VideoEditPlanService({
       tripService,
       mediaRepo,
       audioLibraryRepo,
+      editPlansRepo,
       audioDefaults: {
         loudnormEnabled: true,
         fadeInSeconds: 1.5,
@@ -909,6 +913,13 @@ async function main(): Promise<void> {
     const jobService = new JobService(jobRepo);
     void new AudioLibraryService(audioLibraryRepo); // exists path; no calls needed
 
+    const videoRenderService = new VideoRenderService({
+      tripService,
+      mediaRepo,
+      editPlansRepo,
+      jobRepo,
+      logger,
+    });
     const app: Express = createApp({
       logger,
       capabilities,
@@ -922,6 +933,7 @@ async function main(): Promise<void> {
       dedupService,
       videoService,
       videoEditPlanService: planService,
+      videoRenderService,
       aiProvider: new NoopProvider(),
       debugRoutes: false,
     });
