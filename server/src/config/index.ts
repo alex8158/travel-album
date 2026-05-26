@@ -392,6 +392,50 @@ const schema = z
     VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD: numNonNeg(0.5),
     VIDEO_SEGMENT_QUALITY_TIMEOUT_MS: intPositive(300_000),
     VIDEO_SEGMENT_QUALITY_WORKER_VERSION: strDefault("1.0"),
+    // P11.T1 video_optimize worker — H.264 / AAC browser-friendly
+    // re-encode (capped at 1080p). The output is the USER-FACING
+    // re-encode (distinct from video_proxy, which is an internal
+    // 720p decode source for downstream analysis). Persisted as
+    // `media_versions(version_type='video_optimized')` under
+    // `derived/{mediaId}/video_optimized.mp4`. The original is
+    // never modified or deleted.
+    //
+    //   * TARGET_HEIGHT — height of the optimized output (px). Width
+    //     is auto-computed to preserve aspect ratio (`-2:'min(ih,H)'`
+    //     so source-shorter videos are NOT upscaled). 1080 is the
+    //     web playback sweet spot — most browsers can decode 1080p
+    //     H.264 on any modern hardware, and downscaling 4K → 1080p
+    //     keeps file size bounded.
+    //   * CRF — libx264 quality knob (0..51, lower = better). 23 is
+    //     the published "visually transparent for web" threshold;
+    //     paired with preset=medium it produces files comparable in
+    //     size to source while playable in any browser.
+    //   * PRESET — libx264 speed/compression trade-off. `medium` is
+    //     the libx264 default — better compression than `veryfast`
+    //     (used by video_proxy) without burning pathological encode
+    //     time. Operators can dial faster (smaller wait, larger
+    //     file) or slower (smaller file, longer wait) via env.
+    //   * VIDEO_CODEC / AUDIO_CODEC — H.264 + AAC for maximum
+    //     browser compatibility. Same as video_proxy.
+    //   * AUDIO_BITRATE_KBPS — 160 kbps stereo. Slightly above
+    //     proxy's 128 kbps because optimized is the user-facing
+    //     output; 160 is the perceptual-transparent threshold for
+    //     mixed-content AAC-LC stereo.
+    //   * TIMEOUT_MS — wall-clock cap for ffmpeg. 10 minutes covers
+    //     a typical phone video at TARGET_HEIGHT=1080 + preset=medium;
+    //     bumpable for archival 4K dumps. The concurrency budget
+    //     (VIDEO_WORKER_CONCURRENCY=1) means optimizes serialise so
+    //     a slow source can't starve the channel.
+    //   * WORKER_VERSION — stamped into `media_versions.params` so
+    //     a future re-tune can be diffed against historical outputs.
+    VIDEO_OPTIMIZE_TARGET_HEIGHT: intPositive(1080),
+    VIDEO_OPTIMIZE_CRF: intNonNeg(23),
+    VIDEO_OPTIMIZE_PRESET: strDefault("medium"),
+    VIDEO_OPTIMIZE_VIDEO_CODEC: strDefault("libx264"),
+    VIDEO_OPTIMIZE_AUDIO_CODEC: strDefault("aac"),
+    VIDEO_OPTIMIZE_AUDIO_BITRATE_KBPS: intPositive(160),
+    VIDEO_OPTIMIZE_TIMEOUT_MS: intPositive(600_000),
+    VIDEO_OPTIMIZE_WORKER_VERSION: strDefault("1.0"),
     PHASH_DISTANCE_MAX: intNonNeg(8),
     QUALITY_WEIGHT_RESOLUTION: numNonNeg(0.3),
     QUALITY_WEIGHT_SHARPNESS: numNonNeg(0.4),
@@ -603,8 +647,14 @@ const schema = z
       });
     }
     for (const [key, value] of [
-      ["VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD],
-      ["VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD],
+      [
+        "VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD",
+        cfg.VIDEO_SEGMENT_QUALITY_BLUR_WASTE_THRESHOLD,
+      ],
+      [
+        "VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD",
+        cfg.VIDEO_SEGMENT_QUALITY_BLACK_RATIO_THRESHOLD,
+      ],
       ["VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH", cfg.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIC_TH],
       ["VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH", cfg.VIDEO_SEGMENT_QUALITY_BLACKDETECT_PIX_TH],
       ["VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD", cfg.VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD],
@@ -641,6 +691,31 @@ const schema = z
           message: `VIDEO_PROXY_PRESET ('${cfg.VIDEO_PROXY_PRESET}') must be one of: ${allowedPresets.join(", ")}.`,
         });
       }
+      // P11.T1 video_optimize uses the same libx264 preset enum.
+      if (!allowedPresets.includes(cfg.VIDEO_OPTIMIZE_PRESET)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["VIDEO_OPTIMIZE_PRESET"],
+          message: `VIDEO_OPTIMIZE_PRESET ('${cfg.VIDEO_OPTIMIZE_PRESET}') must be one of: ${allowedPresets.join(", ")}.`,
+        });
+      }
+    }
+    // P11.T1 video_optimize guards. Mirror video_proxy: CRF must be
+    // within libx264's 0..51 range; target height ≥ 144 (anything
+    // smaller is a thumbnail, not a playable video).
+    if (cfg.VIDEO_OPTIMIZE_CRF > 51) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_OPTIMIZE_CRF"],
+        message: `VIDEO_OPTIMIZE_CRF (${cfg.VIDEO_OPTIMIZE_CRF}) must be ≤ 51; libx264's CRF range.`,
+      });
+    }
+    if (cfg.VIDEO_OPTIMIZE_TARGET_HEIGHT < 144) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VIDEO_OPTIMIZE_TARGET_HEIGHT"],
+        message: `VIDEO_OPTIMIZE_TARGET_HEIGHT (${cfg.VIDEO_OPTIMIZE_TARGET_HEIGHT}) must be ≥ 144; below that the optimized output isn't a video.`,
+      });
     }
     // sharpen.flat (m1) and sharpen.jagged (m2) cap at 3 per sharp
     // docs; sigma should stay below 10 to keep the operation a sharpen
@@ -836,6 +911,17 @@ export interface Config {
       timeoutMs: number;
       workerVersion: string;
     };
+    /** P11.T1 video_optimize worker knobs (browser-friendly re-encode). */
+    optimize: {
+      targetHeight: number;
+      crf: number;
+      preset: string;
+      videoCodec: string;
+      audioCodec: string;
+      audioBitrateKbps: number;
+      timeoutMs: number;
+      workerVersion: string;
+    };
   };
   meta: {
     /** Absolute paths of `.env` files actually loaded, in load order. */
@@ -976,6 +1062,16 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         recommendThreshold: raw.VIDEO_SEGMENT_QUALITY_RECOMMEND_THRESHOLD,
         timeoutMs: raw.VIDEO_SEGMENT_QUALITY_TIMEOUT_MS,
         workerVersion: raw.VIDEO_SEGMENT_QUALITY_WORKER_VERSION,
+      },
+      optimize: {
+        targetHeight: raw.VIDEO_OPTIMIZE_TARGET_HEIGHT,
+        crf: raw.VIDEO_OPTIMIZE_CRF,
+        preset: raw.VIDEO_OPTIMIZE_PRESET,
+        videoCodec: raw.VIDEO_OPTIMIZE_VIDEO_CODEC,
+        audioCodec: raw.VIDEO_OPTIMIZE_AUDIO_CODEC,
+        audioBitrateKbps: raw.VIDEO_OPTIMIZE_AUDIO_BITRATE_KBPS,
+        timeoutMs: raw.VIDEO_OPTIMIZE_TIMEOUT_MS,
+        workerVersion: raw.VIDEO_OPTIMIZE_WORKER_VERSION,
       },
     },
     meta: { loadedDotenvFiles },

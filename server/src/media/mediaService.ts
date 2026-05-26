@@ -23,7 +23,11 @@ import type { DuplicateGroupsRepository } from "../dedup/index.js";
 import { IMAGE_AI_REFINE_JOB_TYPE, type AiInvocationsRepository } from "../ai/index.js";
 import { AppError, BadRequestError, NotFoundError } from "../errors/AppError.js";
 import { ERROR_CODES } from "../errors/errorCodes.js";
-import { IMAGE_ENHANCE_JOB_TYPE, type JobRepository } from "../jobs/index.js";
+import {
+  IMAGE_ENHANCE_JOB_TYPE,
+  VIDEO_OPTIMIZE_JOB_TYPE,
+  type JobRepository,
+} from "../jobs/index.js";
 import type { Logger } from "../logger.js";
 import { QUALITY_SELECTOR_JOB_TYPE, encodeQualitySelectorPayload } from "../quality/index.js";
 import {
@@ -198,6 +202,33 @@ export interface AiRefineMediaResult {
    * re-used; the original audit row from its first attempt
    * stays put). */
   readonly aiInvocationId?: string;
+}
+
+/**
+ * Outcome envelope for {@link MediaService.optimizeVideoMedia} (P11.T1).
+ *
+ * Mirrors {@link EnhanceMediaResult} — single-slot enqueue with
+ * `created` / `reset` / `skipped` semantics. The worker that consumes
+ * the row (`makeVideoOptimizeHandler` on the video channel) writes
+ * `media_versions(version_type='video_optimized')` and the derived
+ * `video_optimized.mp4` file; this method only manipulates the queue.
+ *
+ * Red lines (CLAUDE.md §2.2, §2.3, §2.4):
+ *   * Never modifies the original video — the worker writes to a
+ *     separate derived path.
+ *   * Never modifies `media_items.user_decision` (no audio policy,
+ *     no segment selection — pure transcoding).
+ *   * Does NOT enqueue any audio / library / composition jobs —
+ *     those are P11.T2 ~ T9.
+ */
+export interface OptimizeVideoMediaResult {
+  readonly mediaId: string;
+  readonly jobType: string;
+  readonly outcome: ReprocessOutcome;
+  /** Job row id (newly created or pre-existing). */
+  readonly jobId: string;
+  /** When outcome === "skipped", why (e.g. "already pending"). */
+  readonly reason?: string;
 }
 
 /**
@@ -432,6 +463,86 @@ export class MediaService {
   }
 
   /**
+   * P11.T1 — enqueue a `video_optimize` job for one video media.
+   *
+   * Single-slot wrapper around the same `reprocessOneJobType`
+   * primitive that `enhanceMedia` / `aiRefineMedia` use. The handler
+   * that consumes this row (registered on the video channel) writes
+   * `media_versions(version_type='video_optimized')` + derived
+   * `video_optimized.mp4` — this method intentionally does NEITHER of
+   * those things; it just manipulates the queue so the user's
+   * "Optimize" click stays snappy and the heavy ffmpeg work happens
+   * off-request.
+   *
+   * Red lines (CLAUDE.md §2.2 / §2.3 / §2.4 / §3.9 / §3.6):
+   *   * Original video is never touched (the worker writes to a
+   *     separate derived path).
+   *   * `media_items.user_decision` is never modified (no audio
+   *     policy / segment selection — pure transcoding).
+   *   * No audio normalization / fade / loop / mute / library audio
+   *     selection — those belong to P11.T2~T9.
+   *   * Synchronous from the API's perspective: returns immediately
+   *     after the queue write; the actual ffmpeg encode runs on the
+   *     video channel executor's next tick.
+   *
+   * Failure modes:
+   *   * `NotFoundError` — media row missing OR soft-deleted. The
+   *     recycle-bin contract from P7 forbids further writes to
+   *     soft-deleted rows; the read goes through the default-active
+   *     filter so a soft-deleted media surfaces as 404 here.
+   *   * `BadRequestError` — `media.type !== 'video'`. Per
+   *     requirements §7.13 video optimization is video-only; image
+   *     enhance (§7.9) is `enhanceMedia` and `unknown`-typed media
+   *     have no original bytes to optimize (Upload_Manager discards
+   *     them per design.md §6.2.3).
+   *
+   * Idempotency: re-calling on a media whose latest `video_optimize`
+   * row is pending / running yields `outcome='skipped'`. Calling
+   * after a terminal-ish row (success / failed / cancelled /
+   * retrying) yields `outcome='reset'` (re-routes through the
+   * canonical `retrying` re-entry state — P4.T2 R-40). First call
+   * yields `outcome='created'`.
+   */
+  optimizeVideoMedia(mediaIdInput: unknown): OptimizeVideoMediaResult {
+    if (this.jobRepo === undefined) {
+      throw new Error("MediaService: jobRepo not configured; cannot optimize video");
+    }
+    const safeId = parseOrThrow(entityIdSchema, mediaIdInput, "id");
+    const media = this.repo.findById(safeId);
+    if (media === null) {
+      // Active-only read above — `findById` defaults
+      // `includeDeleted=false`, so soft-deleted media surface here as
+      // a clean 404 (matches the recycle-bin invariant from P7).
+      throw new NotFoundError(`Media not found: ${safeId}`, { id: safeId });
+    }
+    if (media.type !== "video") {
+      throw new BadRequestError(
+        `optimize-video is only supported for video media; this row is '${media.type}'`,
+        { mediaId: safeId, type: media.type },
+      );
+    }
+
+    const now = new Date().toISOString();
+    const slot = this.reprocessOneJobType(safeId, VIDEO_OPTIMIZE_JOB_TYPE, now);
+    // exactOptionalPropertyTypes-friendly: spread `reason` only when
+    // present so callers don't see an explicit `reason: undefined`.
+    return slot.reason !== undefined
+      ? {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+          reason: slot.reason,
+        }
+      : {
+          mediaId: safeId,
+          jobType: slot.jobType,
+          outcome: slot.outcome,
+          jobId: slot.jobId,
+        };
+  }
+
+  /**
    * P10.T3 — enqueue an `image_ai_refine` job for one image media.
    *
    * Single-slot wrapper around the same `reprocessOneJobType`
@@ -475,10 +586,7 @@ export class MediaService {
    * Does NOT block on the actual AI call. The future AI-channel
    * executor (P10.T5+) polls pending rows independently.
    */
-  aiRefineMedia(
-    mediaIdInput: unknown,
-    options: AiRefineOptions = {},
-  ): AiRefineMediaResult {
+  aiRefineMedia(mediaIdInput: unknown, options: AiRefineOptions = {}): AiRefineMediaResult {
     if (this.jobRepo === undefined) {
       throw new Error("MediaService: jobRepo not configured; cannot enqueue ai-refine");
     }
@@ -511,10 +619,7 @@ export class MediaService {
     // before the quota gate so a duplicate click on a job already
     // in-flight is not penalised against the user's quota.
     const latestJob = jobRepo.findLatestByMediaIdAndType(safeId, IMAGE_AI_REFINE_JOB_TYPE);
-    if (
-      latestJob !== null &&
-      (latestJob.status === "pending" || latestJob.status === "running")
-    ) {
+    if (latestJob !== null && (latestJob.status === "pending" || latestJob.status === "running")) {
       return {
         mediaId: safeId,
         jobType: IMAGE_AI_REFINE_JOB_TYPE,

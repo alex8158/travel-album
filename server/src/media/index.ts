@@ -14,6 +14,7 @@ export {
   type AiRefineOptions,
   type EnhanceMediaResult,
   type MediaSoftDeleteDeps,
+  type OptimizeVideoMediaResult,
   type ReprocessJobResult,
   type ReprocessOutcome,
   type ReprocessResult,

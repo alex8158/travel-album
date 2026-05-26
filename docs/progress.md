@@ -3594,3 +3594,156 @@ No code, migration, API, worker, frontend, or dependency changes.
 ```
 
 下一步取决于产品决策是否拍板进入 P11.T1 实现。在拍板前不动代码。
+
+---
+
+## 2026-05-26 · P11.T1 视频基础优化（user-facing 浏览器友好再编码）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T1 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T2 ~ P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：转码（ffmpeg H.264 / AAC）+ 分辨率 / 码率标准化（1080p 上限，不放大；CRF 23；preset=medium；audio 160 kbps）+ 新 video version 输出 + 原视频保护 + processing_jobs 状态推进 + media_versions params/path 落地 + 与现有 video pipeline / queue / worker 机制对齐。
+
+**显式不做**（留给 P11.T2 ~ P11.T9）：
+- 去原声 / 音量归一化 / 淡入淡出 / 默认配乐 / 音频长度循环 / 裁剪
+- 音频库 schema + API + 默认音频 seed
+- URL 导入音频
+- 手动替换 / 选择音频
+- 多视频合成
+- 剪辑方案生成（rule engine + 可选 AI）
+- `POST /api/videos/:id/generate-edit-plan` / `/render` / `/compose`
+- 前端剪辑页 / 音频选择 UI / 多视频合成 UI
+
+### 修改 / 新增的文件
+
+**新增（3）**：
+- `server/migrations/013_extend_media_versions_video_optimized.sql` — 12 步 STRICT 表重建，给 `media_versions.version_type` enum 加 `'video_optimized'`（9 值闭合枚举）；FK / 索引 / 其他 CHECK 字节级保持，跟 006 同套路。
+- `server/src/jobs/videoOptimizeWorker.ts` — `VIDEO_OPTIMIZE_JOB_TYPE='video_optimize'` 常量 + `makeVideoOptimizeHandler` factory + `VideoOptimizeSettings` + `DEFAULT_VIDEO_OPTIMIZE_SETTINGS`。整体结构 mirror `videoProxyWorker.ts`：spawn ffmpeg → 写 tmp → ffprobe verify → storage.putDerived 落 `derived/{mediaId}/video_optimized.mp4` → UPSERT media_versions 行。
+- `server/src/scripts/video-optimize-worker-smoke.ts` — 端到端 smoke，14 个 CASE，**52/52 PASS**。
+
+**修改（7）**：
+- `server/src/config/index.ts` — 加 8 个 env (`VIDEO_OPTIMIZE_*`) + `Config.video.optimize: {…}` slice + superRefine 守卫（CRF ≤ 51、targetHeight ≥ 144、preset 闭枚举）；preset 校验复用 `video_proxy` 同一份 x264 preset 白名单。
+- `server/src/jobs/index.ts` — re-export `VIDEO_OPTIMIZE_JOB_TYPE / makeVideoOptimizeHandler / DEFAULT_VIDEO_OPTIMIZE_SETTINGS / VideoOptimizeHandlerDeps / VideoOptimizeSettings`。
+- `server/src/media/mediaService.ts` — 加 `optimizeVideoMedia(mediaIdInput: unknown): OptimizeVideoMediaResult`，与 `enhanceMedia` / `aiRefineMedia` 对称（单 slot 入队，404 missing/soft-deleted，400 非 video，复用 `reprocessOneJobType` 的 created/reset/skipped + reason）。
+- `server/src/media/index.ts` — re-export `OptimizeVideoMediaResult` 类型。
+- `server/src/routes/media.ts` — 加 `POST /api/media/:id/optimize-video`，对称 `/enhance` 与 `/ai-refine`，直接调 `mediaService.optimizeVideoMedia(id)`。
+- `server/src/index.ts` — bootstrap 注册 video_optimize handler 到 video 通道（共享 `VIDEO_WORKER_CONCURRENCY=1` 预算）；wire `config.video.optimize.*` 到 settings。
+- `server/package.json` — 新增 `smoke:video-optimize-worker` script。
+- `.env.example` — 新增 P11.T1 段落注释 + 8 个 env 默认值。
+
+**未触碰的领域**：客户端代码（0 行改动）；任何 AI / quota / audit / 配色逻辑；P8 enhance / P10 ai-refine 路径；P9.T2-T7 既有 video worker 实现；P7 软删除 / 恢复 / 回收站；UploadService / TripService / DedupService / VideoService。
+
+### 视频输出路径与 version 类型
+
+- **version_type**：`'video_optimized'`（新值，与既有 8 值并列；与 `video_proxy` 区分见下表）
+- **on-disk 路径**：`storage/trips/{tripId}/derived/{mediaId}/video_optimized.mp4`
+- **逻辑路径**（业务表 + 前端用）：`trips/{tripId}/derived/{mediaId}/video_optimized.mp4`
+- **静态访问**：通过 P3.T1 的 `/storage/<logicalPath>` 路由可直接 GET（无新增静态路由 / 无新 API mount 点）
+- **media_versions 行字段**：`mime_type='video/mp4'`、`width` / `height` / `file_size` 由 ffprobe verify 阶段写入、`status='ready'`、`params` JSON 含 `workerVersion / targetHeight / crf / preset / videoCodec / audioCodec / audioBitrateKbps / optimizedDurationSec / optimizedVideoCodec / optimizedAudioCodec / optimizedBitrate` 共 11 个字段
+
+### video_optimized vs video_proxy（防止混淆）
+
+| 维度 | `video_proxy` (P9.T4) | `video_optimized` (P11.T1) |
+| --- | --- | --- |
+| 目的 | 内部低清分析源（keyframes / segments / quality 共享） | 用户面向 浏览器友好再编码 |
+| 高度上限 | 720p | 1080p |
+| CRF | 28（压缩缩略图级） | 23（视觉透明） |
+| Preset | veryfast | medium |
+| 音频 | 128 kbps | 160 kbps |
+| 文件名 | `derived/{mediaId}/video_proxy.mp4` | `derived/{mediaId}/video_optimized.mp4` |
+| 用户可见 | 否（API 内部） | 是（P11.T7 / 静态路由可见） |
+
+两者用不同 version_type，文件不冲突，互不覆盖。
+
+### 是否覆盖原始视频
+
+**否**。worker 显式：
+1. 读 `media.originalPath` 用 `resolveUnderRoot(storage.root, …)` 解析为绝对路径
+2. ffmpeg 输出到 `os.tmpdir()` 下的临时文件（每次 `mkdtemp` 创建）
+3. `storage.putDerived` 把 tmp 拷到 `derived/{mediaId}/video_optimized.mp4`（`overwrite: true` 仅覆盖前一次同名 optimized 输出）
+4. `finally` 清理 tmp 目录
+
+smoke CASE 2 + CASE 7 显式断言原视频字节级不变（happy + 二次重跑两轮）。
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` (`tsc -p tsconfig.json`) — 干净
+- `cd server && npm run smoke:video-optimize-worker` — **52/52 PASS**
+- 邻近回归 5 个 smoke 全绿：
+  - `smoke:video-proxy-worker` — 35/35 PASS（确认 video_proxy 未被影响）
+  - `smoke:media-versions-api` — 35/35 PASS（确认 P8.T4 versions API 未被破坏）
+  - `smoke:p9-acceptance` — 36/36 PASS（确认 P9 整套 video pipeline 未被影响）
+  - `smoke:p10-acceptance` — 37/37 PASS（确认 P10 AI refine 未被影响）
+  - `smoke:p7-recycle-bin-acceptance` — 60/60 PASS（确认 P7 软删除 / 恢复未被破坏）
+- `cd client && npm run lint` — 干净
+- `cd client && npm run typecheck` (`tsc -b`) — 干净
+- `cd client && npm run build` (`vite + tsc`) — 干净（61 modules, gzip 72.10 kB JS + 4.27 kB CSS；无客户端 bundle 改动）
+
+### Smoke 测试覆盖（52 PASS / 0 FAIL）
+
+| CASE | 主要断言 |
+| --- | --- |
+| 1 happy（320×240 + audio） | job claimed + success / video_optimized.mp4 落盘 / H.264 + MP4 / 不放大（240p 保持 240p）/ 音轨保留 AAC / media_versions 行 6 字段齐全 + status='ready' / params 记录 7 个 transcode 旋钮 |
+| 2 non-destructive | 原视频字节级不变（byte-equal） |
+| 3 scope-guard media_items | preview_path / thumbnail_path / user_decision / active_version_type / status / duration / width / height 7 列全部不动 |
+| 4 scope-guard media_versions | 仅写 video_optimized 单行，无其他 version_type 泄漏 |
+| 5 downscale 4K → 1080p | 3840×2160 输入 → 1920×1080 输出（保持宽高比 + 偶数宽 yuv420p） |
+| 6 audio-less source | 无音频源仍成功（`-map 0:a?` 可选音频映射）|
+| 7 idempotent | 二次 tick UPSERT 单行 + 文件存在 + 原视频字节仍不变 |
+| 8 image media | job 'failed' + error_message 含 'not a video' + image 类型；无 media_versions 行写入 |
+| 9 soft-deleted media | job 'failed' + error_message 含 'not found or soft-deleted'；无 derived 文件泄漏；无 media_versions 行泄漏（P7 契约）|
+| 10 unknown / NULL originalPath | job 'failed' + 错误信息说明类型或路径问题 |
+| 11 ghost original file | job 'failed' + 错误信息含 ffmpeg exited |
+| 12 broken / not-a-real-MP4 | job 'failed' + 错误信息含 ffmpeg exited（moov atom not found）|
+| 13 MediaService 集成 | 404 missing media (code=NOT_FOUND/statusCode=404) / 400 image (code=BAD_REQUEST/statusCode=400) / created / skipped (pending) / reset (success → re-enter retrying) 5 断言 |
+| 14 DB integrity | PRAGMA foreign_key_check 0 行 + PRAGMA integrity_check 'ok' |
+
+### 是否新增风险
+
+新增 1 条风险（R-143），衔接 R-138 ~ R-142 之后。
+
+| ID | 风险 | 控制措施 |
+| --- | --- | --- |
+| **R-143** | 高码率 / 长视频 optimize 任务可能跑数分钟以上，占满 video 通道串行预算（`VIDEO_WORKER_CONCURRENCY=1`），堵塞其他 video 任务（cover / proxy / keyframes / segments / segment_quality）。一个 4K 1 小时长视频在 preset=medium 下可能 30 分钟以上。 | (1) 配置层 `VIDEO_OPTIMIZE_TIMEOUT_MS=600000` 兜底（默认 10 分钟），超时即 SIGKILL → 任务 failed → 可手动重试；(2) 运维侧可调 `VIDEO_OPTIMIZE_PRESET` 到 `faster` / `veryfast` 加速（牺牲文件大小换时间）或拉高 `VIDEO_WORKER_CONCURRENCY` 多并发（牺牲单任务速度换吞吐）；(3) 可控制 enqueue 节奏（service 层 `optimizeVideoMedia` 已支持 idempotent skipped — 防止用户连点产生多重排队）；(4) **未来 polish**：P11.T7 前端引入进度展示让用户感知，或加 "fast preset" 开关 / 加 cancel 入口（复用 `POST /api/jobs/:id/cancel`）。本轮接受 disposition：单视频排队等待在 V1 可接受。 |
+
+R-138 ~ R-142 保留：
+- **R-138 音频版权风险** — 待 P11.T3 / P11.T6 落实
+- **R-139 URL 导入音频 SSRF 风险** — 待 P11.T6 落实
+- **R-140 长视频合成耗时风险** — 待 P11.T8 落实
+- **R-141 ffmpeg 音频 filter 兼容性风险** — 待 P11.T2 落实
+- **R-142 多视频合成规格不一致风险** — 待 P11.T8 落实
+
+### 阶段定位
+
+P11 阶段进度：T1 已完成（`[x]`），T2 ~ T9 仍为 LATER（`[ ]`）。
+
+下一步任务候选（按 docs/tasks.md P11 顺序）：
+- P11.T2 音频处理基础能力（FFmpeg `afade` / `aloop` / `atrim` / `loudnorm` / `-an` 工具链）
+- P11.T3 音频库 Audio Library schema + 系统默认音频 seed
+
+由产品决策选定下一项再执行。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): video_optimize worker + POST /api/media/:id/optimize-video (P11.T1)
+
+- migration 013: extend media_versions.version_type enum with 'video_optimized'
+- worker: makeVideoOptimizeHandler — H.264/AAC, 1080p cap, no upscale, CRF 23
+- service: MediaService.optimizeVideoMedia (single-slot enqueue, 404/400/idempotent)
+- route: POST /api/media/:id/optimize-video on the media router
+- config: 8 new VIDEO_OPTIMIZE_* envs + superRefine guards
+- smoke: smoke:video-optimize-worker — 52/52 PASS (end-to-end via real ffmpeg)
+- new risk R-143 (long-video optimize blocking video-channel) recorded
+- never overwrites the original; output at derived/{mediaId}/video_optimized.mp4
+
+No audio policy, library, URL import, or composition (P11.T2~T9 stay LATER).
+No frontend changes (P11.T7).
+```

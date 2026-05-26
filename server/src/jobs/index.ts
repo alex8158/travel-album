@@ -191,5 +191,17 @@ export {
   type VideoSegmentQualityHandlerDeps,
   type VideoSegmentQualitySettings,
 } from "./videoSegmentQualityWorker.js";
+// P11.T1 — `video_optimize` worker (H.264 / AAC browser-friendly
+// re-encode, capped at 1080p by default). Same video channel; shares
+// the VIDEO_WORKER_CONCURRENCY=1 budget with the rest. Distinct from
+// `video_proxy` (P9.T4): proxy is the INTERNAL low-res analysis
+// source, optimize is the USER-FACING re-encode.
+export {
+  DEFAULT_VIDEO_OPTIMIZE_SETTINGS,
+  VIDEO_OPTIMIZE_JOB_TYPE,
+  makeVideoOptimizeHandler,
+  type VideoOptimizeHandlerDeps,
+  type VideoOptimizeSettings,
+} from "./videoOptimizeWorker.js";
 
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

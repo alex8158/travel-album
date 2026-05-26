@@ -183,6 +183,42 @@ export function makeMediaRouter(deps: MediaRouterDeps): Router {
     }),
   );
 
+  // POST /api/media/:id/optimize-video (P11.T1).
+  //
+  // Enqueue a `video_optimize` job for one video media. Single-slot
+  // enqueue mirroring `enhanceMedia` / `aiRefineMedia`:
+  //   * `outcome: "created"` — no prior row; one was inserted pending
+  //   * `outcome: "reset"`   — terminal/retrying prior row flipped
+  //                            back to retrying (P4.T2 R-40 path)
+  //   * `outcome: "skipped"` — prior pending/running row left alone;
+  //                            `reason` carries the explanation
+  //
+  // Worker output (P11.T1 makeVideoOptimizeHandler): browser-friendly
+  // H.264 / AAC MP4 capped at config.video.optimize.targetHeight (no
+  // upscale of smaller sources). The file lands at
+  // `derived/{mediaId}/video_optimized.mp4` and is recorded as a
+  // `media_versions(version_type='video_optimized')` row. The
+  // original video is NEVER modified.
+  //
+  // Always returns 200 on the enqueue. 404 when the media is missing
+  // or soft-deleted (recycle-bin members cannot be optimized — user
+  // must restore first; matches P7 contract). 400 when media.type
+  // !== 'video' (image optimization is the `/enhance` endpoint;
+  // `unknown`-typed media have no original bytes per design §6.2.3).
+  //
+  // Synchronous from the API's perspective: actual ffmpeg encode
+  // runs on the video channel executor (concurrency=1) on the next
+  // pending tick. P11.T1 does NOT touch audio policy / library
+  // audio / multi-video composition — those are P11.T2 onwards.
+  router.post(
+    "/media/:id/optimize-video",
+    asyncHandler((req, res) => {
+      const id = parseOrThrow(entityIdSchema, getIdParam(req.params), "id");
+      const result = deps.mediaService.optimizeVideoMedia(id);
+      res.status(200).json(result);
+    }),
+  );
+
   // POST /api/media/:id/ai-refine (P10.T3).
   //
   // Enqueue an `image_ai_refine` job for one image media. The

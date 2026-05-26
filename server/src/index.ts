@@ -23,6 +23,7 @@ import {
   VIDEO_COVER_JOB_TYPE,
   VIDEO_KEYFRAMES_JOB_TYPE,
   VIDEO_METADATA_JOB_TYPE,
+  VIDEO_OPTIMIZE_JOB_TYPE,
   VIDEO_PROXY_JOB_TYPE,
   VIDEO_SEGMENT_QUALITY_JOB_TYPE,
   VIDEO_SEGMENTS_JOB_TYPE,
@@ -38,6 +39,7 @@ import {
   makeVideoCoverHandler,
   makeVideoKeyframesHandler,
   makeVideoMetadataHandler,
+  makeVideoOptimizeHandler,
   makeVideoProxyHandler,
   makeVideoSegmentQualityHandler,
   makeVideoSegmentsHandler,
@@ -265,12 +267,7 @@ async function main(): Promise<void> {
   // P9.T8 — Video API service. Reads `video_segments` rows + the
   // P9.T5 keyframes manifest off disk, writes `user_decision`
   // (only — never scores), and enqueues the P9.T5/T6/T7 jobs.
-  const videoService = new VideoService(
-    mediaRepo,
-    videoSegmentsRepo,
-    jobRepo,
-    storage,
-  );
+  const videoService = new VideoService(mediaRepo, videoSegmentsRepo, jobRepo, storage);
 
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel
@@ -578,6 +575,35 @@ async function main(): Promise<void> {
         blackdetectPixTh: config.video.segmentQuality.blackdetectPixTh,
         recommendThreshold: config.video.segmentQuality.recommendThreshold,
         workerVersion: config.video.segmentQuality.workerVersion,
+      },
+      logger,
+    }),
+  );
+  // P11.T1 — `video_optimize` worker (H.264 / AAC browser-friendly
+  // re-encode capped at 1080p). Same video-channel budget; this is
+  // potentially the heaviest video task in the pipeline (preset=medium
+  // + 1080p), so the serial budget=1 keeps the host responsive.
+  // ffmpeg / ffprobe paths flow from config.ffmpeg.{ffmpegPath,
+  // ffprobePath}; transcode settings flow from
+  // config.video.optimize.* — defaults documented inline in
+  // config/index.ts.
+  videoHandlers.set(
+    VIDEO_OPTIMIZE_JOB_TYPE,
+    makeVideoOptimizeHandler({
+      storage,
+      mediaRepo,
+      mediaVersionsRepo,
+      settings: {
+        ffmpegPath: config.ffmpeg.ffmpegPath ?? "ffmpeg",
+        ffprobePath: config.ffmpeg.ffprobePath ?? "ffprobe",
+        timeoutMs: config.video.optimize.timeoutMs,
+        targetHeight: config.video.optimize.targetHeight,
+        crf: config.video.optimize.crf,
+        preset: config.video.optimize.preset,
+        videoCodec: config.video.optimize.videoCodec,
+        audioCodec: config.video.optimize.audioCodec,
+        audioBitrateKbps: config.video.optimize.audioBitrateKbps,
+        workerVersion: config.video.optimize.workerVersion,
       },
       logger,
     }),
