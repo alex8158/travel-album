@@ -1635,3 +1635,218 @@ a {
   font-size: 0.7rem;
   color: #57606a;
 }
+
+/* ============================================================
+   P11.T7 — Video render page styles. Reuses the project's
+   existing class system (`trip-detail-section`, `btn-*`,
+   `status-text`, `status-error`). Adds:
+     * `.status-warning` — yellow / amber tone for non-fatal
+       warnings emitted by edit-plan generation.
+     * `.render-fieldset` / `.render-radio` — compact radio
+       group styling for style + audio pickers.
+     * `.render-audio-row` — two-line label inside the audio
+       picker (name + meta beneath).
+     * `.render-plan-card` / `.render-plan-summary` — the
+       inline summary card surfaced after a plan is generated.
+     * `.render-plan-clips` — collapsible <details> listing
+       the plan's clips.
+     * `.render-plan-warnings` — warning block within the plan
+       card.
+     * `.render-job-summary` — definition-list grid for the
+       enqueue + polled job snapshot.
+     * `.render-output-card` / `.render-output-video` — the
+       success-state preview + download CTA.
+     * `.job-status-badge[-{state}]` — coloured pill for the
+       polled job's current status. New in P11.T7; the existing
+       Jobs page doesn't use it (yet), so the additions don't
+       conflict.
+   ============================================================ */
+
+.status-warning {
+  color: #9a6700;
+}
+
+.render-fieldset {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.render-fieldset legend {
+  padding: 0 0.25rem;
+  color: #57606a;
+  font-size: 0.85rem;
+}
+
+.render-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  cursor: pointer;
+}
+
+.render-radio input[type="radio"] {
+  margin: 0;
+}
+
+.render-audio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.render-audio-row-label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.render-audio-name {
+  font-weight: 500;
+}
+
+.render-audio-meta {
+  font-size: 0.8rem;
+  color: #57606a;
+}
+
+.render-plan-card {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  background: #f6f8fa;
+  margin: 0.5rem 0;
+}
+
+.render-plan-summary,
+.render-job-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.render-plan-summary > div,
+.render-job-summary > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.render-plan-summary dt,
+.render-job-summary dt {
+  font-size: 0.75rem;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.render-plan-summary dd,
+.render-job-summary dd {
+  margin: 0;
+  font-weight: 500;
+}
+
+.render-plan-clips {
+  margin-top: 0.75rem;
+}
+
+.render-plan-clips summary {
+  cursor: pointer;
+  color: #0969da;
+  margin-bottom: 0.5rem;
+}
+
+.render-plan-clips ol {
+  padding-left: 1.25rem;
+  margin: 0;
+}
+
+.render-plan-clip-meta {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+  color: #24292f;
+}
+
+.render-plan-clip-reason {
+  font-size: 0.85rem;
+  color: #57606a;
+}
+
+.render-plan-clip-link {
+  font-size: 0.85rem;
+  color: #0969da;
+}
+
+.render-plan-warnings {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #f9c513;
+  background: #fff8c5;
+  border-radius: 4px;
+}
+
+.render-plan-warnings ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+}
+
+.render-output-card {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  background: #f6f8fa;
+}
+
+.render-output-video {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  margin: 0.5rem 0;
+  border-radius: 4px;
+  background: #000;
+}
+
+.job-status-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  color: #57606a;
+}
+
+.job-status-pending,
+.job-status-retrying {
+  background: #fff8c5;
+  border-color: #f9c513;
+  color: #735c0f;
+}
+
+.job-status-running {
+  background: #ddf4ff;
+  border-color: #54aeff;
+  color: #0550ae;
+}
+
+.job-status-success {
+  background: #dafbe1;
+  border-color: #2da44e;
+  color: #1a7f37;
+}
+
+.job-status-failed,
+.job-status-cancelled {
+  background: #ffebe9;
+  border-color: #ff8182;
+  color: #cf222e;
+}

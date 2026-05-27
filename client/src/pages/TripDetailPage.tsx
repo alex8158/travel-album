@@ -241,6 +241,13 @@ export default function TripDetailPage() {
           <Link to={`/trips/${trip.id}/recycle-bin`} className="btn-secondary">
             Recycle bin
           </Link>
+          {/* P11.T7 — render entry point: generate plan + pick audio
+              + trigger ffmpeg render. The page itself owns plan
+              generation; we link instead of inlining to keep this
+              header tight. */}
+          <Link to={`/trips/${trip.id}/render`} className="btn-secondary">
+            Render video
+          </Link>
           <button type="button" className="btn-danger" onClick={openDelete}>
             Delete
           </button>

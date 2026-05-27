@@ -4783,3 +4783,165 @@ feat(server): audio library user-facing API (list / upload / import-url / delete
 No frontend, no multi-video composition, no AI music recommendation.
 P11.T7 ~ P11.T9 stay LATER.
 ```
+
+---
+
+## 2026-05-27 · P11.T7 前端剪辑预览 / 音频库选择 / 渲染入口
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T7 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T8 / P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- 单页 `/trips/:tripId/render` 闭环：generate plan → 选 audio → render → 轮询 job → 显示输出
+- 4 个 API client（audio library / edit plan / video render）+ 2 个 hooks（useAudioLibrary / useJobPolling）
+- TripDetailPage header 加一个 "Render video" 链接
+- ~200 行 CSS 复用既有 className 体系
+
+**显式不做**（留给 P11.T8 / 未来 polish）：
+- 任何 server 改动（API / migration / worker / smoke / db schema）
+- 复杂 upload UI（current 提示用户通过 API 上传）
+- 多视频合成（P11.T8）
+- AI 音乐推荐
+- 拖拽重排 clips / 自定义 startSec/endSec sliders / 浏览器内 waveform / 复杂 UI 重构
+
+### 修改 / 新增的文件
+
+**新增（6）**：
+- `client/src/api/audioLibrary.ts` — `listAudioLibrary` / `uploadAudio` (multipart) / `importAudioFromUrl` (JSON) / `deleteAudioLibraryItem` + 完整 `AudioLibraryItem` / `AudioLibraryWriteResult` / `AudioLibraryDeleteResult` type 镜像 server P11.T6 surface
+- `client/src/api/videoEditPlan.ts` — `generateEditPlan(tripId, body)` + 全套 plan / clip / audioPolicy / warning / transition type 镜像 server P11.T4
+- `client/src/api/videoRender.ts` — `renderTrip(tripId, body)` + `editedVideoStorageUrl({tripId, mediaId})` 助手
+- `client/src/hooks/useAudioLibrary.ts` — mirrors useJobs 风格的 list hook
+- `client/src/hooks/useJobPolling.ts` — 2s 轮询单 jobId，终态自动停止，unmount cleanup
+- `client/src/pages/VideoRenderPage.tsx` — 650 行主页面，4 section 闭环
+
+**修改（3）**：
+- `client/src/App.tsx` — 加路由 `/trips/:tripId/render` 在 `/trips/:id` 之前（避免被参数化路由吞掉）
+- `client/src/pages/TripDetailPage.tsx` — header 加 "Render video" 链接（btn-secondary）
+- `client/src/index.css` — 追加 ~200 行 P11.T7 样式
+
+**文档（2）**：`docs/tasks.md`（P11.T7 标 [x]） + `docs/progress.md`（本节）
+
+**未触碰**：server 代码 0 行 / migration / worker / db / smoke / P11.T1~T6 既有后端逻辑 / 既有前端任何页面（除 TripDetailPage 加链接 + App.tsx 加路由两处必要小改）
+
+### 用户闭环
+
+```
+1. TripDetailPage → "Render video" 按钮 → 跳到 /trips/:tripId/render
+
+2. VideoRenderPage section 1 "Edit plan":
+   - 选 style (short=15s / standard=30s / long=60s)
+   - 选 audio (默认 keep_original)
+   - 点 "Generate plan" → POST /api/trips/:tripId/generate-edit-plan
+   - 服务端返回 plan(id, clips, audioPolicy, warnings)
+   - PlanSummary 卡片展示：style / target dur / total dur / resolution / clip count / transitions / resolved audio
+   - 可折叠 <details> 显示 clips 表 (#order, start→end, duration, reason, 跳源 media)
+   - warnings 黄底块列出 each (code, message)
+
+3. section 2 "Background music":
+   - GET /api/audio-library 拉所有 active 行
+   - radio: keep_original / mute / [library row × N]
+   - 每行 library 显示 displayName + sourceType pill + duration + mime
+   - inactive 自动过滤 + 提示数量
+   - Refresh 按钮重新拉
+   - 提示：plan 的 resolved audioPolicy 可能与 user pick 不同（plan card 已显示）
+
+4. section 3 "Render":
+   - 点 "Render video" → POST /api/trips/:tripId/render { planId, mode:'final' }
+   - 防双击；plan 缺失 / clips=0 时禁用
+   - 返回 outcome (created/skipped/reset/forced) / planId / mediaId / jobId / mode / reason
+
+5. section 4 "Render progress" (renderResult 存在时显示):
+   - useJobPolling(jobId) 启动；2s 轮询 GET /api/jobs/:id
+   - status pill 实时切换：pending(黄) → running(蓝) → success(绿) / failed(红) / cancelled(红)
+   - progress% / startedAt / finishedAt / errorMessage 4 字段实时刷新
+   - 终态自动停止轮询
+   - status === 'success': inline <video controls preload="metadata"> 指向
+     /storage/trips/{tripId}/derived/{firstMediaId}/edited.mp4
+     + "Download edited.mp4" 按钮
+   - status === 'failed': 错误 banner
+   - "Open Jobs page" 跳 /jobs 链接
+   - Manual Refresh 按钮（一次性 GET /api/jobs/:id，不影响 poller 节奏）
+   - unmount 时 poller cleanup（cancelled flag + clearTimeout）
+```
+
+### 关键设计决策
+
+1. **路由顺序**：`/trips/:tripId/render` 必须放在 `/trips/:id` 之前（react-router-dom v6 按顺序匹配；参数化路由会吞 "render" 字串）。
+2. **plan 持久化 + planId 中转**：generate-edit-plan 服务端 P11.T5 改造后总是写 `edit_plans` 表并返回带 `id` 的 plan。前端拿到 `plan.id` 后 render call 直接传 `planId`（避免 plan JSON 二次序列化 + 防止 user 在 generate→render 之间换了 audio 选择导致语义漂移）。
+3. **audio choice 与 plan audioPolicy 的关系**：generate 时把 user 的 audioChoice 透传到 plan 生成（让 plan.audioPolicy 一次性解析到位）。render 时只传 planId — 服务端从 edit_plans 行读取的 plan 包含最终 resolved audioPolicy；UI 不需要再重发 audio 选择。这避免了 user 在 generate 后改 audio choice 但 plan 没同步的 bug。
+4. **resolved vs requested audio label**：plan card 显示的 audio label 来自 `plan.audioPolicy.mode + backgroundAudioId`（resolved），不是 user UI 的当前 radio 选择。让 user 知道 plan 实际会用什么。
+5. **terminal job 停止轮询**：`useJobPolling` 内部 TERMINAL set = {success, failed, cancelled}；命中后不再 setTimeout。retrying / pending / running 继续轮询。
+6. **transient poll error 不挂**：5xx 或网络抖动只 setError + 继续轮询（间隔不变）。终态判断只看成功的 poll 结果。
+7. **复用 P9.T9 jobs API**：`getJobById` 已经存在；P11.T7 只是新建一个轮询 hook 包装它。`/jobs` 列表页（P4.T6）也复用。
+8. **video preview 用 `preload="metadata"`**：避免页面加载时自动拉整个 edited.mp4（可能数十 MB）。用户点击播放才下载。
+9. **error envelope lift**：所有 API client 用同样的 `readErrorMessage` 抽 `error.message`（与既有 jobs.ts / dedup.ts / video.ts / health.ts / trips.ts 5 个 client 同 pattern）。
+10. **CSS 完全 additive**：所有新 className 都是 `.render-*` 或 `.job-status-*` 前缀，与既有样式无冲突；通用色 `.status-warning` 是新色但不覆盖既有 status-text / status-error。
+
+### 检查命令结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd client && npm run lint` | ✅ 干净（0 errors / 0 warnings） |
+| `cd client && npm run typecheck` (`tsc -b`) | ✅ 干净 |
+| `cd client && npm run build` (`tsc -b && vite build`) | ✅ 67 modules transformed / gzip **75.34 kB JS + 4.69 kB CSS**（vs 之前 72.10 + 4.27 kB；+3.2 kB JS + 0.42 kB CSS 用于新页面 + 6 个 API/hook 模块）|
+
+server 端无改动，未跑 server smoke。
+
+### 新增风险
+
+| ID | 风险 | Disposition |
+| --- | --- | --- |
+| **R-150** | upload UI 没做：P11.T6 后端有 `POST /upload` + `/import-url`，但 P11.T7 prompt 明确"不在本任务做复杂上传 UI"。用户得用 curl / 未来管理页才能灌音频。 | V1 接受 — render page Background music 区段会提示"使用 audio-library API 上传，然后 Refresh"。未来 polish：加 `/admin/audio-library` 管理页 或 在 render page 加 inline upload modal。 |
+
+R-138~R-149 全部保留（R-138 / R-139 在 P11.T6 已闭合；其余等后续任务）。
+
+### 当前已知限制
+
+1. **无 upload UI**：见 R-150。
+2. **mode preview/final 在 server 端 V1 无差异**：R-148（P11.T5 已记）。UI 默认发 `mode:'final'`，没暴露 preview toggle。
+3. **2s 轮询而非 SSE**：R-149（P11.T5 已记）。`useJobPolling` 已经保证 unmount cleanup；正常 ops 下负载可接受。
+4. **video 预览 `preload="metadata"`**：用户必须主动点播放才下载完整 mp4。这是省带宽的合理默认。
+5. **plan re-generate 重置 render**：generate 新 plan 时清空 renderResult + renderError（避免显示陈旧 jobId）；这意味着 user 必须先 "Render" 才能再次开启 polling。
+6. **未支持多 plan 并存对比**：每次 generate 都把 `plan` 状态替换；previous plan 行仍在 server 端 edit_plans 表（可后续通过未来"plan history"页查），但当前 page 只展示 latest。
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1（commit `73adae0`）
+- ✅ T2（commit `99f7be0`）
+- ✅ T3（commit `e90eead`）
+- ✅ T4（commit `f0af928`）
+- ✅ T5（commit `e57e76f`）
+- ✅ T6（commit `aa1e82c`）
+- ✅ T7（本轮）
+- ⬜ T8 / T9 仍为 LATER
+
+下一步候选：
+- **P11.T8** 多视频合成（R-147 / R-140 / R-142 / R-150 之上的能力收口）
+- **P11.T9** 阶段验收（端到端 smoke + 验收清单）
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(client): video render page — plan / audio / render / job polling (P11.T7)
+
+- pages/VideoRenderPage.tsx (route /trips/:tripId/render, 4 sections)
+- api/audioLibrary.ts (list / upload / import-url / delete)
+- api/videoEditPlan.ts (generateEditPlan + full plan types)
+- api/videoRender.ts (renderTrip + editedVideoStorageUrl helper)
+- hooks/useAudioLibrary.ts (list + refetch + AbortController)
+- hooks/useJobPolling.ts (2s polling, terminal stop, unmount cleanup)
+- TripDetailPage: header "Render video" link
+- App.tsx: /trips/:tripId/render route (ordered before /trips/:id)
+- ~200 lines CSS for render page (.render-* and .job-status-*)
+- new risk R-150 (no upload UI; users use API + Refresh)
+- ALL P11.T1~T6 server logic untouched (zero server file changes)
+
+Client: lint / typecheck / build clean. Bundle +3.2 kB JS + 0.42 kB CSS.
+P11.T8 / P11.T9 stay LATER.
+```

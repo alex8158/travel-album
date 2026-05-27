@@ -9,6 +9,7 @@ import TripFormPage from "./pages/TripFormPage";
 import TripListPage from "./pages/TripListPage";
 import TripRecycleBinPage from "./pages/TripRecycleBinPage";
 import UploadPage from "./pages/UploadPage";
+import VideoRenderPage from "./pages/VideoRenderPage";
 import VideoSegmentsPage from "./pages/VideoSegmentsPage";
 
 // Route shell. Business routes (per docs/design.md §2.2) land in their
@@ -43,6 +44,8 @@ export default function App() {
         <Route path="/trips/:id/upload" element={<UploadPage />} />
         <Route path="/trips/:id/recycle-bin" element={<TripRecycleBinPage />} />
         <Route path="/trips/:tripId/duplicates" element={<DuplicateGroupListPage />} />
+        {/* P11.T7 — render page: generate plan, pick audio, render. */}
+        <Route path="/trips/:tripId/render" element={<VideoRenderPage />} />
         <Route path="/trips/:id" element={<TripDetailPage />} />
         <Route path="/duplicate-groups/:id" element={<DuplicateGroupDetailPage />} />
         <Route path="/media/:id" element={<MediaDetailPage />} />
