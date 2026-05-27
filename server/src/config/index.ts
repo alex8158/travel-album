@@ -459,13 +459,14 @@ const schema = z
     VIDEO_AUDIO_LOUDNORM_ENABLED: boolDefault(true),
     VIDEO_AUDIO_FADE_IN_SECONDS: numNonNeg(1.5),
     VIDEO_AUDIO_FADE_OUT_SECONDS: numNonNeg(2),
-    // P11.T3 — when true, the bootstrap MAY call
-    // `AudioLibraryService.seedDefaultDirectory(...)` once at
-    // startup. V1 default is `false` — seeding is an operator
-    // action (run the smoke / a future CLI), not an implicit
-    // side-effect of every server start. The config knob exists
-    // here so a future task can wire it into `index.ts` without
-    // another config change; P11.T3 does NOT touch bootstrap.
+    // P11.T3 + P11.T9 — when true, bootstrap calls
+    // `AudioLibraryService.seedDefaultDirectory(...)` once at startup
+    // (non-blocking, failure-tolerant per CLAUDE.md §2.8 / §3.6).
+    // V1 default is `false` — operators opt in to auto-seed by
+    // setting `AUDIO_LIBRARY_SEED_ON_STARTUP=true`. With the flag
+    // off, audio library remains empty until populated via P11.T6
+    // upload/import-url endpoints. Render paths gracefully degrade
+    // (resolveAudioPolicy falls back to `keep_original` + warning).
     AUDIO_LIBRARY_SEED_ON_STARTUP: boolDefault(false),
     // P11.T6 audio library API knobs.
     //   * MAX_UPLOAD_BYTES — single-file size cap for both
@@ -1042,8 +1043,12 @@ export interface Config {
     };
     /** P11.T2 audio-processor toolkit knobs (NOT a worker; reusable
      * FFmpeg helpers consumed by future render / compose workers).
-     * P11.T3 added the `seedOnStartup` knob; bootstrap does NOT
-     * consume it yet (operator-controlled action). */
+     * P11.T3 added the `seedOnStartup` knob; P11.T9 wired bootstrap
+     * to consume it (off by default). When true, `index.ts` invokes
+     * `audioLibraryService.seedDefaultDirectory(defaultLibraryDir)`
+     * once at boot, non-blocking + failure-tolerant per CLAUDE.md
+     * §2.8 / §3.6 — render paths fall back to `keep_original` when
+     * the audio library is empty. */
     audio: {
       defaultLibraryDir: string;
       loudnormEnabled: boolean;

@@ -324,6 +324,44 @@ async function main(): Promise<void> {
     logger,
   });
 
+  // P11.T9: when AUDIO_LIBRARY_SEED_ON_STARTUP=true (off by default),
+  // walk `config.video.audio.defaultLibraryDir` once at boot and upsert
+  // any discovered audio files as `source_type='system'` rows. This
+  // closes requirements §7.19 acceptance 1 ("首次启动后存在若干内置默认
+  // 音频，可以直接被剪辑流程使用") without forcing audio assets to be
+  // present in non-seeded deployments.
+  //
+  // CLAUDE.md §2.8 / §3.6: never block server startup. Run async +
+  // catch every error path; a missing dir / unreadable file / ffprobe
+  // failure must NOT prevent `app.listen` from succeeding. Render
+  // paths gracefully degrade when no audio is available (P11.T4
+  // resolveAudioPolicy → keep_original + warning).
+  if (config.video.audio.seedOnStartup) {
+    void audioLibraryService
+      .seedDefaultDirectory(config.video.audio.defaultLibraryDir, { logger })
+      .then((summary) => {
+        logger.info(
+          {
+            directory: summary.directory,
+            directoryExisted: summary.directoryExisted,
+            scanned: summary.scanned,
+            inserted: summary.inserted,
+            updated: summary.updated,
+            unchanged: summary.unchanged,
+            skipped: summary.skipped,
+            failed: summary.failed,
+          },
+          "audio library seed complete",
+        );
+      })
+      .catch((seedErr: unknown) => {
+        logger.warn(
+          { err: serializeReason(seedErr), dir: config.video.audio.defaultLibraryDir },
+          "audio library seed failed (non-fatal; render paths fall back to keep_original)",
+        );
+      });
+  }
+
   // P4.T1: JobQueue — multi-channel polling scheduler. Replaces the
   // P3.T2 ImageChannelExecutor in production wiring. Each channel
   // owns its own concurrency cap (from config). Video / AI channels

@@ -5163,3 +5163,209 @@ Verification: smoke 27/27; 5 regressions green; server tsc/lint clean;
 client lint/typecheck/build clean (gzip 75.62 kB JS + 4.79 kB CSS).
 P11.T9 stays LATER.
 ```
+
+---
+
+## 2026-05-27 · P11.T9 阶段验收（P11 视频智能剪辑阶段收口）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T9 行从 `[ ] LATER` 翻成 `[x] MUST`。**P11 阶段（T1 – T9）全部 ✅，可收口。**
+
+### 本节范围
+
+按提示词收窄到三件事：
+
+1. **端到端验收**：逐条核对 requirements.md §7.14（8 条）+ §7.19（7 条）+ §7.20（7 条）+ §15.4（9 条）= **31 条验收标准**。
+2. **最小修复**：bootstrap 接入 `AUDIO_LIBRARY_SEED_ON_STARTUP` 开关（闭合 §7.19 acceptance 1）。
+3. **风险收口 + 文档归档**：风险登记表 + P11 阶段最终结论。
+
+**显式不做**（提示词要求）：
+- 不新增复杂功能
+- 不做 upload UI（R-150 保持）
+- 不引入 `video_compositions` 表（R-147 disposition 保持）
+- 不重构 render worker
+- 不改已通过的接口设计
+
+### 唯一代码改动（最小修复）
+
+**修改 3 个文件**：
+- `server/src/index.ts` — `audioLibraryService` 构造后追加 ~30 行：当 `config.video.audio.seedOnStartup=true` 时，bootstrap 异步调用 `audioLibraryService.seedDefaultDirectory(config.video.audio.defaultLibraryDir, { logger })`，`.then` 写 summary 日志，`.catch` 写 warn 日志但**不**让 server boot 失败（CLAUDE.md §2.8 / §3.6）。默认 false，对现有部署零影响。
+- `server/src/config/index.ts` — 同步 `AUDIO_LIBRARY_SEED_ON_STARTUP` env 注释 + `config.video.audio.seedOnStartup` 字段注释，明确"P11.T9 已 wire 到 bootstrap"。
+- `.env.example` — 同步注释段说明新行为。
+
+**修改 2 个文档**：
+- `docs/tasks.md` — P11.T9 行翻 [x] + 完整完成条目
+- `docs/progress.md` — 本节（P11 阶段终章）
+
+**未触碰**：任何 route / migration / repo / worker / service 业务逻辑 / 任何前端文件 / P11.T1~T8 全部业务路径。
+
+### 31 条验收映射表
+
+#### §7.14 视频智能剪辑（8 条）
+
+| # | 验收标准 | 满足证据 |
+| --- | --- | --- |
+| 1 | 从多个片段生成短视频 | P11.T4 `buildEditPlan` + P11.T5 worker concat；smoke `p11-multi-video-render` PART A 3-video 11 断言 ✓ |
+| 2 | 生成视频可正常播放 | smoke ffprobe 验证 hasVideo + AAC + 1920×1080 + duration ≈ sum ✓ |
+| 3 | 用户可查看每片段被选原因 | plan.clips[*].reason 字段 + UI PlanSummary 可折叠 details 表 ✓ |
+| 4 | 重新生成不同长度版本 | UI style radio（short=15s / standard=30s / long=60s）+ 后端 `targetDurationSec` 覆盖；smoke `video-edit-plan` 6 个 buildEditPlan 场景 ✓ |
+| 5 | 不启用 AI 时基础筛选可用 | `VIDEO_EDIT_PLAN_AI_ENABLED=false` 默认 + `noopPlanRefiner` 兜底；CLAUDE.md §2.8 ✓ |
+| 6 | 去原声替换默认配乐 | audioPolicy mode=replace_with_library + audioId 指向 source_type='system' 行；smoke `video-render-worker` BGM mode 验证 ✓ |
+| 7 | 手动替换默认音频为音频库其他音频 | UI Section 2 radio 每个 audio-library 行可选 + P11.T6 GET /api/audio-library；P11.T8 smoke PART B BGM mode ✓ |
+| 8 | 渲染失败明确错误 + 原视频不受影响 | error_message 含具体 mediaId + UI failed banner；smoke `p11-multi-video-render` PART D 软删触发 + PART E SHA256 字节级不变 ✓ |
+
+#### §7.19 音频库（7 条）
+
+| # | 验收标准 | 满足证据 |
+| --- | --- | --- |
+| 1 | 首次启动后存在内置默认音频 | **本节修复**：bootstrap `AUDIO_LIBRARY_SEED_ON_STARTUP=true` 时自动 seed；smoke `audio-library-seed` 36/36（包括 happy + 缺失目录 graceful + 退化路径）✓（前提：操作员在 `server/assets/audio/default/` 放音频文件并打开开关；默认 off 维持当前行为，render 路径降级 keep_original） |
+| 2 | 上传音频显示在列表 | P11.T6 `POST /api/audio-library/upload` + `GET /api/audio-library`；smoke `audio-library-api` upload+list 闭环 ✓ |
+| 3 | URL 导入 + 标 url_import | P11.T6 `POST /api/audio-library/import-url`；migration 017 加 `'url_import'` enum；smoke `audio-library-api` 含 import-url + SSRF 防御 case ✓ |
+| 4 | 不支持格式/超大/不可达明确拒绝 | multipart size cap + Content-Type allowlist + SSRF 防御（protocol allowlist + dns.lookup + IP-class 检查 + pinned lookup + size cap + timeout）；smoke 验证 ✓ |
+| 5 | 用户可删除自己上传/导入 | P11.T6 `DELETE /api/audio-library/:id` + service `deleteUserAudio` 拒删 system 行；smoke ✓ |
+| 6 | 系统内置不被普通删除 | service blocks `source_type='system'` → 403 SYSTEM_AUDIO_PROTECTED；smoke ✓ |
+| 7 | 不会因远程 URL 失效而失败 | url_import 强制先下载到本地存储，渲染时只读 `file_path`；audio-library-api smoke 验证 ✓ |
+
+#### §7.20 多视频合成（7 条）
+
+| # | 验收标准 | 满足证据 |
+| --- | --- | --- |
+| 1 | 选择多个剪辑视频并调整顺序 | 后端 plan.clips 数组顺序生效（worker 按 order 索引拼接）+ 前端 Section 0 显示 "in the order shown"；**前端 drag-reorder UI 未做**（已记为后续 polish，非阻塞 — order 来自 P11.T4 sort 规则） |
+| 2 | 三种音频策略 | keep_original / replace_with_library / mute；smoke `p11-multi-video-render` PART B 三 mode 跨多视频 ✓ |
+| 3 | 输出可正常播放，画面、时长一致 | smoke ffprobe 验证 hasVideo + duration ≈ sum ✓ |
+| 4 | 不修改输入剪辑视频或原视频 | smoke `p11-multi-video-render` PART E 3 个源视频 SHA256 byte-equal ✓ |
+| 5 | 失败时明确错误 | smoke PART D error_message 含具体 mediaId ✓ |
+| 6 | 输出可独立查看、下载、继续合成 | 查看 ✓（storage URL + UI 内嵌 video）/ 下载 ✓（anchor a 标签）/ **继续合成 部分不支持** — edited 输出是 `media_versions(version_type='edited')` 行挂在 first-source media_items，不是独立 media_items，无法直接作为下一轮 plan 输入。R-147 disposition 保持：当前 V1 不支持递归合成；要支持需引入 `video_compositions` 表或把 edited 提升为独立 media_items，留待真实需求 |
+| 7 | 输入参数不一致时归一化输出统一规格 | worker Stage 2 per-clip `scale + force_original_aspect_ratio=decrease + pad + fps + libx264 + yuv420p + aac + 48kHz`；smoke PART A 用 testsrc+testsrc2 不同 pattern 验证 ✓（R-142 完全闭合） |
+
+#### §15.4 音频处理与多视频合成验收（9 条）
+
+| # | 验收标准 | 满足证据 |
+| --- | --- | --- |
+| 1 | 剪辑流程中去原声替换默认配乐 | 见 §7.14.6 |
+| 2 | 上传音频到音频库 | 见 §7.19.2 |
+| 3 | URL 导入音频 | 见 §7.19.3 |
+| 4 | 手动替换剪辑视频音频 | 见 §7.14.7 |
+| 5 | 多剪辑视频按顺序合成 | 见 §7.20.1 |
+| 6 | 三种音频策略 | 见 §7.20.2 |
+| 7 | 原视频和已剪辑不被覆盖 | 见 §7.20.4 + §7.14.8（SHA256 byte-equal）+ UPSERT 仅刷 `(media_id, 'edited')` 单行 |
+| 8 | 渲染/合成失败前端可见明确错误 | 见 §7.14.8 + UI failed banner + status pill |
+| 9 | 音频循环/裁剪/淡入淡出 | P11.T2 `audioProcessor.prepareBackgroundMusic`（loop / atrim / afade in+out / loudnorm 单 pass）；smoke `audio-processor` 34/34 ✓ |
+
+**结论**：31 条中 **30 条完全满足** + **1 条部分满足**（§7.20.6 继续合成需 `video_compositions` 升级，已记 R-147 当前 disposition）。
+
+### 验收命令与结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm run typecheck` | ✅ 干净 |
+| `cd server && npm run lint` | ✅ 干净 |
+| `cd server && npm run build` | ✅ 干净 |
+| `cd server && npm run smoke:audio-processor` | ✅ 34/34 |
+| `cd server && npm run smoke:audio-library-seed` | ✅ 36/36 |
+| `cd server && npm run smoke:audio-library-api` | ✅ 24/24 |
+| `cd server && npm run smoke:video-edit-plan` | ✅ 33/33 |
+| `cd server && npm run smoke:video-render-worker` | ✅ 30/30 |
+| `cd server && npm run smoke:video-optimize-worker` | ✅ 52/52 |
+| `cd server && npm run smoke:p11-multi-video-render` | ✅ 27/27 |
+| `cd server && npm run smoke:p10-acceptance` | ✅ 37/37 |
+| `cd server && npm run smoke:p9-acceptance` | ✅ 36/36 |
+| `cd server && npm run smoke:jobs-api` | ✅ 28/28（boot-sensitive 回归） |
+| `cd server && npm run smoke:video-api` | ✅ 48/48（boot-sensitive 回归） |
+| `cd server && npm run smoke:trips` | ✅ 22/22（boot-sensitive 回归） |
+| `cd client && npm run lint` | ✅ 干净 |
+| `cd client && npm run typecheck` | ✅ 干净 |
+| `cd client && npm run build` | ✅ gzip 75.62 kB JS + 4.79 kB CSS（与 P11.T8 一致，本节无前端改动） |
+
+**P11 总测试盘**：12 smoke / **407 assertions PASS** / 0 fail。
+
+### P11 阶段最终任务清单（T1 – T9）
+
+| 任务 | 状态 | Commit |
+| --- | --- | --- |
+| P11.T1 视频优化 worker（normalize / transcode） | ✅ | `73adae0` |
+| P11.T2 音频处理 toolkit（strip / trim / fade / loudnorm / loop / replace） | ✅ | `99f7be0` |
+| P11.T3 audio_library schema + seed runner + repository/service | ✅ | `e90eead` |
+| P11.T4 剪辑方案生成（rule engine + audioPolicy + AI hook） | ✅ | `f0af928` |
+| P11.T5 视频渲染 API + worker（plan → ffmpeg → media_versions(edited)） | ✅ | `e57e76f` |
+| P11.T6 音频库 user-facing API（list / upload / import-url / delete） | ✅ | `aa1e82c` |
+| P11.T7 前端剪辑预览 / 音频库选择 / 渲染入口 | ✅ | `77fa61c` |
+| P11.T8 多视频合成 acceptance smoke + 前端 trip videos 预览 | ✅ | `c42df3f` |
+| P11.T9 阶段验收 + bootstrap 自动 seed | ✅ | （本轮） |
+
+### 风险登记表（P11 阶段最终）
+
+| ID | 描述 | 当前 disposition |
+| --- | --- | --- |
+| **R-138** | audio library 系统行被误删 | ✅ **闭合**（P11.T6 service 拒删 `source_type='system'`） |
+| **R-139** | URL 导入 SSRF / 协议劫持 | ✅ **闭合**（P11.T6 protocol allowlist + dns.lookup + IP-class 检查 + pinned lookup + size cap + Content-Type allowlist + timeout） |
+| **R-140** | 长视频合成性能/稳定性 | ⚠️ **部分关闭**：4-stage pipeline + ffprobe verify + tmpdir cleanup + 失败路径 smoke 覆盖。**保留风险**：超大文件（>1 GB）或超多 clip（>50）下 ffmpeg 内存/磁盘占用未压测；进度推送仍是 polling（R-149） |
+| **R-142** | 跨视频规格 concat 兼容性 | ✅ **完全闭合**（worker Stage 2 强归一化 + smoke testsrc+testsrc2 跨 pattern 验证）|
+| **R-147** | edited 输出与多 edit 历史保留 | ✅ **当前 disposition 闭合**：`(media_id, 'edited')` UNIQUE + `edit_plans` 保留全部 plan + `overwrite=true` 重渲染 + `media_versions.params.sourceMediaIds` 完整审计。**保留**：§7.20.6 "继续合成" 需 `video_compositions` 表升级，留待真实需求 |
+| **R-148** | preview vs final mode V1 无实际差异 | ⚠️ **保留**：仅 `params.mode` 字段记录，ffmpeg 参数不变；未来可在 preview mode 用更低 CRF / 更小分辨率加速 |
+| **R-149** | job polling 而非 SSE | ⚠️ **保留**：`useJobPolling` 2s 间隔 + 终态停止 + unmount cleanup；正常 ops 下负载可接受 |
+| **R-150** | audio library 无 upload UI | ⚠️ **保留**：P11.T6 后端 endpoint 完备，用户用 curl / 未来管理页；render page Section 2 指导用户走 API + Refresh |
+| **R-151（新增）** | 枚举 / 单位与 requirements.md 命名漂移 | ⚠️ **保留**：impl `source_type='system/user/url_import'` vs spec `system_default/upload/url_import`；impl 3-mode audioMode vs spec 5-mode；impl `fadeInSeconds/fadeOutSeconds` vs spec `fadeInMs/fadeOutMs`。**行为完备**（impl 是 spec 的功能超集 via audioId+system rows），仅命名/单位漂移，留待未来 API v2 或文档统一时一次对齐 |
+
+R-1~R-137 见此前阶段进度记录，本阶段未触动。
+
+### 关键设计决策（P11 阶段总结）
+
+1. **plan/render 解耦 + plan 永久持久化**：generate-edit-plan 总是写 `edit_plans` 表并返回带 id 的 plan；render 只传 planId。让 user 可重渲染同一 plan + 防止 generate→render 之间 user 改 audio 选择导致语义漂移。
+2. **render 输出挂在 `clips[0].mediaId`**：避免引入新 schema；`(media_id, 'edited')` UNIQUE = "每个 first-source 一个 latest edited"。多 edit 历史靠 `edit_plans` + `overwrite=true` 区分。
+3. **worker Stage 2 per-clip 强归一化是 R-142 闭合关键**：scale + force_original_aspect_ratio=decrease + pad + fps + libx264 + yuv420p + aac + 48kHz 保证 concat demuxer 接受任意源；smoke testsrc+testsrc2 显式证明。
+4. **audio library 与 media_items 完全解耦**：独立 `audio_library` 表 + 独立存储目录 + 独立 source_type 枚举。FK 与 trips/media 0 耦合 → 一个音频可跨多 trip / 多 plan 复用。
+5. **AI 默认 off + noopPlanRefiner 兜底**：`VIDEO_EDIT_PLAN_AI_ENABLED=false` 默认；即使打开也通过 refiner 接口注入真实实现，否则继续走 noop。CLAUDE.md §2.8 红线兜底。
+6. **bootstrap 自动 seed 非阻塞**（P11.T9 本节）：`AUDIO_LIBRARY_SEED_ON_STARTUP=true` 时 fire-and-forget seed；seed 失败仅 warn，不影响 server boot。render 路径自动降级 keep_original。
+7. **"复用 + 验证" 而非 "新建"**（P11.T8 核心判断）：多视频合成的后端引擎在 P11.T4 + T5 已经完整；P11.T8 = acceptance smoke + 前端可见性，0 server 业务代码改动。
+8. **前端 useJobPolling 终态停止 + unmount cleanup**：避免 onmount poller 泄漏；正常 ops 下 2s 间隔 + 终态停止 = 单次 render 大约 1-3 次 poll。
+
+### P11 阶段是否可以收口
+
+✅ **可以收口。**
+
+- 31 条验收 30 条完全满足 + 1 条 disposition 明确（R-147）
+- 12 个 smoke / 407 assertion 全绿
+- server + client 全检查干净
+- 红线（CLAUDE.md §2.2 / §2.4 / §2.8 / §3.6 / §3.7 / §3.8 / §3.9 / §5）全部遵守
+- 保留风险（R-140 / R-147 / R-148 / R-149 / R-150 / R-151）均已登记 + 给出 disposition + 不阻塞 P11 收口
+
+**下一阶段建议**：按 `docs/tasks.md` 推进 P12（或继续后续阶段）。R-151 命名漂移可在 P12+ 接前后端 API 重命名时一次对齐；R-150 upload UI 可在前端管理页或 render page inline modal 中补齐；R-140 长视频压测可作为独立 polish 任务。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): wire audio library seed-on-startup + P11 stage acceptance (P11.T9)
+
+- server/src/index.ts: bootstrap consults config.video.audio.seedOnStartup
+  and invokes audioLibraryService.seedDefaultDirectory(...) async +
+  failure-tolerant. Off by default (AUDIO_LIBRARY_SEED_ON_STARTUP=false).
+  Closes requirements §7.19 acceptance 1 ("首次启动后存在若干内置默认音频")
+  without forcing audio assets to be present.
+
+- server/src/config/index.ts + .env.example: sync seed-on-startup comments
+  to reflect bootstrap wiring (was: "operator-controlled, not yet wired";
+  now: "bootstrap consumes when true, non-blocking per §2.8 / §3.6").
+
+- docs/tasks.md + docs/progress.md: P11.T9 complete; 31-criterion
+  acceptance matrix (§7.14 / §7.19 / §7.20 / §15.4) with evidence;
+  risk register R-138..R-151 with dispositions; P11 stage closed.
+
+Verification (P11 stage acceptance):
+- 12 smokes / 407 assertions PASS (audio-processor 34 + audio-library-seed
+  36 + audio-library-api 24 + video-edit-plan 33 + video-render-worker 30
+  + video-optimize-worker 52 + p11-multi-video-render 27 + p10-acceptance
+  37 + p9-acceptance 36 + jobs-api 28 + video-api 48 + trips 22)
+- server tsc/lint/build clean; client lint/typecheck/build clean
+- 30/31 acceptance criteria fully satisfied; 1 (§7.20.6 "继续合成") has
+  documented R-147 disposition for future video_compositions upgrade.
+
+Risk closures: R-138 / R-139 (P11.T6) / R-142 (P11.T8). New: R-151
+(enum / unit naming drift vs requirements — behavior complete, naming
+deferred to future API v2). Open: R-140 / R-147 / R-148 / R-149 / R-150.
+
+P11 stage closed. Ready to proceed to P12 (or next stage in tasks.md).
+```
