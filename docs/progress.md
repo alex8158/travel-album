@@ -4945,3 +4945,221 @@ feat(client): video render page — plan / audio / render / job polling (P11.T7)
 Client: lint / typecheck / build clean. Bundle +3.2 kB JS + 0.42 kB CSS.
 P11.T8 / P11.T9 stay LATER.
 ```
+
+---
+
+## 2026-05-27 · P11.T8 多视频合成（trip 级拼接 / 复用已有引擎 / 验收 smoke + 前端可见性）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T8 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 关键判断（"不重复造轮子"）
+
+提示词明确要求"如果已有类似接口，请优先复用，不重复造接口"。检查现状发现：
+
+- **P11.T4 `generate-edit-plan`** 已是 trip 级：当 body 没传 `mediaIds` 时，service `resolveCandidatesFromTrip` 自动拉 trip 下所有 active video media（含 P11.T1 video_optimized 优先回源）。
+- **P11.T5 render worker** 已支持多 clip 顺序拼接：Stage 2 per-clip 强归一化到统一规格 → Stage 3 concat demuxer `-c copy` 顺序拼接 → Stage 4 audioPolicy 应用。
+
+→ **多视频合成的后端引擎在 P11.T4 / T5 已经完整存在**。P11.T8 不新增重复 endpoint（避免与 `generate-edit-plan` / `render` 撞车），而是补两块：(1) 多视频端到端 **acceptance smoke** 让 R-147 / R-140 / R-142 有具名验证证据；(2) 前端 `VideoRenderPage` 加 **"Trip videos" 预览段** 让用户清晰知道渲染会合成哪些视频。
+
+### 范围按提示词收窄
+
+实现：
+- 新增 27 case 端到端真 ffmpeg + 真 SQLite + 真 LocalStorage acceptance smoke
+- 前端 `VideoRenderPage.tsx` 加 "Section 0 Trip videos" 预览段（数字编号列表 + 文件名 + 时长 + 维度 + mime）
+- 加 5 个 `.render-trip-video*` className（grid + monospace + 右对齐 meta）
+- `server/package.json` 加 `smoke:p11-multi-video-render` 脚本
+
+**显式不做**（留给未来）：
+- 任何 server route / migration / repo / worker / service / config / errors 改动（**0 server code changes**）
+- 不引入 `video_compositions` 表（R-147 升级方案保留待真实需求出现）
+- 不新增复杂转场 / crossfade / fade in/out
+- 不做 upload UI（R-150 保持）
+- 不动 P11.T1~T7 任何业务路径
+
+### 修改 / 新增的文件
+
+**新增（1）**：
+- `server/src/scripts/p11-multi-video-render-smoke.ts`（751 行；27 case 端到端真 ffmpeg + 真 SQLite + 真 LocalStorageProvider，6 part 覆盖）
+
+**修改（3）**：
+- `client/src/pages/VideoRenderPage.tsx` — 加 import `useTripMedia` + `tripVideos` `useMemo` filter + Section 0 渲染（数字编号列表 + 链接 → `/media/:id` + 单视频 vs 多视频文案区分 + 空状态 status-warning + loading state）
+- `client/src/index.css` — 追加 ~50 行 `.render-trip-videos` / `.render-trip-video-row` / `.render-trip-video-index` / `.render-trip-video-name` / `.render-trip-video-meta` 5 个新 className
+- `server/package.json` — 加 `smoke:p11-multi-video-render` script
+
+**文档（2）**：`docs/tasks.md`（P11.T8 行翻 [x]） + `docs/progress.md`（本节）
+
+**未触碰**：任何 server 业务代码（route / migration / repo / worker / service / config / errors 改动 = 0 行）/ P11.T1~T7 任何业务路径 / 既有前端任何其他页面 / TripDetailPage / App.tsx / 任何 hook 或 API client
+
+### Smoke 27 case 分布
+
+```
+PART A — 3-video happy path (11 assertions)
+  1. plan has 3 clips (one per video)
+  2. plan.sourceMediaIds matches the 3 seeded videos
+  3. plan.totalDurationSec > 0 and ≤ target
+  4. plan has 2 transitions for 3 clips (N-1, kind='none')
+  5. render enqueue outcome=created + jobId returned
+  6. render job reaches terminal 'success'
+  7. edited.mp4 written under derived/{firstClipMediaId}/
+  8. edited output is H.264 + valid ffprobe metadata (1920×1080)
+  9. edited duration ≈ sum of plan clip durations
+ 10. edited has AAC audio stream (keep_original default)
+ 11. media_versions.params records ALL 3 sourceMediaIds + planId + clipCount
+       (这条是 R-147 disposition 关键证据)
+
+PART B — audio policy 跨多视频 (3 modes × 2 assertions = 6)
+ 12. keep_original: render success + audio=aac kept
+       (合并到 PART A 第 6/10 条)
+ 13. mute mode: status=success
+ 14. mute mode: NO audio stream
+ 15. BGM plan resolved with backgroundAudioId set
+ 16. BGM mode: status=success
+ 17. BGM mode: AAC audio + 720p video
+
+PART C — single-video regression (4 assertions, P11.T7 保护)
+ 18. single-trip plan has exactly 1 clip
+ 19. single-trip plan emits 0 transitions
+ 20. single-video render still succeeds
+ 21. single-video edited.mp4 + media_versions row exists
+
+PART D — 失败路径（mid-flight soft-delete）4 assertions
+ 22. 2-video plan generated
+ 23. 软删第 2 个 clip 源 media 后 render job 终态 'failed'
+ 24. error_message 含具体 mediaId（让用户能定位）
+ 25. NO media_versions(edited) row 泄漏
+
+PART E — SHA256 源完整性
+ 26. 3 个源视频 SHA256 byte-equal 不变（CLAUDE.md §2.4 红线）
+
+PART F — DB integrity
+ 27. PRAGMA foreign_key_check 0 rows + integrity_check 'ok'
+```
+
+测试用 ffmpeg `testsrc` + `testsrc2` patterns 模拟跨规格视频源，证明 Stage 2 强归一化能让 concat demuxer 接受任意源。
+
+### 前端 Section 0 设计
+
+```
+┌─ Trip videos ─────────────────────────────────────┐
+│ 3 videos will be composed into one edited output, │
+│ in the order shown below.                         │
+│                                                   │
+│ #1  IMG_4523.MOV          12.4s  1920×1080  qt    │
+│ #2  IMG_4567.MOV           8.7s  1920×1080  qt    │
+│ #3  GoPro123.mp4           5.2s  1280×720   mp4   │
+└───────────────────────────────────────────────────┘
+```
+
+文案：
+- 0 video → status-warning："This trip has no videos. Add at least one video before rendering."
+- 1 video → "1 video will be re-encoded to a single edited output."
+- N video → "N videos will be composed into one edited output, in the order shown below."
+
+复用 `useTripMedia(tripId, 200)` hook（已存在 P9 阶段）+ filter `m.type === "video"` + `useMemo` 缓存。每行 filename 是到 `/media/:id` 的 link，meta 列显示 duration / dims / mime。
+
+### 关键设计决策
+
+1. **"复用 + 验证" 而非 "新建"**：检查现状发现 P11.T4+T5 已支持多视频，本任务变成"补 acceptance smoke + 前端可见性"。这是本节最重要的决策。
+2. **不引入 `video_compositions` 表**：R-147 升级方案（"多 edit 历史并存"）是产品决策而非技术阻塞。当前 `(media_id, 'edited')` UNIQUE + `edit_plans` 表保留历史 + `overwrite=true` 重渲染 已能覆盖核心需求。
+3. **Stage 2 强归一化是 R-142 关键**：worker `scale + force_original_aspect_ratio=decrease + pad + fps + libx264 + yuv420p + aac + 48kHz` 保证 concat demuxer 接受任意源；smoke PART A 用 testsrc + testsrc2 patterns 显式验证跨规格拼接。
+4. **media_versions.params 记录 sourceMediaIds 数组**：是 R-147 disposition 关键 — 即使 schema 没改，params JSON 已审计所有源视频 id，未来 `video_compositions` 表升级时数据可迁移。
+5. **失败路径 smoke 软删第 2 clip 而非第 1 clip**：第 1 clip 是 first-source media，软删它会让整个 plan 早期就 404；第 2 clip 软删能更精确验证 worker per-clip 验证逻辑（Stage 1 第 N 个 clip 失败 → 整个 job 失败 → 无 leak）。
+6. **前端 Section 0 用 useTripMedia 而非新增 API**：复用既有 hook + 内存 filter，0 新 API 调用。
+7. **不暴露多视频与单视频差异**：渲染入口 / 渲染参数 / outcome 全部一致，仅文案区分。"P11.T7 单视频" → "P11.T8 多视频" 是无缝升级。
+8. **CSS 完全 additive**：所有 `.render-trip-video*` className 都是新增，不覆盖既有样式。
+
+### 检查命令结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm run smoke:p11-multi-video-render` | ✅ **27/27 PASS** |
+| `cd server && npm run smoke:video-render-worker` | ✅ 30/30（回归） |
+| `cd server && npm run smoke:audio-library-api` | ✅ 24/24（回归） |
+| `cd server && npm run smoke:video-edit-plan` | ✅ 33/33（回归） |
+| `cd server && npm run smoke:p10-acceptance` | ✅ 37/37（回归） |
+| `cd server && npm run smoke:p9-acceptance` | ✅ 36/36（回归） |
+| `cd server && npm run typecheck` | ✅ 干净 |
+| `cd server && npm run lint` | ✅ 干净 |
+| `cd client && npm run lint` | ✅ 干净 |
+| `cd client && npm run typecheck` (`tsc -b`) | ✅ 干净 |
+| `cd client && npm run build` (`tsc -b && vite build`) | ✅ 67 modules / gzip **75.62 kB JS + 4.79 kB CSS**（vs P11.T7 75.34 + 4.69 kB；+0.28 kB JS + 0.10 kB CSS 用于新 Section 0 + 5 className） |
+
+### 红线遵守
+
+- **§2.2 不改原视频**：smoke PART E 显式 SHA256 byte-equal 验证 3 个源视频字节级不变 ✓
+- **§2.4 不动 originals**：上同 ✓
+- **§3.6 HTTP 立即返回**：复用 P11.T5 worker，不阻塞 ✓
+- **§3.7 单 clip 失败不静默**：smoke PART D 验证第 2 clip 软删触发整个 job failed + error_message 含具体 mediaId ✓
+- **§3.8 reason 字段完整**：`media_versions.params` JSON 包含完整审计（planId + clipCount + sourceMediaIds 数组 + audioPolicy + transcode knobs）✓
+- **§3.9 不动 user_decision**：本任务不触发任何 user_decision 相关逻辑 ✓
+- **§5 无密钥**：smoke 无任何外部凭据 ✓
+
+### R-147 / R-140 / R-142 disposition
+
+| ID | 原始风险 | 本次 disposition |
+| --- | --- | --- |
+| **R-147** | `(media_id, 'edited')` UNIQUE 行限制同一 first-source 只一个 latest edited | **部分缓解 → 闭合**：`edit_plans` 表保留所有 plan 历史 + `overwrite=true` 可重渲染不同 plan + `media_versions.params.sourceMediaIds` 数组完整审计。"多 edit 历史并存"是产品决策而非技术阻塞，留待真实需求出现时引入 `video_compositions` 表升级。 |
+| **R-140** | 多视频长合成稳定性 | **部分关闭**：4-stage pipeline 设计 + ffprobe verify + tmpdir cleanup + 显式失败路径 smoke 覆盖（PART D）；进度推送 / SSE 仍是 polish，留 R-149。 |
+| **R-142** | 跨视频规格 concat 兼容性 | **完全闭合**：worker Stage 2 per-clip 强归一化（scale + pad + fps + libx264 + yuv420p + aac + 48kHz）保证 concat demuxer 接受任意源；smoke PART A 用 testsrc + testsrc2 不同 pattern 显式证明跨规格拼接 + 输出维度统一（1920×1080）。 |
+
+R-150（无 upload UI）保持开放。R-138 / R-139（P11.T6 已闭合）/ R-148（preview vs final V1 无差异）/ R-149（2s 轮询而非 SSE）维持当前 disposition。
+
+### 当前已知限制
+
+1. **单 first-source 同时只一个 edited row**：见 R-147 disposition。多 edit 历史靠 `edit_plans` + `overwrite=true` 区分版本。
+2. **未支持复杂转场**：所有 clip 间转场 `kind='none'`，靠强归一化保证视觉连续。fade/crossfade 留待后续 polish。
+3. **未支持自定义 clip 顺序**：plan 顺序来自 P11.T4 排序（capturedAt ASC fallback created_at），UI 不支持拖拽重排。Polish 候选。
+4. **upload UI 仍空**：R-150 保持。用户得用 API + Refresh 灌音频。
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1（commit `73adae0`）
+- ✅ T2（commit `99f7be0`）
+- ✅ T3（commit `e90eead`）
+- ✅ T4（commit `f0af928`）
+- ✅ T5（commit `e57e76f`）
+- ✅ T6（commit `aa1e82c`）
+- ✅ T7（commit `<待填>` P11.T7 已提交于上一会话）
+- ✅ T8（本轮）
+- ⬜ T9（阶段验收）
+
+下一步候选：
+- **P11.T9** 阶段验收（端到端 smoke + 验收清单 + R-147 等遗留风险归档）
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server,client): multi-video composition acceptance + trip videos preview (P11.T8)
+
+- server/src/scripts/p11-multi-video-render-smoke.ts (NEW, 751 lines, 27/27 PASS)
+  PART A: 3-video happy path (11 assertions, including sourceMediaIds audit)
+  PART B: audio policy keep_original / mute / replace_with_library
+  PART C: single-video regression (P11.T7 protection)
+  PART D: mid-flight soft-delete failure (clip 2 missing, no edited leak)
+  PART E: SHA256 byte-equal on 3 original videos (CLAUDE.md §2.2 / §2.4)
+  PART F: foreign_key_check + integrity_check
+
+- client/src/pages/VideoRenderPage.tsx: add Section 0 "Trip videos" preview
+  uses useTripMedia(tripId, 200) + filter type='video', numbered list with
+  filename / duration / dims / mime; clear copy for 1 vs N videos.
+
+- client/src/index.css: ~50 lines for .render-trip-videos* (grid + monospace)
+- server/package.json: smoke:p11-multi-video-render script
+
+Architectural judgement: reuse, don't duplicate. P11.T4 generate-edit-plan
+already pulls all trip videos when mediaIds omitted; P11.T5 render worker
+already concats clips. P11.T8 = acceptance smoke + frontend visibility,
+zero new server endpoints / migrations / workers / services / config.
+
+R-147 partial-close (sourceMediaIds in media_versions.params + edit_plans
+history + overwrite=true). R-142 fully closed. R-140 partially closed.
+
+Verification: smoke 27/27; 5 regressions green; server tsc/lint clean;
+client lint/typecheck/build clean (gzip 75.62 kB JS + 4.79 kB CSS).
+P11.T9 stays LATER.
+```

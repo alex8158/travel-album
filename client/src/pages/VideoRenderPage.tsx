@@ -34,10 +34,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import {
-  type AudioLibraryItem,
-  type AudioLibrarySourceType,
-} from "../api/audioLibrary";
+import { type AudioLibraryItem, type AudioLibrarySourceType } from "../api/audioLibrary";
 import { getJobById } from "../api/jobs";
 import {
   generateEditPlan,
@@ -46,14 +43,11 @@ import {
   type GenerateEditPlanBody,
   type VideoEditPlan,
 } from "../api/videoEditPlan";
-import {
-  editedVideoStorageUrl,
-  renderTrip,
-  type RenderTripResult,
-} from "../api/videoRender";
+import { editedVideoStorageUrl, renderTrip, type RenderTripResult } from "../api/videoRender";
 import { useAudioLibrary } from "../hooks/useAudioLibrary";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { useTrip } from "../hooks/useTrip";
+import { useTripMedia } from "../hooks/useTripMedia";
 
 /** UI-level audio choice. `keep_original` / `mute` are synthetic
  * (no audio row); `library` carries the selected library row id. */
@@ -78,6 +72,17 @@ export default function VideoRenderPage(): JSX.Element {
   const { tripId } = useParams<{ tripId: string }>();
   const navigate = useNavigate();
   const { trip, loading: tripLoading, error: tripError } = useTrip(tripId);
+
+  // P11.T8 — pull the trip's media so we can show the user the
+  // exact set of videos the rule engine will compose. The render
+  // call itself does NOT take an explicit `mediaIds` list (the
+  // server resolves "all active video media in the trip" when the
+  // body field is absent); this list is purely informational.
+  const tripMedia = useTripMedia(tripId, 200);
+  const tripVideos = useMemo(
+    () => tripMedia.media.filter((m) => m.type === "video"),
+    [tripMedia.media],
+  );
 
   // ---- Plan generation state ---------------------------------------
   const [style, setStyle] = useState<EditPlanStyle>("standard");
@@ -181,7 +186,9 @@ export default function VideoRenderPage(): JSX.Element {
     if (planAudioMode === "keep_original") return "Keep original";
     if (planAudioMode === "replace_with_library") {
       const row = audio.items?.find((a) => a.id === planAudioId);
-      return row ? `Background music: ${row.displayName}` : `Background music: ${planAudioId ?? "?"}`;
+      return row
+        ? `Background music: ${row.displayName}`
+        : `Background music: ${planAudioId ?? "?"}`;
     }
     return planAudioMode;
   }, [planAudioMode, planAudioId, audio.items]);
@@ -233,8 +240,8 @@ export default function VideoRenderPage(): JSX.Element {
           </Link>
           <h1>Render video — {trip.title}</h1>
           <p className="trip-detail-meta">
-            Generate an edit plan from the trip&apos;s videos, choose background music, and
-            render a single edited MP4. The render runs asynchronously on the server.
+            Generate an edit plan from the trip&apos;s videos, choose background music, and render a
+            single edited MP4. The render runs asynchronously on the server.
           </p>
         </div>
         <div className="page-header-actions">
@@ -249,6 +256,69 @@ export default function VideoRenderPage(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {/* ============================================================
+          Section 0 — Trip videos preview (P11.T8 multi-video).
+          Surfaces the exact set the rule engine will compose so
+          the user has clear expectations before clicking
+          "Generate plan". The render itself is trip-level — it
+          pulls these videos by trip id, not by an explicit list,
+          so the user doesn't pick the set here.
+          ============================================================ */}
+      <section className="trip-detail-section">
+        <div className="trip-detail-section-header">
+          <h2>Trip videos</h2>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              tripMedia.refetch();
+            }}
+            disabled={tripMedia.loading}
+          >
+            {tripMedia.loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+
+        {tripMedia.error !== null && (
+          <p className="status-text status-error" role="alert">
+            Failed to load trip videos: {tripMedia.error}
+          </p>
+        )}
+
+        {tripMedia.loading && tripVideos.length === 0 ? (
+          <p className="status-text">Loading trip videos…</p>
+        ) : tripVideos.length === 0 ? (
+          <p className="status-text status-warning">
+            This trip has no active videos. Upload at least one video before generating a plan.
+          </p>
+        ) : (
+          <>
+            <p className="status-text">
+              {tripVideos.length === 1
+                ? "1 video in this trip will be re-encoded to a single edited output."
+                : `${tripVideos.length} videos in this trip will be composed into one edited output, in the order shown.`}
+            </p>
+            <ul className="render-trip-videos">
+              {tripVideos.map((v, idx) => (
+                <li key={v.id} className="render-trip-video-row">
+                  <span className="render-trip-video-index">#{idx + 1}</span>
+                  <span className="render-trip-video-name">
+                    <Link to={`/media/${v.id}`}>
+                      {(v.originalPath ?? v.id).split("/").slice(-1)[0]}
+                    </Link>
+                  </span>
+                  <span className="render-trip-video-meta">
+                    {v.duration !== null ? formatDuration(v.duration) : "—"}
+                    {v.width !== null && v.height !== null && ` · ${v.width}×${v.height}`}
+                    {v.mimeType !== null && ` · ${v.mimeType}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
 
       {/* ============================================================
           Section 1 — Generate edit plan
@@ -374,8 +444,8 @@ export default function VideoRenderPage(): JSX.Element {
 
           {audio.items !== null && audio.items.some((i) => !i.isActive) && (
             <p className="status-text">
-              {audio.items.filter((i) => !i.isActive).length} inactive audio entries are hidden
-              from this picker. They remain available in the audio library admin view.
+              {audio.items.filter((i) => !i.isActive).length} inactive audio entries are hidden from
+              this picker. They remain available in the audio library admin view.
             </p>
           )}
         </fieldset>
@@ -519,12 +589,7 @@ export default function VideoRenderPage(): JSX.Element {
           {job?.status === "success" && editedUrl !== null && (
             <div className="render-output-card">
               <p className="status-text">Render complete.</p>
-              <video
-                className="render-output-video"
-                controls
-                preload="metadata"
-                src={editedUrl}
-              />
+              <video className="render-output-video" controls preload="metadata" src={editedUrl} />
               <p>
                 <a href={editedUrl} className="btn-secondary" download>
                   Download edited.mp4
