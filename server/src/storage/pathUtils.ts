@@ -78,6 +78,36 @@ export function derivedLogicalPath(tripId: string, mediaId: string, relPath: str
   return `trips/${tripId}/derived/${mediaId}/${safe}`;
 }
 
+/** P11.T6 — closed subdir enum for `audio_library/{kind}/`.
+ *
+ *   * `user`     — user-uploaded files (`POST /api/audio-library/upload`)
+ *   * `imported` — files downloaded from a URL (`POST /api/audio-library/import-url`)
+ *
+ * `system` is intentionally NOT in this enum: bundled defaults live
+ * OUTSIDE the storage root at the configured `DEFAULT_AUDIO_LIBRARY_DIR`
+ * (P11.T2 / P11.T3 convention; default `server/assets/audio/default/`).
+ * Writing user-owned audio under the same on-disk tree as the
+ * git-tracked system audio would mix mutable + immutable assets,
+ * which is exactly what these subdirs separate.
+ */
+export type AudioLibrarySubdir = "user" | "imported";
+
+/** Compose the canonical logical path for an audio_library file. */
+export function audioLibraryLogicalPath(
+  subdir: AudioLibrarySubdir,
+  audioId: string,
+  extension: string,
+): string {
+  if (subdir !== "user" && subdir !== "imported") {
+    throw invalidKey(
+      `audio_library subdir must be 'user' or 'imported', got: ${printableValue(subdir)}`,
+    );
+  }
+  assertValidId(audioId, "audioId");
+  assertValidExtension(extension);
+  return `audio_library/${subdir}/${audioId}.${extension}`;
+}
+
 /**
  * Resolve a logical path under the given storage root, double-checking
  * that the resolved absolute path remains inside the root. Throws

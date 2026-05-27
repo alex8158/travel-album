@@ -467,6 +467,24 @@ const schema = z
     // here so a future task can wire it into `index.ts` without
     // another config change; P11.T3 does NOT touch bootstrap.
     AUDIO_LIBRARY_SEED_ON_STARTUP: boolDefault(false),
+    // P11.T6 audio library API knobs.
+    //   * MAX_UPLOAD_BYTES — single-file size cap for both
+    //     `POST /upload` (busboy) and `POST /import-url`
+    //     (Content-Length precheck + streaming counter).
+    //     50 MB covers typical CC0 / royalty-free 3-5min tracks
+    //     at 256 kbps; raisable for archival uploads.
+    //   * IMPORT_TIMEOUT_MS — wall-clock cap on the URL-import
+    //     downloader. 30 s comfortably covers slow but legitimate
+    //     CDN responses; misbehaving SSRF-bait servers fail.
+    //   * IMPORT_USER_AGENT — value sent in the User-Agent header
+    //     during URL imports. Identifying ourselves makes upstream
+    //     CDN abuse-detection more reasonable than the default
+    //     "node-fetch" / no UA.
+    AUDIO_LIBRARY_MAX_UPLOAD_BYTES: intPositive(50 * 1024 * 1024),
+    AUDIO_LIBRARY_IMPORT_TIMEOUT_MS: intPositive(30_000),
+    AUDIO_LIBRARY_IMPORT_USER_AGENT: strDefault(
+      "travel-album-server/1.0 (+audio-library-importer)",
+    ),
     // P11.T4 — when true, `VideoEditPlanService.generatePlan(...)`
     // routes through an injected `AiRefinePlanRefiner` after the
     // rule engine produces the plan. V1 default is `false`; even
@@ -1032,6 +1050,10 @@ export interface Config {
       fadeInSeconds: number;
       fadeOutSeconds: number;
       seedOnStartup: boolean;
+      /** P11.T6 — audio-library API caps. */
+      maxUploadBytes: number;
+      importTimeoutMs: number;
+      importUserAgent: string;
     };
     /** P11.T4 video edit plan knobs. `aiEnabled` is a hook for
      * future AI-driven plan refinement; V1 default is `false`. */
@@ -1204,6 +1226,9 @@ function toConfig(raw: RawConfig, loadedDotenvFiles: readonly string[]): Config 
         fadeInSeconds: raw.VIDEO_AUDIO_FADE_IN_SECONDS,
         fadeOutSeconds: raw.VIDEO_AUDIO_FADE_OUT_SECONDS,
         seedOnStartup: raw.AUDIO_LIBRARY_SEED_ON_STARTUP,
+        maxUploadBytes: raw.AUDIO_LIBRARY_MAX_UPLOAD_BYTES,
+        importTimeoutMs: raw.AUDIO_LIBRARY_IMPORT_TIMEOUT_MS,
+        importUserAgent: raw.AUDIO_LIBRARY_IMPORT_USER_AGENT,
       },
       editPlan: {
         aiEnabled: raw.VIDEO_EDIT_PLAN_AI_ENABLED,

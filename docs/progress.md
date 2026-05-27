@@ -4581,3 +4581,205 @@ feat(server): video render API + worker — POST /api/trips/:tripId/render (P11.
 No complex transitions, no real AI, no multi-trip composition (P11.T8),
 no frontend (P11.T7). P11.T6~T9 stay LATER.
 ```
+
+---
+
+## 2026-05-27 · P11.T6 音频库 user-facing API（list / upload / import-url / delete）
+
+### 状态
+
+✅ 完成。`docs/tasks.md` P11.T6 行从 `[ ] LATER` 翻成 `[x] MUST`。P11.T7 / P11.T8 / P11.T9 保持 `[ ] LATER`，本轮未触碰。
+
+### 范围按提示词收窄
+
+实现：
+- migration 017 给 `audio_library.source_type` 加 `'url_import'`
+- 4 个 endpoint：GET / POST upload / POST import-url / DELETE
+- multipart 上传复用 P2.T4 `parseUpload` busboy 工具链
+- URL 导入完整 SSRF 防御（protocol allowlist + private IP reject + DNS rebinding pin + size cap + timeout）
+- DELETE 与 P11.T5 render job 的引用检查（in-use → 409）
+- 24/24 PASS smoke 端到端覆盖
+
+**显式不做**（留给 P11.T7 / P11.T8 / 未来 polish）：
+- 前端音频管理 UI
+- 多视频合成（P11.T8）
+- 复杂 AI 音乐推荐
+- 大文件上传 / 慢 URL 导入的 job 化（V1 在 HTTP request 内完成，admin-style）
+- 反向 cleanup job（操作员从磁盘删 system 音频后 DB 同步；R-145 部分缓解但未完全闭合）
+
+### 修改 / 新增的文件
+
+**新增（4）**：
+- `server/migrations/017_extend_audio_library_url_import.sql` — STRICT 表 12 步重建给 source_type 加 `'url_import'`
+- `server/src/media/audioLibrarySchemas.ts` — 3 个 zod `.strict()` schema（list query / import-url body / upload multipart fields）
+- `server/src/routes/audioLibrary.ts` — `makeAudioLibraryRouter` 4 endpoint route
+- `server/src/scripts/audio-library-api-smoke.ts` — 24 个 case smoke
+
+**修改（13）**：
+- `server/src/media/audioLibraryRepository.ts` — `source_type` 三值扩展 + 新增 `listAllActive` / `listAll` / `deleteById`
+- `server/src/media/audioLibraryService.ts` — 可选 `writeDeps` 第二构造参数（storage + jobRepo + editPlansRepo + caps）+ 4 个新方法（`listAllActive` / `listActiveBySourceType` / `uploadAudio` / `importFromUrl` / `deleteAudio`）+ 完整 SSRF 防御实现（`isBlockedIp` / `downloadToFile` with pinned lookup）
+- `server/src/media/index.ts` — re-export 新增 5 个类型 + zod schemas
+- `server/src/jobs/jobRepository.ts` — 加 `findActiveByType(jobType)` 方法（LIMIT 256 防扫表）
+- `server/src/storage/LocalStorageProvider.ts` — `putAudioLibraryFile` 方法 + `PutAudioLibraryFileArgs` 类型
+- `server/src/storage/pathUtils.ts` — `audioLibraryLogicalPath` helper + `AudioLibrarySubdir` 闭合枚举
+- `server/src/storage/index.ts` — re-export
+- `server/src/errors/errorCodes.ts` — 7 个新 error code
+- `server/src/config/index.ts` — 3 个 env + `config.video.audio.{maxUploadBytes, importTimeoutMs, importUserAgent}`
+- `server/src/app.ts` — `audioLibraryService` + `audioLibraryMaxUploadBytes` deps + mount route
+- `server/src/index.ts` — 构造 `AudioLibraryService` with writeDeps + 注入 createApp
+- `server/src/scripts/video-edit-plan-smoke.ts` — 跟进 `createApp` 形状（加 audioLibraryService + cap）
+- `server/package.json` — `smoke:audio-library-api` 脚本
+- `.env.example` — P11.T6 段落 + 默认值
+
+**文档（2）**：`docs/tasks.md`（P11.T6 标 [x]） + `docs/progress.md`（本节）
+
+**未触碰**：客户端代码（0 行）/ P9 / P10 / P11.T1~T5 既有 worker / route / schema（除 audio_library enum 扩展 + JobRepository 加方法 — 全部 additive；render worker `audioLibraryRepo.findById` 调用不变）
+
+### API 列表
+
+| Method | Path | Body / Query | 成功响应 | 关键错误 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/audio-library` | `?sourceType=system\|user\|url_import` (opt) / `?includeInactive=true\|false` (opt) | 200 `{ items: AudioLibraryView[] }` | 400 VALIDATION_FAILED (unknown query key / bad enum) |
+| POST | `/api/audio-library/upload` | `multipart/form-data` 单 audio file + optional `?name=&tags=` | 200 `AudioLibraryWriteResult` | 400 AUDIO_EMPTY / AUDIO_UNSUPPORTED_FORMAT / AUDIO_TOO_LARGE / BAD_REQUEST (truncated) |
+| POST | `/api/audio-library/import-url` | JSON `{ url, name?, tags? }` | 200 `AudioLibraryWriteResult` | 400 AUDIO_IMPORT_FORBIDDEN_URL (bad proto / private IP / DNS fail) / AUDIO_TOO_LARGE / AUDIO_UNSUPPORTED_FORMAT / AUDIO_IMPORT_DOWNLOAD_FAILED / VALIDATION_FAILED |
+| DELETE | `/api/audio-library/:id` | — | 200 `{ id, deleted: true, removedFilePath }` | 400 BAD_REQUEST (unknown id) / 403 AUDIO_SYSTEM_NOT_DELETABLE / 409 AUDIO_IN_USE |
+
+### 数据 / 文件处理方式
+
+**Schema**：
+- `audio_library.source_type` 闭合枚举扩展为 `{'system','user','url_import'}`（migration 017）
+- `system` 文件 in `server/assets/audio/default/`（git tracked，P11.T3 seed 写入）— DELETE refuses
+- `user` 文件 in `<storageRoot>/audio_library/user/{audioId}.{ext}`（上传写入）
+- `url_import` 文件 in `<storageRoot>/audio_library/imported/{audioId}.{ext}`（URL 下载写入）
+
+**Upload pipeline**：
+1. busboy 流到 staging tmp（per-part cap 强制 = `maxUploadBytes`）
+2. service: sizeBytes > 0 / sizeBytes ≤ cap / extension+MIME 双重 allowlist check（pure function `inferAudioExtension`）
+3. streaming SHA256 over file
+4. ffprobe duration（best-effort，失败降级到 `null`）
+5. `storage.putAudioLibraryFile({subdir:'user', audioId, ext, data, overwrite:false})`
+6. `repo.upsertBySourceTypeAndChecksum`：if same checksum 已存在 → UPDATE bytes-of-truth + 删 redundant 新文件；else INSERT
+7. metadata_json: `{uploadedAt, originalFilename, declaredMimeType}`
+8. 返回 row view
+
+**URL import pipeline**：
+1. zod `.strict()` body parse
+2. `new URL(url)` — invalid syntax → 400 `AUDIO_IMPORT_FORBIDDEN_URL`
+3. protocol allowlist: 仅 `http:` / `https:` → 否则 400
+4. `dns.lookup(hostname)` → 拿 IP；DNS fail → 400
+5. `isBlockedIp(address)`：拒绝 IPv4 `0.0.0.0/8` / `10/8` / `127/8` / `169.254/16` / `172.16-31/12` / `192.168/16` / `100.64-127/10` / `224-239/4` / `240-255/4` + IPv6 `::1` / `::` / `fc-fd/7` / `fe8-feb/10` / `ff/8` + IPv4-mapped 递归
+6. `http.request({ lookup: pinnedLookup })` 把后续 lookup 钉死到 pre-validated IP（DNS rebinding 防护）
+7. 响应状态 ≠ 200 → 400 `AUDIO_IMPORT_DOWNLOAD_FAILED`
+8. `Content-Length` 头 > maxBytes → 400 `AUDIO_TOO_LARGE` (precheck)
+9. 流式 pipe + size counter；mid-stream > maxBytes → 400 + req.destroy + tmp file 删
+10. wall-clock timeout（30s 默认）→ 400 `AUDIO_IMPORT_DOWNLOAD_FAILED`
+11. `inferAudioExtension(suggestedFilename || pathname, contentType)`；都不在白名单 → 400 `AUDIO_UNSUPPORTED_FORMAT`
+12. 同 upload 后续：SHA256 + ffprobe + putAudioLibraryFile(subdir='imported') + UPSERT
+13. metadata_json: `{importedAt, sourceUrl, resolvedIp, contentType}`
+
+**Delete pipeline**：
+1. `repo.findById(id)` — 不存在 → 400 `BAD_REQUEST`
+2. `sourceType === 'system'` → 403 `AUDIO_SYSTEM_NOT_DELETABLE`
+3. `jobRepo.findActiveByType('video_render')` → 扫每个 active job 的 payload.planId → `editPlansRepo.findById` → 解析 plan.audioPolicy.backgroundAudioId → 若等于待删 id → 409 `AUDIO_IN_USE`
+4. `storage.remove(relativePath)` 或 `fs.unlink(filePath)`（best-effort，文件不在也不阻断）
+5. `repo.deleteById(id)`（hard delete）
+6. 返回 `{ id, deleted, removedFilePath }`
+
+### 执行过的检查命令和结果
+
+- `cd server && npx tsc --noEmit` — 干净
+- `cd server && npm run lint` — 干净（0 warning）
+- `cd server && npm run build` — 干净
+- `cd server && npm run smoke:audio-library-api` — **24/24 PASS**
+- 邻近回归 6 个 smoke 全绿：
+  - `smoke:audio-library-seed` — 36/36 PASS（P11.T3 seed 不动）
+  - `smoke:video-render-worker` — 30/30 PASS（render worker 未被影响）
+  - `smoke:video-edit-plan` — 33/33 PASS
+  - `smoke:audio-processor` — 34/34 PASS
+  - `smoke:p10-acceptance` — 37/37 PASS
+  - `smoke:p9-acceptance` — 36/36 PASS
+- `cd client && npm run lint` / `typecheck` / `build` — 干净（无前端改动）
+
+### Smoke 覆盖（24 PASS / 0 FAIL）
+
+| 区段 | case 数 |
+| --- | --- |
+| GET /api/audio-library | 2（empty + 一个 system row）|
+| POST /upload | 4（happy + empty 400 + 非音频 400 + truncated 400）|
+| POST /import-url SSRF guards | 5（file:// + literal loopback + private range + invalid URL + unknown body key）+ 1 filter test |
+| DELETE | 6（system 403 / unknown 400 / user 200 + 文件删 / url_import 200 / in-use 409 + 行未删 / job cancelled 后 200）|
+| Integrity | 2（FK + integrity_check）|
+| 其他 | 4（GET ordering + 上传 row visible 等中间断言）|
+
+### 风险关闭情况
+
+| ID | 状态 | 说明 |
+| --- | --- | --- |
+| **R-138** 音频版权 / 来源风险 | ✅ **闭合** | 基础 CRUD API 落地；版权 / 来源 metadata 通过 `audio_library.metadata_json` 列存储（upload 写入 `uploadedAt / originalFilename / declaredMimeType`，url_import 写入 `importedAt / sourceUrl / resolvedIp / contentType`）。操作员后续可通过未来 admin API 编辑 `display_name / tags / metadata_json`。注意：本节只是 API 层；真实的版权管理需要内容运营侧填 metadata + 法务审核流程，那是运营侧而非代码侧的工作。|
+| **R-139** URL 导入 SSRF 边界风险 | ✅ **闭合** | 完整 SSRF 防御：protocol allowlist + dns.lookup IP class check（IPv4/v6 全 private/loopback/link-local/multicast 范围）+ http.request lookup 选项 pin 到 pre-validated IP 防 DNS rebinding + Content-Length precheck + streaming size counter + 30s wall-clock timeout + Content-Type allowlist + 扩展名 allowlist 双校验。smoke 覆盖 4 个拒绝路径（file:// / 127.0.0.1 / 10.0.0.1 / invalid URL）。 |
+| **R-145** 默认音频 / 用户音频删除一致性 | 🟡 **部分缓解** | DELETE 路径正确处理 DB+文件一致性 + system row 403 拒绝 + active render job 引用检查 409 拒绝。**未关闭**：反向 cleanup（操作员从磁盘删了 system 音频文件后 DB 没同步）。这是 cleanup-job 责任而非 user-facing API 责任；保留在 R-145 待未来 cron / cleanup job 实现。 |
+
+### 当前已知限制
+
+1. **大文件 / 慢 URL 同步处理**：upload / import-url 在 HTTP request 内完成（admin-style 接口）。50 MB 上限 + 30s 超时让这种同步处理 OK，但未来如果支持更大文件应考虑 job 化。
+2. **DNS rebinding 防御边界**：`http.request({ lookup: pinnedLookup })` 把后续 lookup 钉死到 pre-validated IP，但 HTTPS 的 SNI 仍使用原 hostname。理论上窄窗口可能存在；30s 总超时 + 50 MB 总大小让攻击窗口非常窄。
+3. **反向 cleanup 缺失**：见 R-145。
+4. **未做 dedup-across-source-type**：相同 checksum 在不同 source_type 中可以并存（不同行）。当前 UNIQUE 约束是 `(source_type, checksum)`；如果一个 user upload 与一个 system audio 字节相同，会有两行。运营侧可通过 `metadata_json` + 手动检查处理。
+5. **未做内容审核 / 版权数据库查询**：metadata_json 字段已就位但需要运营侧填写。
+
+### 阶段定位
+
+P11 阶段进度：
+- ✅ T1 已完成（commit `73adae0`）
+- ✅ T2 已完成（commit `99f7be0`）
+- ✅ T3 已完成（commit `e90eead`）
+- ✅ T4 已完成（commit `f0af928`）
+- ✅ T5 已完成（commit `e57e76f`）
+- ✅ T6 已完成（本轮）
+- ⬜ T7 / T8 / T9 仍为 LATER
+
+下一步候选：
+- **P11.T7** 前端剪辑预览（backend 已完整：P11.T4 generate-edit-plan + P11.T5 render + P11.T6 audio CRUD）
+- **P11.T8** 多视频合成（R-147 / R-140 / R-142 收口）
+- **P11.T9** 阶段验收
+
+### 是否可以进入 P11.T7
+
+**可以**。后端剪辑预览所需的全部依赖已经就绪：
+- 生成 plan：`POST /api/trips/:tripId/generate-edit-plan`（P11.T4）
+- 列音乐 / 上传 / 导入 / 删音乐：P11.T6 4 endpoint
+- 触发渲染：`POST /api/trips/:tripId/render`（P11.T5）
+- 看渲染状态：`GET /api/jobs/:id`（既有）
+- 浏览输出文件：`GET /storage/<path>`（既有）
+
+P11.T7 是纯前端任务，无新增后端依赖。
+
+### 是否可以提交本次变更
+
+可以。建议 commit 消息：
+
+```
+feat(server): audio library user-facing API (list / upload / import-url / delete) (P11.T6)
+
+- migration 017: extend audio_library.source_type enum with 'url_import'
+- routes: makeAudioLibraryRouter — 4 endpoints
+  - GET /api/audio-library (system → user → url_import, sourceType filter)
+  - POST /upload (multipart; busboy reuse from P2.T4)
+  - POST /import-url (full SSRF defense + pinned DNS lookup)
+  - DELETE /:id (system 403 / in-use 409 / hard delete)
+- service: AudioLibraryService.{uploadAudio, importFromUrl, deleteAudio}
+  - SHA256 streaming hash + best-effort ffprobe duration
+  - SSRF guard: protocol + IP-class + pinned lookup + size cap + timeout
+- repo: AudioLibraryRepository.{listAllActive, listAll, deleteById}
+- jobRepo: findActiveByType(jobType) for delete in-use check
+- storage: putAudioLibraryFile + audioLibraryLogicalPath helper
+- 7 new error codes (AUDIO_*)
+- config: AUDIO_LIBRARY_MAX_UPLOAD_BYTES / IMPORT_TIMEOUT_MS / IMPORT_USER_AGENT
+- smoke: smoke:audio-library-api — 24/24 PASS (real Express + SQLite)
+- R-138 ✅ closed (CRUD + metadata fields in place)
+- R-139 ✅ closed (SSRF defense in depth)
+- R-145 🟡 partial (delete path consistent; reverse cleanup deferred)
+
+No frontend, no multi-video composition, no AI music recommendation.
+P11.T7 ~ P11.T9 stay LATER.
+```

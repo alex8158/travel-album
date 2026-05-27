@@ -137,6 +137,7 @@ export class JobRepository {
   private readonly insertStmt;
   private readonly findByIdStmt;
   private readonly findLatestByMediaAndTypeStmt;
+  private readonly findActiveByTypeStmt;
   private readonly selectNextPendingImageStmt;
   private readonly claimStmt;
   private readonly markSuccessStmt;
@@ -178,6 +179,22 @@ export class JobRepository {
       WHERE media_id = ? AND job_type = ?
       ORDER BY created_at DESC, id DESC
       LIMIT 1
+    `);
+
+    // P11.T6 — "any active row of this type" for the audio-library
+    // delete in-use check. "Active" here is the closed set
+    // {pending, running, retrying} — terminal rows (success /
+    // failed / cancelled) don't block the delete because the
+    // render they describe is already done (success: file already
+    // produced) or won't run (failed / cancelled). LIMIT 256 is a
+    // paranoid upper bound; under normal queue conditions there
+    // are typically <10 active rows of any one job_type.
+    this.findActiveByTypeStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM processing_jobs
+      WHERE job_type = ? AND status IN ('pending', 'running', 'retrying')
+      ORDER BY created_at ASC, id ASC
+      LIMIT 256
     `);
 
     // Pick the oldest claimable image-channel job. P4.T2 expanded
@@ -494,6 +511,24 @@ export class JobRepository {
   findLatestByMediaIdAndType(mediaId: string, jobType: string): ProcessingJob | null {
     const row = this.findLatestByMediaAndTypeStmt.get(mediaId, jobType) as JobRow | undefined;
     return row ? rowToJob(row) : null;
+  }
+
+  /**
+   * P11.T6 — return every "active" (pending / running / retrying)
+   * job of a given type. Used by the audio-library DELETE path
+   * (`AudioLibraryService.deleteAudio`) to detect whether the
+   * row about to be removed is referenced by an in-progress
+   * render — refusing the delete in that case prevents a
+   * mid-render file-disappearance failure.
+   *
+   * Bounded by the JobQueue's concurrency + retry policy in
+   * normal operation (typically <10 active rows of any one type
+   * at any moment); a `LIMIT 256` is added defensively so a
+   * pathological state can't make this scan unbounded.
+   */
+  findActiveByType(jobType: string): ProcessingJob[] {
+    const rows = this.findActiveByTypeStmt.all(jobType) as JobRow[];
+    return rows.map(rowToJob);
   }
 
   /**

@@ -20,11 +20,25 @@ export {
 } from "./audioLibraryRepository.js";
 export {
   AudioLibraryService,
+  type AudioLibraryDeleteResult,
   type AudioLibrarySeedItem,
   type AudioLibrarySeedOutcome,
   type AudioLibrarySeedSummary,
+  type AudioLibraryServiceWriteDeps,
+  type AudioLibraryWriteResult,
+  type ImportAudioUrlInput,
   type SeedDefaultDirectoryOptions,
+  type UploadAudioInput,
 } from "./audioLibraryService.js";
+// P11.T6 zod schemas for the audio-library API.
+export {
+  importAudioUrlBodySchema,
+  listAudioLibraryQuerySchema,
+  uploadAudioMultipartFieldsSchema,
+  type ImportAudioUrlInput as ImportAudioUrlBody,
+  type ListAudioLibraryQuery,
+  type UploadAudioMultipartFields,
+} from "./audioLibrarySchemas.js";
 // P11.T4 — Video edit plan generator (rule engine) + service +
 // schema. Generates an edit-plan JSON document the future P11.T5
 // render worker will consume. NEVER renders / writes processing_jobs

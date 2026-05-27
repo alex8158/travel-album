@@ -27,12 +27,14 @@ import { makeErrorHandler, notFoundHandler } from "./middleware/errorHandler.js"
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { makeRequestLogger } from "./middleware/requestLogger.js";
 import type {
+  AudioLibraryService,
   MediaRepository,
   MediaService,
   VideoEditPlanService,
   VideoRenderService,
   VideoService,
 } from "./media/index.js";
+import { makeAudioLibraryRouter } from "./routes/audioLibrary.js";
 import { makeDedupRouter } from "./routes/dedup.js";
 import { makeHealthRouter } from "./routes/health.js";
 import { makeJobsRouter } from "./routes/jobs.js";
@@ -82,6 +84,15 @@ export interface CreateAppOptions {
    * job; the actual ffmpeg concat / audio mux runs on the video
    * channel executor. */
   readonly videoRenderService: VideoRenderService;
+  /** Audio library service (P11.T6) — backs the audio-library
+   * CRUD endpoints. The Service's write surface
+   * (`uploadAudio` / `importFromUrl` / `deleteAudio`) is only
+   * available when constructed with `writeDeps`; the bootstrap
+   * always passes them, smokes / unit tests can omit. */
+  readonly audioLibraryService: AudioLibraryService;
+  /** Per-file size cap reused by busboy in the audio-library
+   * multipart upload route. */
+  readonly audioLibraryMaxUploadBytes: number;
   /**
    * AIProvider (P10.T1) — read at the Media router to gate
    * `POST /api/media/:id/ai-refine` (P10.T3). Defaults to
@@ -112,6 +123,8 @@ export function createApp(opts: CreateAppOptions): Express {
     videoService,
     videoEditPlanService,
     videoRenderService,
+    audioLibraryService,
+    audioLibraryMaxUploadBytes,
     aiProvider,
     debugRoutes,
   } = opts;
@@ -181,6 +194,18 @@ export function createApp(opts: CreateAppOptions): Express {
   // optimize). HTTP returns the jobId so the client can poll
   // `GET /api/jobs/:id`.
   app.use("/api", makeVideoRenderRouter({ videoRenderService }));
+
+  // Audio library API (P11.T6). Mounted at /api so the routes
+  // live under `/api/audio-library` + `/api/audio-library/:id`.
+  // The `maxUploadBytes` cap is also the busboy per-part fileSize
+  // limit — see `routes/audioLibrary.ts` for the cap interplay.
+  app.use(
+    "/api",
+    makeAudioLibraryRouter({
+      audioLibraryService,
+      maxUploadBytes: audioLibraryMaxUploadBytes,
+    }),
+  );
 
   // Storage static-file route (P3.T1). Mounted at /storage (NOT under
   // /api) so the URL space cleanly separates JSON API from file

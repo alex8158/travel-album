@@ -55,6 +55,7 @@ import {
 } from "./quality/index.js";
 import {
   AudioLibraryRepository,
+  AudioLibraryService,
   EditPlansRepository,
   MediaAnalysisRepository,
   MediaRepository,
@@ -307,6 +308,19 @@ async function main(): Promise<void> {
     mediaRepo,
     editPlansRepo,
     jobRepo,
+    logger,
+  });
+  // P11.T6 — audio library service (now with write deps so
+  // upload / URL-import / delete endpoints work). Reads from the
+  // same audio_library table the P11.T3 seed runner + P11.T5
+  // render worker use.
+  const audioLibraryService = new AudioLibraryService(audioLibraryRepo, {
+    storage,
+    jobRepo,
+    editPlansRepo,
+    maxUploadBytes: config.video.audio.maxUploadBytes,
+    importTimeoutMs: config.video.audio.importTimeoutMs,
+    importUserAgent: config.video.audio.importUserAgent,
     logger,
   });
 
@@ -738,6 +752,8 @@ async function main(): Promise<void> {
     videoService,
     videoEditPlanService,
     videoRenderService,
+    audioLibraryService,
+    audioLibraryMaxUploadBytes: config.video.audio.maxUploadBytes,
     aiProvider,
     debugRoutes: config.nodeEnv !== "production",
   });

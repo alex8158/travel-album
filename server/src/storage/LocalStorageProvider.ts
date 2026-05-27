@@ -15,7 +15,13 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { alreadyExists, ioError, notFound, StorageError } from "./errors.js";
-import { derivedLogicalPath, originalLogicalPath, resolveUnderRoot } from "./pathUtils.js";
+import {
+  audioLibraryLogicalPath,
+  derivedLogicalPath,
+  originalLogicalPath,
+  resolveUnderRoot,
+  type AudioLibrarySubdir,
+} from "./pathUtils.js";
 import type {
   PutDerivedArgs,
   PutOriginalArgs,
@@ -23,6 +29,18 @@ import type {
   StorageProvider,
   StoredObject,
 } from "./StorageProvider.js";
+
+/** P11.T6 — `putAudioLibraryFile` arguments. Writes a user-uploaded
+ * or URL-imported audio under `audio_library/{subdir}/{audioId}.{ext}`.
+ * `system` audio is NOT covered by this method — that tree lives
+ * outside the storage root per P11.T3 convention. */
+export interface PutAudioLibraryFileArgs {
+  readonly subdir: AudioLibrarySubdir;
+  readonly audioId: string;
+  readonly extension: string;
+  readonly data: Buffer | Readable;
+  readonly overwrite?: boolean;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 // dev:   <repo>/server/src/storage
@@ -59,6 +77,14 @@ export class LocalStorageProvider implements StorageProvider {
 
   async putDerived(args: PutDerivedArgs): Promise<StoredObject> {
     const logicalPath = derivedLogicalPath(args.tripId, args.mediaId, args.relPath);
+    return this.writeFile(logicalPath, args.data, args.overwrite ?? false);
+  }
+
+  /** P11.T6 — write a user-uploaded or URL-imported audio under
+   * `audio_library/{subdir}/{audioId}.{ext}`. Defaults to
+   * non-overwrite to match `putOriginal`. */
+  async putAudioLibraryFile(args: PutAudioLibraryFileArgs): Promise<StoredObject> {
+    const logicalPath = audioLibraryLogicalPath(args.subdir, args.audioId, args.extension);
     return this.writeFile(logicalPath, args.data, args.overwrite ?? false);
   }
 

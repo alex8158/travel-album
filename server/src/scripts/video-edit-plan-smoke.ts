@@ -920,6 +920,19 @@ async function main(): Promise<void> {
       jobRepo,
       logger,
     });
+    // P11.T6 — audio library service with write deps so the
+    // smoke's createApp call satisfies CreateAppOptions. The
+    // edit-plan smoke doesn't exercise audio-library endpoints
+    // directly, but createApp now requires the service + cap.
+    const audioLibraryServiceForSmoke = new AudioLibraryService(audioLibraryRepo, {
+      storage,
+      jobRepo,
+      editPlansRepo,
+      maxUploadBytes: 50 * 1024 * 1024,
+      importTimeoutMs: 30_000,
+      importUserAgent: "smoke",
+      logger,
+    });
     const app: Express = createApp({
       logger,
       capabilities,
@@ -934,6 +947,8 @@ async function main(): Promise<void> {
       videoService,
       videoEditPlanService: planService,
       videoRenderService,
+      audioLibraryService: audioLibraryServiceForSmoke,
+      audioLibraryMaxUploadBytes: 50 * 1024 * 1024,
       aiProvider: new NoopProvider(),
       debugRoutes: false,
     });

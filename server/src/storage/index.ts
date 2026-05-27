@@ -9,7 +9,7 @@ export type {
   StoredObject,
 } from "./StorageProvider.js";
 
-export { LocalStorageProvider } from "./LocalStorageProvider.js";
+export { LocalStorageProvider, type PutAudioLibraryFileArgs } from "./LocalStorageProvider.js";
 
 export {
   StorageError,
@@ -26,7 +26,9 @@ export {
   assertSafeRelPath,
   assertValidExtension,
   assertValidId,
+  audioLibraryLogicalPath,
   derivedLogicalPath,
   originalLogicalPath,
   resolveUnderRoot,
+  type AudioLibrarySubdir,
 } from "./pathUtils.js";

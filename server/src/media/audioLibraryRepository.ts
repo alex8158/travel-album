@@ -23,8 +23,9 @@
 
 import type { SqliteDatabase } from "../db/connection.js";
 
-/** Closed enum mirroring the `source_type` CHECK in migration 014. */
-export type AudioLibrarySourceType = "system" | "user";
+/** Closed enum mirroring the `source_type` CHECK in migration 014
+ * (extended in migration 017 to add `'url_import'`). */
+export type AudioLibrarySourceType = "system" | "user" | "url_import";
 
 /**
  * Domain-shape audio library row. Field-level docs explain the
@@ -118,8 +119,11 @@ export class AudioLibraryRepository {
   private readonly findBySourceAndChecksumStmt;
   private readonly listActiveBySourceTypeStmt;
   private readonly listAllBySourceTypeStmt;
+  private readonly listAllActiveStmt;
+  private readonly listAllStmt;
   private readonly updateBytesOfTruthStmt;
   private readonly setActiveStmt;
+  private readonly deleteByIdStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     this.insertStmt = db.prepare(`
@@ -168,6 +172,45 @@ export class AudioLibraryRepository {
       ORDER BY display_name ASC, id ASC
     `);
 
+    // P11.T6 — `GET /api/audio-library` default response: every
+    // active row across all source types, with `system` listed
+    // first (operator-curated defaults), then `user`, then
+    // `url_import`. Within each group ordered by display_name ASC
+    // for deterministic UI.
+    //
+    // The `CASE source_type` ordering is the standard SQLite
+    // pattern for "enum sort with explicit order"; works with
+    // STRICT tables.
+    this.listAllActiveStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM audio_library
+      WHERE is_active = 1
+      ORDER BY
+        CASE source_type
+          WHEN 'system' THEN 0
+          WHEN 'user' THEN 1
+          WHEN 'url_import' THEN 2
+          ELSE 3
+        END,
+        display_name ASC,
+        id ASC
+    `);
+
+    // Admin variant — includes disabled rows. Same ordering.
+    this.listAllStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM audio_library
+      ORDER BY
+        CASE source_type
+          WHEN 'system' THEN 0
+          WHEN 'user' THEN 1
+          WHEN 'url_import' THEN 2
+          ELSE 3
+        END,
+        display_name ASC,
+        id ASC
+    `);
+
     // Seed-runner UPDATE branch. Touches ONLY the bytes-of-truth
     // columns + `updated_at`. Preserves:
     //   * `id` — stable handle, future renders may already reference it
@@ -198,6 +241,14 @@ export class AudioLibraryRepository {
           updated_at = @now
       WHERE id = @id
     `);
+
+    // P11.T6 — hard delete. The route layer enforces "system rows
+    // cannot be deleted" + "referenced-by-running-job rows cannot
+    // be deleted" BEFORE calling this; this SQL is the unconditional
+    // DB remove. Returns the number of rows deleted (0 on missing id).
+    this.deleteByIdStmt = db.prepare(`
+      DELETE FROM audio_library WHERE id = ?
+    `);
   }
 
   findById(id: string): AudioLibraryView | null {
@@ -223,6 +274,33 @@ export class AudioLibraryRepository {
   listAllBySourceType(sourceType: AudioLibrarySourceType): readonly AudioLibraryView[] {
     const rows = this.listAllBySourceTypeStmt.all(sourceType) as AudioLibraryRow[];
     return rows.map(rowToView);
+  }
+
+  /** P11.T6 — list every active row across all source types,
+   * sorted system → user → url_import (then display_name). The
+   * "GET /api/audio-library" default. */
+  listAllActive(): readonly AudioLibraryView[] {
+    const rows = this.listAllActiveStmt.all() as AudioLibraryRow[];
+    return rows.map(rowToView);
+  }
+
+  /** P11.T6 admin variant — includes disabled rows. */
+  listAll(): readonly AudioLibraryView[] {
+    const rows = this.listAllStmt.all() as AudioLibraryRow[];
+    return rows.map(rowToView);
+  }
+
+  /** P11.T6 — hard delete one row by id. Returns 1 on successful
+   * delete, 0 when the id was unknown. The caller MUST:
+   *   1. Enforce "system rows cannot be deleted" at the route layer.
+   *   2. Enforce "row not referenced by pending/running render
+   *      jobs" at the service layer.
+   *   3. Remove the on-disk file inside the same transaction (the
+   *      service does this; see `AudioLibraryService.deleteAudio`).
+   */
+  deleteById(id: string): number {
+    const info = this.deleteByIdStmt.run(id);
+    return info.changes as number;
   }
 
   /**
@@ -301,7 +379,12 @@ function rowToView(row: AudioLibraryRow): AudioLibraryView {
   // Defensive: the CHECK enum constrains source_type at the DB
   // layer, but the runtime cast is still needed to satisfy the
   // domain-type narrowing.
-  const sourceType: AudioLibrarySourceType = row.source_type === "user" ? "user" : "system";
+  const sourceType: AudioLibrarySourceType =
+    row.source_type === "user"
+      ? "user"
+      : row.source_type === "url_import"
+        ? "url_import"
+        : "system";
   return {
     id: row.id,
     name: row.name,
