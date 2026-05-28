@@ -42,6 +42,16 @@ export {
   LocalMockProvider,
   LOCAL_MOCK_MODEL_NAME,
   LOCAL_MOCK_PROVIDER_NAME,
+  LOCAL_MOCK_MODEL_SCENE_EMBEDDING,
+  LOCAL_MOCK_MODEL_AI_BLUR_CHECK,
+  LOCAL_MOCK_MODEL_SCENE_BEST_PICK,
+  LOCAL_MOCK_MODEL_REFINEMENT_SUGGEST,
+  LOCAL_MOCK_EMBEDDING_DIM,
+  LOCAL_MOCK_ALGORITHM_VERSION,
+  LOCAL_MOCK_REFINEMENT_PARAMS,
+  deriveEmbeddingFromHash,
+  deriveBlurClassFromHash,
+  pickBestByHash,
 } from "./LocalMockProvider.js";
 export {
   AiInvocationsRepository,

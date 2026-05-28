@@ -27,11 +27,25 @@
 import {
   AIProviderNotConfiguredError,
   AIProviderUnsupportedRequestError,
+  LocalMockProvider,
+  LOCAL_MOCK_ALGORITHM_VERSION,
+  LOCAL_MOCK_EMBEDDING_DIM,
+  LOCAL_MOCK_MODEL_AI_BLUR_CHECK,
+  LOCAL_MOCK_MODEL_REFINEMENT_SUGGEST,
+  LOCAL_MOCK_MODEL_SCENE_BEST_PICK,
+  LOCAL_MOCK_MODEL_SCENE_EMBEDDING,
+  LOCAL_MOCK_PROVIDER_NAME,
+  LOCAL_MOCK_REFINEMENT_PARAMS,
   NoopProvider,
   createAIProviderFromConfig,
+  deriveBlurClassFromHash,
+  deriveEmbeddingFromHash,
+  pickBestByHash,
   type AIRequest,
 } from "../ai/index.js";
 import type { Logger } from "../logger.js";
+
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // reporting
@@ -120,13 +134,17 @@ async function main(): Promise<void> {
       `size=${p.supports.size}`,
     );
     record(
-      "noop: supports.has(<any request type>) is false",
+      "noop: supports.has(<any request type>) is false (all 10 P12-extended values)",
       !p.supports.has("image_ai_refine") &&
         !p.supports.has("ai_caption") &&
         !p.supports.has("ai_classify") &&
         !p.supports.has("aesthetic_score") &&
         !p.supports.has("video_plan") &&
-        !p.supports.has("ranking"),
+        !p.supports.has("ranking") &&
+        !p.supports.has("scene_embedding") &&
+        !p.supports.has("ai_blur_check") &&
+        !p.supports.has("scene_best_pick") &&
+        !p.supports.has("refinement_suggest"),
       "ok",
     );
   }
@@ -330,6 +348,431 @@ async function main(): Promise<void> {
     true,
     "documented in AIProvider.ts header",
   );
+
+  // ===================================================================
+  // PART B — P12.T1: LocalMockProvider extensions
+  //
+  // The 4 new request types (`scene_embedding`, `ai_blur_check`,
+  // `scene_best_pick`, `refinement_suggest`) MUST:
+  //   * appear in the `supports` set;
+  //   * return deterministic stub output for the same input;
+  //   * return AIFailureResponse (not throw) for malformed input;
+  //   * never make a network call.
+  // ===================================================================
+
+  // -------------------------------------------------------------------
+  // CASE 11: LocalMock.supports lists all 5 known request types
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+    record(
+      "local-mock: name === 'local-mock'",
+      p.name === LOCAL_MOCK_PROVIDER_NAME,
+      `name=${p.name}`,
+    );
+    record(
+      "local-mock: available === true",
+      p.available === true,
+      `available=${p.available}`,
+    );
+    record(
+      "local-mock: supports lists exactly { image_ai_refine, scene_embedding, ai_blur_check, scene_best_pick, refinement_suggest }",
+      p.supports.size === 5 &&
+        p.supports.has("image_ai_refine") &&
+        p.supports.has("scene_embedding") &&
+        p.supports.has("ai_blur_check") &&
+        p.supports.has("scene_best_pick") &&
+        p.supports.has("refinement_suggest"),
+      `size=${p.supports.size}, members=${[...p.supports].sort().join(",")}`,
+    );
+    record(
+      "local-mock: supports rejects unimplemented types (ai_caption / video_plan / etc.)",
+      !p.supports.has("ai_caption") &&
+        !p.supports.has("ai_classify") &&
+        !p.supports.has("aesthetic_score") &&
+        !p.supports.has("video_plan") &&
+        !p.supports.has("ranking"),
+      "ok",
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CASE 12: scene_embedding — deterministic 16-d Float32 vector
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+    const input = Buffer.from("fixed-input-for-determinism-test", "utf-8");
+
+    const req: AIRequest = {
+      requestType: "scene_embedding",
+      mediaId: "mediaA",
+      inputBytes: input,
+    };
+
+    const r1 = await p.invoke(req);
+    const r2 = await p.invoke(req);
+
+    record(
+      "local-mock.scene_embedding: status='success'",
+      r1.status === "success",
+      `status=${r1.status}`,
+    );
+
+    if (r1.status === "success") {
+      record(
+        "local-mock.scene_embedding: model_name === 'local-mock-scene-embedding-v1'",
+        r1.modelName === LOCAL_MOCK_MODEL_SCENE_EMBEDDING,
+        `modelName=${r1.modelName}`,
+      );
+      record(
+        "local-mock.scene_embedding: costEstimate === 0",
+        r1.costEstimate === 0,
+        `cost=${r1.costEstimate}`,
+      );
+      record(
+        "local-mock.scene_embedding: outputBytes present",
+        r1.outputBytes !== undefined && r1.outputBytes.length > 0,
+        `bytes=${r1.outputBytes?.length ?? 0}`,
+      );
+
+      if (r1.outputBytes !== undefined && r2.status === "success") {
+        // Determinism: identical input → identical outputBytes.
+        const sameBytes =
+          r2.outputBytes !== undefined &&
+          r1.outputBytes.equals(r2.outputBytes);
+        record(
+          "local-mock.scene_embedding: determinism — same input → same outputBytes",
+          sameBytes,
+          `len=${r1.outputBytes.length}`,
+        );
+
+        // Payload shape sanity-check.
+        let parsed: {
+          requestType?: unknown;
+          algorithmVersion?: unknown;
+          embeddingDim?: unknown;
+          vector?: unknown;
+        };
+        try {
+          parsed = JSON.parse(r1.outputBytes.toString("utf-8"));
+        } catch (e) {
+          parsed = {};
+          record("local-mock.scene_embedding: outputBytes is valid JSON", false, describeError(e));
+        }
+        record(
+          "local-mock.scene_embedding: payload includes requestType + algorithmVersion + embeddingDim + vector",
+          parsed.requestType === "scene_embedding" &&
+            parsed.algorithmVersion === LOCAL_MOCK_ALGORITHM_VERSION &&
+            parsed.embeddingDim === LOCAL_MOCK_EMBEDDING_DIM &&
+            Array.isArray(parsed.vector) &&
+            parsed.vector.length === LOCAL_MOCK_EMBEDDING_DIM &&
+            parsed.vector.every((v: unknown) => typeof v === "number"),
+          `dim=${(parsed.vector as unknown[] | undefined)?.length}`,
+        );
+
+        // Cross-check: the worker can re-derive the same vector from
+        // the documented helper function. (Pure-function determinism.)
+        const expected = deriveEmbeddingFromHash(
+          createHash("sha256").update(input).digest(),
+          LOCAL_MOCK_EMBEDDING_DIM,
+        );
+        const actual = (parsed.vector as number[]) ?? [];
+        const matches =
+          actual.length === expected.length &&
+          actual.every((v, i) => Math.abs(v - (expected[i] ?? NaN)) < 1e-12);
+        record(
+          "local-mock.scene_embedding: vector === deriveEmbeddingFromHash(SHA256(input), 16)",
+          matches,
+          `len ok=${actual.length === expected.length}`,
+        );
+      }
+    }
+
+    // Missing inputBytes → failure response, not throw.
+    const failResp = await p.invoke({ requestType: "scene_embedding" });
+    record(
+      "local-mock.scene_embedding: empty input → AIFailureResponse (not throw)",
+      failResp.status === "failed" &&
+        failResp.modelName === LOCAL_MOCK_MODEL_SCENE_EMBEDDING &&
+        /non-empty inputBytes/i.test(
+          (failResp as { errorMessage: string }).errorMessage,
+        ),
+      `status=${failResp.status}`,
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CASE 13: ai_blur_check — deterministic class ∈ {sharp, maybe, blurry}
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+    const input = Buffer.from("blur-test-input", "utf-8");
+
+    const r1 = await p.invoke({ requestType: "ai_blur_check", inputBytes: input });
+    const r2 = await p.invoke({ requestType: "ai_blur_check", inputBytes: input });
+
+    record(
+      "local-mock.ai_blur_check: status='success'",
+      r1.status === "success",
+      `status=${r1.status}`,
+    );
+
+    if (r1.status === "success") {
+      record(
+        "local-mock.ai_blur_check: model_name === 'local-mock-ai-blur-check-v1'",
+        r1.modelName === LOCAL_MOCK_MODEL_AI_BLUR_CHECK,
+        `modelName=${r1.modelName}`,
+      );
+
+      if (r1.outputBytes !== undefined) {
+        let parsed: {
+          requestType?: unknown;
+          class?: unknown;
+          reason?: unknown;
+        };
+        try {
+          parsed = JSON.parse(r1.outputBytes.toString("utf-8"));
+        } catch {
+          parsed = {};
+        }
+        record(
+          "local-mock.ai_blur_check: payload class ∈ {sharp,maybe_blurry,blurry}",
+          parsed.requestType === "ai_blur_check" &&
+            (parsed.class === "sharp" ||
+              parsed.class === "maybe_blurry" ||
+              parsed.class === "blurry") &&
+            typeof parsed.reason === "string",
+          `class=${String(parsed.class)}`,
+        );
+
+        // Determinism: same input → same class (via helper).
+        const expected = deriveBlurClassFromHash(
+          createHash("sha256").update(input).digest(),
+        );
+        record(
+          "local-mock.ai_blur_check: class === deriveBlurClassFromHash(SHA256(input))",
+          parsed.class === expected,
+          `expected=${expected}, got=${String(parsed.class)}`,
+        );
+
+        // Run determinism: r1 and r2 same payload.
+        if (r2.status === "success" && r2.outputBytes !== undefined) {
+          record(
+            "local-mock.ai_blur_check: determinism — same input → same outputBytes",
+            r1.outputBytes.equals(r2.outputBytes),
+            "ok",
+          );
+        }
+      }
+    }
+
+    const failResp = await p.invoke({ requestType: "ai_blur_check" });
+    record(
+      "local-mock.ai_blur_check: empty input → AIFailureResponse",
+      failResp.status === "failed",
+      `status=${failResp.status}`,
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CASE 14: scene_best_pick — picks smallest-hash candidate
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+
+    // Three candidates; the helper says pick whichever hashes smallest.
+    const candidates = [
+      { mediaId: "media-alpha" },
+      { mediaId: "media-bravo" },
+      { mediaId: "media-charlie" },
+    ];
+    const expectedBest = pickBestByHash(candidates);
+
+    const r = await p.invoke({
+      requestType: "scene_best_pick",
+      params: { candidates },
+    });
+
+    record(
+      "local-mock.scene_best_pick: status='success' on valid candidates",
+      r.status === "success",
+      `status=${r.status}`,
+    );
+
+    if (r.status === "success") {
+      record(
+        "local-mock.scene_best_pick: model_name === 'local-mock-scene-best-pick-v1'",
+        r.modelName === LOCAL_MOCK_MODEL_SCENE_BEST_PICK,
+        `modelName=${r.modelName}`,
+      );
+
+      if (r.outputBytes !== undefined) {
+        let parsed: {
+          requestType?: unknown;
+          bestMediaId?: unknown;
+          reason?: unknown;
+          confidence?: unknown;
+        };
+        try {
+          parsed = JSON.parse(r.outputBytes.toString("utf-8"));
+        } catch {
+          parsed = {};
+        }
+        record(
+          "local-mock.scene_best_pick: payload bestMediaId === expected (pure-function determinism)",
+          parsed.requestType === "scene_best_pick" &&
+            parsed.bestMediaId === expectedBest,
+          `expected=${String(expectedBest)}, got=${String(parsed.bestMediaId)}`,
+        );
+        record(
+          "local-mock.scene_best_pick: confidence is a number in [0, 1]",
+          typeof parsed.confidence === "number" &&
+            parsed.confidence >= 0 &&
+            parsed.confidence <= 1,
+          `confidence=${String(parsed.confidence)}`,
+        );
+      }
+    }
+
+    // Single candidate → still picks it.
+    const single = await p.invoke({
+      requestType: "scene_best_pick",
+      params: { candidates: [{ mediaId: "solo" }] },
+    });
+    if (single.status === "success" && single.outputBytes !== undefined) {
+      const parsed = JSON.parse(single.outputBytes.toString("utf-8")) as {
+        bestMediaId: string;
+      };
+      record(
+        "local-mock.scene_best_pick: single candidate → that candidate is best",
+        parsed.bestMediaId === "solo",
+        `bestMediaId=${parsed.bestMediaId}`,
+      );
+    }
+
+    // Empty candidates → failure.
+    const empty = await p.invoke({
+      requestType: "scene_best_pick",
+      params: { candidates: [] },
+    });
+    record(
+      "local-mock.scene_best_pick: empty candidates → AIFailureResponse",
+      empty.status === "failed",
+      `status=${empty.status}`,
+    );
+
+    // Missing params → failure.
+    const noParams = await p.invoke({ requestType: "scene_best_pick" });
+    record(
+      "local-mock.scene_best_pick: missing params → AIFailureResponse",
+      noParams.status === "failed",
+      `status=${noParams.status}`,
+    );
+
+    // Malformed candidates (no mediaId) → failure.
+    const malformed = await p.invoke({
+      requestType: "scene_best_pick",
+      params: { candidates: [{ wrong: "shape" }] },
+    });
+    record(
+      "local-mock.scene_best_pick: malformed candidates → AIFailureResponse",
+      malformed.status === "failed",
+      `status=${malformed.status}`,
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CASE 15: refinement_suggest — fixed conservative JSON
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+    const input = Buffer.from("any-image-bytes", "utf-8");
+
+    const r1 = await p.invoke({ requestType: "refinement_suggest", inputBytes: input });
+    const r2 = await p.invoke({
+      requestType: "refinement_suggest",
+      inputBytes: Buffer.from("totally-different-bytes", "utf-8"),
+    });
+
+    record(
+      "local-mock.refinement_suggest: status='success'",
+      r1.status === "success",
+      `status=${r1.status}`,
+    );
+
+    if (r1.status === "success") {
+      record(
+        "local-mock.refinement_suggest: model_name === 'local-mock-refinement-suggest-v1'",
+        r1.modelName === LOCAL_MOCK_MODEL_REFINEMENT_SUGGEST,
+        `modelName=${r1.modelName}`,
+      );
+
+      if (r1.outputBytes !== undefined) {
+        const parsed = JSON.parse(r1.outputBytes.toString("utf-8")) as {
+          requestType?: unknown;
+          brightness?: unknown;
+          contrast?: unknown;
+          saturation?: unknown;
+          reason?: unknown;
+        };
+        record(
+          "local-mock.refinement_suggest: payload matches fixed conservative params",
+          parsed.requestType === "refinement_suggest" &&
+            parsed.brightness === LOCAL_MOCK_REFINEMENT_PARAMS.brightness &&
+            parsed.contrast === LOCAL_MOCK_REFINEMENT_PARAMS.contrast &&
+            parsed.saturation === LOCAL_MOCK_REFINEMENT_PARAMS.saturation &&
+            typeof parsed.reason === "string",
+          `brightness=${String(parsed.brightness)} contrast=${String(parsed.contrast)}`,
+        );
+
+        // Determinism (same shape regardless of input).
+        if (r2.status === "success" && r2.outputBytes !== undefined) {
+          record(
+            "local-mock.refinement_suggest: stub returns identical params regardless of input bytes",
+            r1.outputBytes.equals(r2.outputBytes),
+            "ok",
+          );
+        }
+      }
+    }
+
+    // Empty input → failure (mirrors image_ai_refine convention).
+    const failResp = await p.invoke({ requestType: "refinement_suggest" });
+    record(
+      "local-mock.refinement_suggest: empty input → AIFailureResponse",
+      failResp.status === "failed",
+      `status=${failResp.status}`,
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // CASE 16: LocalMock rejects unsupported request types via throw
+  // (e.g. video_plan / ai_caption — present in AIRequestType but
+  // NOT in this provider's supports set).
+  // -------------------------------------------------------------------
+  {
+    const p = new LocalMockProvider();
+    let threw: unknown;
+    try {
+      await p.invoke({ requestType: "video_plan", inputBytes: Buffer.from([1]) });
+    } catch (err) {
+      threw = err;
+    }
+    record(
+      "local-mock: invoke(video_plan) throws AIProviderUnsupportedRequestError",
+      threw instanceof AIProviderUnsupportedRequestError,
+      describeError(threw),
+    );
+    if (threw instanceof AIProviderUnsupportedRequestError) {
+      record(
+        "local-mock: thrown error carries code='AI_REQUEST_TYPE_UNSUPPORTED' + correct providerName",
+        threw.code === "AI_REQUEST_TYPE_UNSUPPORTED" &&
+          threw.providerName === LOCAL_MOCK_PROVIDER_NAME &&
+          threw.requestType === "video_plan",
+        `code=${threw.code} requestType=${threw.requestType}`,
+      );
+    }
+  }
 
   // -------------------------------------------------------------------
   // SUMMARY

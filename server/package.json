@@ -76,7 +76,8 @@
     "smoke:video-edit-plan": "tsx src/scripts/video-edit-plan-smoke.ts",
     "smoke:video-render-worker": "tsx src/scripts/video-render-worker-smoke.ts",
     "smoke:audio-library-api": "tsx src/scripts/audio-library-api-smoke.ts",
-    "smoke:p11-multi-video-render": "tsx src/scripts/p11-multi-video-render-smoke.ts"
+    "smoke:p11-multi-video-render": "tsx src/scripts/p11-multi-video-render-smoke.ts",
+    "smoke:migration-018": "tsx src/scripts/migration-018-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

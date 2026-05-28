@@ -34,10 +34,19 @@
 
 /**
  * Closed set of AI request types. Mirrors the CHECK enum on
- * `ai_invocations.request_type` (migration 012). A future request
- * type requires both a schema migration AND an extension of this
- * union — the schema is the single source of truth, this type is
- * its TypeScript mirror.
+ * `ai_invocations.request_type` (migrations 012 + 018). A future
+ * request type requires both a schema migration AND an extension
+ * of this union — the schema is the single source of truth, this
+ * type is its TypeScript mirror.
+ *
+ * P12.T1 added 4 new values for the curated-album pipeline (see
+ * design.md §7.8). The closed enum is now 10 values; any new
+ * value MUST land in three places at once:
+ *   1. `ai_invocations.request_type` CHECK (a new STRICT-rebuild
+ *      migration).
+ *   2. This TypeScript union.
+ *   3. Every concrete `AIProvider` implementation's `supports` set
+ *      (a provider may decline a value but the enum must list it).
  */
 export type AIRequestType =
   | "image_ai_refine"
@@ -45,7 +54,12 @@ export type AIRequestType =
   | "ai_classify"
   | "aesthetic_score"
   | "video_plan"
-  | "ranking";
+  | "ranking"
+  // P12.T1 — curated-album pipeline AI calls
+  | "scene_embedding"
+  | "ai_blur_check"
+  | "scene_best_pick"
+  | "refinement_suggest";
 
 /**
  * Closed set of audit row statuses. Mirrors the CHECK enum on
