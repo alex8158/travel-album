@@ -20,32 +20,34 @@
 ## 阶段 0：项目骨架（前置基础设施）
 
 > 对应 requirements §14 阶段 1 的“初始化前后端项目”和 design §3.2 目录结构。
+>
+> **状态：P0.T1 – P0.T8 已完成。** 历史阶段，commits 见 `git log --grep='P0'`；下面 checklist 状态在 P12 文档同步时回填。各任务的当时实现细节见 `docs/progress.md` P0 章节。
 
-- [ ] **P0.T1 [MUST]** 初始化 Git 仓库基础文件
+- [x] **P0.T1 [MUST]** 初始化 Git 仓库基础文件
   - 输出：`.gitignore`（忽略 `node_modules/`、`storage/`、`data/`、`.env`、构建产物）、`README.md` 简介、`.editorconfig`。
   - `README.md` 必须明确**系统级依赖**：宿主机需安装 `ffmpeg` 与 `ffprobe`（建议给出 macOS `brew install ffmpeg`、Ubuntu `apt-get install ffmpeg` 等示例命令），并说明缺失时仅视频功能失效、图片功能不受影响。
   - 不做：还不初始化任何 npm 项目。
-- [ ] **P0.T2 [MUST]** 初始化后端 TypeScript 工程
+- [x] **P0.T2 [MUST]** 初始化后端 TypeScript 工程
   - 输出：`server/package.json`、`tsconfig.json`、`server/src/index.ts` 空启动、ESLint + Prettier 基础。
   - 验证：`npm run build` 通过。
-- [ ] **P0.T3 [MUST]** 初始化前端 React + TS 工程
+- [x] **P0.T3 [MUST]** 初始化前端 React + TS 工程
   - 输出：`client/`（Vite 模板或等价），路由壳子，可访问 `/`。
   - 验证：`npm run dev` 可起本地服务。
-- [ ] **P0.T4 [MUST]** 集中配置层 + `.env.example`
+- [x] **P0.T4 [MUST]** 集中配置层 + `.env.example`
   - 输出：`server/src/config/index.ts` 读取并校验配置（`zod`）；根目录 `.env.example` 列出所有变量名（无真实值）。
   - `.env.example` 至少包含：`IMAGE_WORKER_CONCURRENCY=2`、`VIDEO_WORKER_CONCURRENCY=1`、`AI_WORKER_CONCURRENCY=1`、`JOB_RETRY_MAX`、`ZOMBIE_TIMEOUT_MS`、`STORAGE_DRIVER`、`STORAGE_LOCAL_ROOT`、`FFMPEG_PATH`（可选）、`FFPROBE_PATH`（可选）、`AI_ENABLED=false`、`AI_PROVIDER`、`AI_DAILY_LIMIT`、`AI_TRIP_LIMIT`、`UPLOAD_MAX_FILE_SIZE`、`UPLOAD_ALLOWED_IMAGE_EXT`、`UPLOAD_ALLOWED_VIDEO_EXT`、`PERMANENT_DELETE_ENABLED=false`。
   - `.env.example` 顶部以注释形式说明：`ffmpeg` / `ffprobe` 为系统级依赖，未安装时视频任务会失败但不影响图片处理。
   - 验证：缺少必需变量时启动报错；`PERMANENT_DELETE_ENABLED` 默认为 `false`。
-- [ ] **P0.T5 [MUST]** 引入 SQLite 与迁移机制
+- [x] **P0.T5 [MUST]** 引入 SQLite 与迁移机制
   - 输出：`server/src/db/connection.ts`、迁移脚本 runner、`migrations/000_init.sql` 占位（先只放 PRAGMA）。
   - 验证：启动后 `data/app.db` 生成，PRAGMA 生效。
-- [ ] **P0.T6 [MUST]** 结构化日志与统一错误响应
+- [x] **P0.T6 [MUST]** 结构化日志与统一错误响应
   - 输出：`pino` 日志中间件、`AppError` 基类、错误码常量、Express 错误处理中间件。
   - 验证：抛出 `AppError` 时返回设计文档定义的错误结构。
-- [ ] **P0.T7 [MUST]** `StorageProvider` 抽象 + 本地实现
+- [x] **P0.T7 [MUST]** `StorageProvider` 抽象 + 本地实现
   - 输出：`server/src/storage/index.ts` 接口、`LocalStorageProvider`（按 design §5.2 目录布局）。
   - 验证：单元测试覆盖 `putOriginal` / `putDerived` / `read` / `remove`。
-- [ ] **P0.T8 [MUST]** ffmpeg / ffprobe 启动检测 + `/api/health`
+- [x] **P0.T8 [MUST]** ffmpeg / ffprobe 启动检测 + `/api/health`
   - 输出：启动阶段一次性探测 `ffmpeg -version` / `ffprobe -version`（优先 `FFMPEG_PATH` / `FFPROBE_PATH`，否则走 `PATH`），结果存为运行时状态 `{ ffmpegAvailable, ffprobeAvailable, version }`。
   - 缺失时：日志输出明确警告（含安装建议），**不退出进程**；后续视频任务执行时识别该状态并以 `FFMPEG_NOT_AVAILABLE` 失败；图片任务路径完全不受影响。
   - `GET /api/health` 返回 `{ ffmpegAvailable, ffprobeAvailable, version, permanentDeleteEnabled, aiEnabled }`，便于诊断。
@@ -56,24 +58,26 @@
 ## 阶段 1：Trip 管理（CRUD）
 
 > requirements §7.1 / §10.1 / §10.2 / §14 阶段 1。
+>
+> **状态：P1.T1 – P1.T8 已完成。** 历史阶段，commits 见 `git log --grep='P1'`；下面 checklist 状态在 P12 文档同步时回填。各任务的当时实现细节见 `docs/progress.md` P1 章节。
 
-- [ ] **P1.T1 [MUST]** 新建迁移：`trips` 表（含软删除）
+- [x] **P1.T1 [MUST]** 新建迁移：`trips` 表（含软删除）
   - 字段以 requirements §8.1 为准。
-- [ ] **P1.T2 [MUST]** Trip Repository + Service
+- [x] **P1.T2 [MUST]** Trip Repository + Service
   - 提供 `create / list / getById / update / softDelete`。所有列表过滤 `deleted_at IS NULL`。
-- [ ] **P1.T3 [MUST]** Trip API 路由
+- [x] **P1.T3 [MUST]** Trip API 路由
   - `POST/GET /api/trips`、`GET/PATCH/DELETE /api/trips/:id`、`POST /api/trips/:id/cover`。
   - 此阶段封面策略：Trip 详情 / 列表响应中返回 `cover_url` 字段，固定指向**默认占位封面**（前端静态资源，例如 `/placeholder-cover.svg`）；`trips.cover_media_id` 默认 `NULL`。`POST /api/trips/:id/cover` 接受手动指定但此时尚无媒体可选，可先实现写入 `cover_media_id` 但允许 `null` 复位。
   - 校验：标题必填。
-- [ ] **P1.T4 [MUST]** 前端 Trip 列表页
+- [x] **P1.T4 [MUST]** 前端 Trip 列表页
   - 卡片网格、占位封面、空状态、按时间倒序。
-- [ ] **P1.T5 [MUST]** 前端 Trip 创建/编辑页
+- [x] **P1.T5 [MUST]** 前端 Trip 创建/编辑页
   - 表单：标题（必填）、说明、地点、起止日期。
-- [ ] **P1.T6 [MUST]** 前端 Trip 详情页骨架
+- [x] **P1.T6 [MUST]** 前端 Trip 详情页骨架
   - 显示标题、说明、计数（先全为 0），上传入口、Gallery 占位。
-- [ ] **P1.T7 [MUST]** Trip 删除二次确认
+- [x] **P1.T7 [MUST]** Trip 删除二次确认
   - 软删除路径，前端弹窗 + “可恢复”说明。
-- [ ] **P1.T8 [MUST]** 阶段验收
+- [x] **P1.T8 [MUST]** 阶段验收
   - 手动验证 requirements §7.1 验收标准 6 条全部通过。
 
 ---
@@ -278,11 +282,11 @@
 
 ---
 
-## 阶段 11：视频智能剪辑（后续）
+## 阶段 11：视频智能剪辑
 
-> requirements §7.13 / §7.14 / §7.19 / §7.20 / §14 阶段 11。LATER。
+> requirements §7.13 / §7.14 / §7.19 / §7.20 / §14 阶段 11。
 >
-> **规划范围（2026-05-25 文档同步）**：P11 在原“视频智能剪辑”基础上扩展为三块能力——视频基础优化与剪辑、音频处理 + 音频库、多视频合成。所有子任务保持 LATER 标记，尚未进入实现阶段。新增风险见 `docs/progress.md` 中的 R-138 ~ R-142。
+> **状态：P11.T1 – P11.T9 已完成（2026-05-27 收口）。** 范围按规划落地为三块能力：视频基础优化与剪辑、音频处理 + 音频库、多视频合成。最终完成情况见 `docs/progress.md` P11 阶段终章。风险登记 R-138 / R-139 / R-142 已闭合，R-140 部分关闭，R-147 当前 disposition 闭合（保留未来扩展点），R-148 / R-149 / R-150 / R-151 保留。各任务的实现细节保存在下面 `[x]` 任务行内的完成记录中。
 
 - [x] **P11.T1 [MUST]** 视频基础优化（转码 / 浏览器友好分辨率与码率标准化）（2026-05-26 完成；范围按提示词收窄到 transcoding + 分辨率/码率标准化，**不**做防抖 / 音量归一化 / 淡入淡出 / 去原声 / 默认配乐 / 多视频合成，那些留给 P11.T2~T9。新增 migration `013_extend_media_versions_video_optimized.sql`（12 步 STRICT 表重建，给 `media_versions.version_type` enum 加 `'video_optimized'`，与既有 8 值并列，FK / 索引 / 其他 CHECK 字节级保持），新增 `server/src/jobs/videoOptimizeWorker.ts`（`VIDEO_OPTIMIZE_JOB_TYPE='video_optimize'` 常量 + `makeVideoOptimizeHandler` factory + `VideoOptimizeSettings`；spawn ffmpeg `-i <abs> -map 0:v -map 0:a? -vf scale=-2:'min(ih,1080)' -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p -c:a aac -b:a 160k -movflags +faststart`，wall-clock cap 10min + SIGKILL + 4KB stderr 截断；落到 `derived/{mediaId}/video_optimized.mp4` via `storage.putDerived(overwrite=true)` 与设计 §5.2 一致；ffprobe verify 后 UPSERT `media_versions(version_type='video_optimized')` 含 width/height/file_size/mime + params JSON 记录所有 transcode 旋钮 + source codec/dur 便于审计）；config 层新增 8 个 env（`VIDEO_OPTIMIZE_TARGET_HEIGHT=1080` / `VIDEO_OPTIMIZE_CRF=23` / `VIDEO_OPTIMIZE_PRESET=medium` / `VIDEO_OPTIMIZE_VIDEO_CODEC=libx264` / `VIDEO_OPTIMIZE_AUDIO_CODEC=aac` / `VIDEO_OPTIMIZE_AUDIO_BITRATE_KBPS=160` / `VIDEO_OPTIMIZE_TIMEOUT_MS=600000` / `VIDEO_OPTIMIZE_WORKER_VERSION=1.0`）+ superRefine 守卫（CRF ≤ 51、targetHeight ≥ 144、preset 必须 x264 文档闭枚举），`.env.example` 加注释说明；`MediaService.optimizeVideoMedia(mediaIdInput)` 单 slot 入队（与 `enhanceMedia` / `aiRefineMedia` 对称：404 missing/soft-deleted、400 非 video、复用 `reprocessOneJobType` created/reset/skipped + reason）+ `OptimizeVideoMediaResult` 类型从 media 桶重导出；route `POST /api/media/:id/optimize-video` 注册在现有 media router 转发到 service；bootstrap 把 handler 注册到 video 通道（与 metadata/cover/proxy/keyframes/segments/segment_quality 共享 `VIDEO_WORKER_CONCURRENCY=1` 预算）。**与 video_proxy (P9.T4) 区分**：proxy 是内部 720p 低清分析源（CRF 28 + preset=veryfast），optimize 是用户面向 1080p 浏览器友好再编码（CRF 23 + preset=medium + audio 160 kbps）；两者用不同 version_type，文件不冲突。**红线遵守**：(1) 原始视频从不修改（独立 tmp + storage.putDerived 写入 derived/）；(2) `media_items.user_decision` 从不修改（纯转码）；(3) `media_items.active_version_type` 不动；(4) `media_items.preview_path` / `thumbnail_path` / `status` / `duration` / `width` / `height` 不动（scope-guard 已显式断言）；(5) 同一 media 重跑 → UPSERT 单行 media_versions + overwrite 单文件，不污染其他 version_type 行；(6) 不引入音频处理 / 音频库 / 多视频合成 / AI / 前端剪辑 UI（留给 P11.T2~T9）。失败模式（全部 throw → JobQueue 标 failed，原视频不被覆盖，无半成品 media_versions 行）：media missing / soft-deleted、非 video、NULL originalPath、ffmpeg spawn fail / exit≠0 / timeout、output 0 字节、ffprobe verify 失败。新增 `smoke:video-optimize-worker`（**52/52 PASS** 端到端真 ffmpeg + 真 SQLite + 真 LocalStorage：CASE 1 happy 12 断言（job success / 文件落盘 / H.264+MP4 / 不放大 240p / 音轨保留 AAC / media_versions 6 字段齐全 + status='ready' / params 7 旋钮记录全）+ CASE 2 原视频字节级不变 + CASE 3 scope-guard 7 列 media_items 不动 + CASE 4 单 version_type 行 + CASE 5 4K → 1080p 下采样 + CASE 6 audio-less source 成功（`-map 0:a?`）+ CASE 7 idempotent 4 断言 + CASE 8 image media 400 + CASE 9 soft-deleted P7 契约 + CASE 10 unknown / NULL originalPath + CASE 11 ghost-file ffmpeg failure + CASE 12 broken MP4 失败 + CASE 13 service 层 5 断言（404 / 400 / created / skipped / reset）+ CASE 14 FK + integrity check 干净）。回归 5 个邻近 smoke 全绿（video-proxy 35/35 / media-versions-api 35/35 / p9-acceptance 36/36 / p10-acceptance 37/37 / p7-recycle-bin-acceptance 60/60）；server `tsc --noEmit` / `eslint` / `tsc build` 干净；client `lint` / `typecheck` / `build` 干净（无 client 改动）。配套 requirements §7.13 验收前 5 条均通过：(1) 优化不覆盖原视频 ✅ (2) 优化后视频可正常播放（H.264/AAC/yuv420p/faststart）✅ (3) 音画同步未破坏（`-map 0:v -map 0:a?` 联动）✅ (4) 失败时退回原视频（仅 media_versions 行 + derived 文件，原文件未触碰）✅ (5) 用户可选用优化版本（output 通过 `/storage/...` 静态路由访问，前端入口留给 P11.T7）✅ + 用户扩展项：6（音量归一化峰值不爆音）— 留给 P11.T2 实现层。详见 `docs/progress.md` P11.T1 章节）
 - [x] **P11.T2 [MUST]** 音频处理基础能力（2026-05-26 完成；范围按提示词收窄到 FFmpeg 音频工具链：去原声 / 截取 / 淡入淡出 / 单 pass loudnorm / 背景音乐循环+截断 / 视频音轨替换 / 默认音乐库目录约定。**不**做 audio_library schema / API / 前端 UI / 剪辑方案生成 / render API / ducking / 多轨混音 / AI 选音乐 / vocal preservation —— 全部留给 P11.T3 ~ P11.T9。新增 `server/src/jobs/audioProcessor.ts` 集中封装 FFmpeg 调用（全部走 `spawn(cmd, [...args])` 数组，无 shell 字符串拼接 → 无路径注入风险）：纯函数 `buildAtrimFilter` / `buildAfadeFilter` / `buildLoudnormFilter` / `joinAfChain`（可单测 argv 形状），async runner `stripAudio` / `trimAudio` / `prepareBackgroundMusic` / `replaceVideoAudio` / `findDefaultAudioCandidates`。**核心红线**：`prepareBackgroundMusic` 在 spawn 前显式 reject `targetDurationSec ≤ 0` / NaN / Infinity / 非有限值，杜绝 `-stream_loop -1` 失去 `-t` 上限的无限循环 / 跑飞编码（提示词 hard requirement）；`replaceVideoAudio(musicPath=null)` 直接 funnel 到 `stripAudio`（mute 路径统一）；`findDefaultAudioCandidates` 优雅 fallback：缺失目录 → ENOENT → `[]`，空目录 → `[]`，含 dotfile + 非音频 → 过滤后字母序返回，**绝不阻塞主流程**（CLAUDE.md §2.8 spirit）；EBU R128 loudnorm 单 pass 默认 `I=-16 / TP=-1.5 / LRA=11`（YouTube / Spotify normalization target + 兼顾 inter-sample peak headroom）；fade 时长 [0, 30] 区间，clamp `outStart = max(0, total - outSec)` 防止短 clip + 长 fade 出现负 PTS。新增 `server/assets/audio/default/.gitkeep` 占位目录（含约定说明：操作员可放 .mp3/.m4a/.aac/.wav/.flac/.ogg/.opus，缺失时主流程不中断）。config 层新增 4 个 env：`DEFAULT_AUDIO_LIBRARY_DIR=server/assets/audio/default` / `VIDEO_AUDIO_LOUDNORM_ENABLED=true` / `VIDEO_AUDIO_FADE_IN_SECONDS=1.5` / `VIDEO_AUDIO_FADE_OUT_SECONDS=2`，superRefine 守卫 fade ≤ 30s，挂在 `config.video.audio.*` 下；`.env.example` 同步注释段。`jobs/index.ts` 重导出 13 个公开符号（5 个函数 + 3 个常量 + 5 个类型）便于未来 P11.T5/T8 worker 复用。**不动**：migration / 任何 API route / 前端 / `media_versions` 写入 / processing_jobs 入队 / P11.T1 video_optimize / P10 AI / P9 video pipeline。新增 `smoke:audio-processor`（**34/34 PASS**）两层覆盖：Part A 纯函数（16 case：atrim 三轴 + 拒空 + 拒负 / afade in-only + out-only + 双 disabled→null + clamp short-clip + 拒 total≤0 / loudnorm 默认形 + 拒 NaN / joinAfChain join + null-all / findDefaultAudioCandidates 缺失 + 空 + 混合过滤排序）+ prepareBackgroundMusic 4 个非法 duration（0 / -1 / NaN / Infinity）pre-spawn 拒绝 + 输出文件未生成（共 8 断言）；Part B 真 ffmpeg（10 case：stripAudio 去音 / trimAudio 3s→1s / prepareBackgroundMusic 2s→4s loop / 3s→1s trim / 全 filter disabled / replaceVideoAudio 替换 + null 等价 stripAudio / 缺失 binary 错误形）。回归 3 个邻近 smoke 全绿（video-optimize 52/52 / p10-acceptance 37/37 / p9-acceptance 36/36），server `tsc --noEmit` / `eslint` / `tsc build` 干净，client `lint` / `typecheck` / `build` 干净（无前端改动）。详见 `docs/progress.md` P11.T2 章节）
@@ -294,6 +298,156 @@
 - [x] **P11.T8 [MUST]** 多视频合成（trip 级多视频拼接 / 复用 P11.T4+T5 已有引擎 / 新增 acceptance smoke + 前端 trip videos 预览）（2026-05-27 完成；范围按提示词收窄到"复用已有端点 + 验收 smoke + 前端可见性"，**不**新增重复端点 / **不**引入 `video_compositions` 表 / **不**做复杂转场 / **不**做上传 UI（R-150 保持）。**关键判断**：检查现状发现 P11.T4 `generate-edit-plan` 已经是 trip 级（无 `mediaIds` body 字段时 service `resolveCandidatesFromTrip` 自动拉 trip 下所有 active video media）+ P11.T5 render worker 已经支持多 clip 顺序拼接（Stage 2 per-clip 强归一化到统一规格 → Stage 3 concat demuxer `-c copy` 顺序拼接 → Stage 4 audioPolicy 应用），即 **多视频合成的后端引擎在 P11.T4 / T5 已经完整存在**。本节按"不重复造轮子"原则不新增重复 endpoint（避免与 `generate-edit-plan` / `render` 撞车），而是补齐两块：(1) 多视频端到端 acceptance smoke 让 R-147 / R-140 / R-142 有具名验证证据；(2) 前端 `VideoRenderPage` 加 "Trip videos" 预览段让用户清晰知道渲染会合成哪些视频。**修改 / 新增**：(a) `server/src/scripts/p11-multi-video-render-smoke.ts` 新增（27 case 端到端真 ffmpeg + 真 SQLite + 真 LocalStorage：PART A 3-video happy 11 断言含 plan 3 clips + sourceMediaIds 匹配 + total ≤ target + N-1 transitions kind=none + render success + edited.mp4 落盘 + H.264+AAC + 总时长 ≈ sum + media_versions.params 完整审计 / PART B audio policy 三 mode 跨多视频：keep_original 保留 audio / mute 无 audio 流 / replace_with_library AAC + 720p / PART C 单视频 trip P11.T7 回归 4 断言（plan 1 clip + 0 transitions + render success + edited.mp4 + 单 row）/ PART D 失败路径：第二 clip 源 media 软删 between enqueue+dequeue → 终态 failed + error_message 含具体 mediaId + 无 edited row 泄漏 / PART E 所有 3 个源视频 SHA256 byte-equal 不变 / PART F FK + integrity check）；(b) `client/src/pages/VideoRenderPage.tsx` 加 "Section 0 Trip videos" 预览（用现有 `useTripMedia(tripId, 200)` hook + filter type='video'，渲染编号 #1 / #2 / #3 列表显示 filename + duration + dims + mime，跳转 `/media/:id` link，空状态 status-warning，loading state，单视频 vs 多视频文案区分 "1 video … re-encoded to a single edited output" vs "N videos … composed into one edited output, in the order shown"）；(c) `client/src/index.css` 加 `.render-trip-videos` / `.render-trip-video-row` / `.render-trip-video-index` / `.render-trip-video-name` / `.render-trip-video-meta` 5 个新 className（grid 布局 + monospace index 列 + 右对齐 meta）；(d) `server/package.json` 加 `smoke:p11-multi-video-render` 脚本。**未触碰**：任何 server route / migration / repo / worker / service / config / errors（**0 server code changes**，全部多视频能力都是 P11.T4/T5 自带）；任何前端既有页面（除 `VideoRenderPage` 加 section + `index.css` 加 className）；P11.T1~T7 任何业务路径。**红线遵守**：CLAUDE.md §2.4 不动 originals（smoke 显式 SHA256 验证 3 源视频字节级不变）✓ §3.6 不阻塞主流程 ✓ §3.7 单 clip 失败立即失败 job 不静默成功 ✓ §3.8 error_message 含具体 mediaId 让用户能定位 ✓ §5 无密钥 ✓。**R-147 部分缓解 → 闭合 disposition**：(media_id, 'edited') UNIQUE 行限制仍在（同一 first-source 同时只一个 latest edited），但 plan 本身保留所有历史（edit_plans 表）+ user 可通过 `overwrite=true` 渲染不同 plan；多视频组合本身已经工作。"多 edit 历史并存"是产品决策而非技术阻塞 — 留待真实需求出现时引入 `video_compositions` 表升级。**R-140 部分关闭**：长视频合成稳定性通过 4-stage pipeline 设计 + ffprobe verify + tmpdir cleanup + 显式失败路径 smoke 覆盖；进度推送 / SSE 仍是 polish 留 R-149。**R-142 完全闭合**：worker Stage 2 per-clip `scale + force_original_aspect_ratio=decrease + pad + fps + libx264 + yuv420p + aac + 48kHz` 强归一化保证 concat demuxer 接受任意源；smoke PART A 3 视频含不同 testpattern（testsrc / testsrc2）证明跨规格 concat 成功 + 输出维度统一（1920×1080）。验证：`cd server && npm run smoke:p11-multi-video-render` 27/27 PASS；5 个邻近 smoke 全绿（video-render-worker 30/30 / audio-library-api 24/24 / video-edit-plan 33/33 / p10-acceptance 37/37 / p9-acceptance 36/36）；server `tsc --noEmit` / `eslint` / `tsc build` 干净；client `lint` / `typecheck` / `build` 干净（bundle 微增至 gzip 75.62 kB JS + 4.79 kB CSS，新增 trip videos section + ~50 行 CSS）。详见 `docs/progress.md` P11.T8 章节）
 - [x] **P11.T9 [MUST]** 阶段验收：§7.14 验收 8 条 + §7.19 验收 7 条 + §7.20 验收 7 条 + §15.4 验收 9 条（2026-05-27 完成；范围按提示词收窄到"端到端验收 + 风险收口 + 文档归档"，**不**新增复杂功能 / **不**做 upload UI（R-150 保持）/ **不**引入 `video_compositions` 表（R-147 disposition 保持）/ **不**重构 render worker / **不**改已通过的接口设计。**最小修复 1 处**：`server/src/index.ts` 在 `audioLibraryService` 构造后追加 ~30 行 — 当 `config.video.audio.seedOnStartup=true` 时 bootstrap 自动调用 `seedDefaultDirectory(defaultLibraryDir, {logger})`（非阻塞 + `.catch` 失败容忍）；同步 `config/index.ts` 注释 + `.env.example` 注释，闭合 §7.19 acceptance 1（"首次启动后存在若干内置默认音频"）。**验证**：跑 9 个 P11/P9/P10 smoke = 309/309 PASS（audio-processor 34/34 + audio-library-seed 36/36 + audio-library-api 24/24 + video-edit-plan 33/33 + video-render-worker 30/30 + video-optimize-worker 52/52 + p11-multi-video-render 27/27 + p10-acceptance 37/37 + p9-acceptance 36/36）；另跑 3 个 boot-sensitive smoke = 98/98 PASS（jobs-api 28/28 + video-api 48/48 + trips 22/22）；server `tsc --noEmit` / `eslint` / `tsc build` 全干净；client `lint` / `typecheck` / `build` 全干净。**31 条验收（8+7+7+9）映射表**全部满足或有明确 disposition；详见 `docs/progress.md` P11.T9 章节。**红线遵守**：§2.2 §2.4 原视频不被覆盖（P11.T8 SHA256 已证）✓ §2.8 AI 默认 off（`VIDEO_EDIT_PLAN_AI_ENABLED=false`）+ seed 失败不阻塞 ✓ §3.6 bootstrap 不阻塞主流程 ✓ §3.8 错误路径完整 error_message ✓ §3.9 不动 user_decision ✓ §5 无密钥 ✓。**新增风险 R-151**：枚举/单位与 requirements.md §7.14.8 / §7.19.6 / §8.5.1 命名漂移（impl `system/user/url_import` vs spec `system_default/upload/url_import`；impl 3-mode audioMode `keep_original/mute/replace_with_library` vs spec 5-mode；impl `fadeInSeconds/fadeOutSeconds` vs spec `fadeInMs/fadeOutMs`）— 行为完备（impl 是 spec 的功能超集 via audioId/system rows），仅命名/单位漂移，留待未来版本统一前后端 API + 文档时一次对齐。**R-142 完全闭合 / R-147 当前 disposition 闭合 / R-140 部分关闭 / R-150 保持开放 / R-138 R-139 P11.T6 已闭合**。**P11 阶段结论**：✅ 可收口。剩余 polish 项（upload UI / preview-vs-final 真实差异 / SSE / drag-reorder clips / enum 重命名）按未来需求驱动）
   - 端到端 smoke 覆盖：去原声替换默认配乐、上传音频、URL 导入音频、手动替换剪辑音频、多视频合成、原视频不被覆盖、失败任务有明确错误信息。
+
+---
+
+## 阶段 12：AI 精选与幻灯片视频
+
+> requirements §7.21 / §7.22 / §15.5 / §15.6 / §16.6–16.8。
+>
+> **设计基线**：design.md §2.5 / §3.3 / §4.2 / §4.2.1 / §5.2 / §7.6 / §7.8 / §8.7 / §9.1 / §9.2 / §11.1 / §14。三个 docs(p12) commit（`acba59c` / `f1af813` / `b127c63`）已落定 schema、API、前端布局、orchestrator、dedupe 模型与单/多版本策略。
+>
+> **核心架构判断**：P12 阶段不接入真实 SaaS AI provider（OpenAI / Gemini / Bedrock），全部走 `LocalMockProvider` 验证业务闭环；真实 provider 留给 P13。这意味着 P12 阶段所有 smoke 在本地跑通 + 不依赖任何 API key + 上线后用户也能用（精选 / 幻灯片全可用，只是 AI 决策是 deterministic stub）。
+>
+> **红线（贯穿 P12 所有任务，每个任务都要遵守）**：CLAUDE.md §2.1 / §2.2 原图原视频永不被覆盖 ✓ §2.4 不自动永久删除 ✓ §2.8 AI 默认 off + 全链路 Code 兜底 ✓ §3.5 传统算法优先 ✓ §3.6 不阻塞主流程 ✓ §3.7 单 media 失败不影响其他 ✓ §3.8 每个 clip / scene_group / curated 行含 reason ✓ §3.9 user_decision 优先 ✓ §5 无密钥 ✓。
+
+- [ ] **P12.T1 [MUST]** AI provider 扩展：4 个新 request type + LocalMock stub
+  - 范围：扩展 `AIRequestType` 闭合枚举加 4 个值（`scene_embedding` / `ai_blur_check` / `scene_best_pick` / `refinement_suggest`）；扩展 `ai_invocations.request_type` CHECK 加这 4 个值；`LocalMockProvider` 给 4 个 type 加 deterministic stub（基于 input hash / mediaId 计算固定值，不调网络、不依赖外部）。
+  - 输出：`server/src/ai/AIProvider.ts`（加枚举值 + 文档）/ `server/src/ai/LocalMockProvider.ts`（加 4 个 invoke 分支 + `supports` 集合扩展）；migration `018_extend_ai_invocations_request_types.sql`（12 步 STRICT 重建 `ai_invocations.request_type` CHECK，加 4 个新值，共 10 个）；smoke `ai-provider`（扩展现有，加 4 个新 type 路径）+ smoke `migration-018`。
+  - 验证：`smoke:ai-provider` 全绿 + `smoke:migration-018` 全绿（CHECK 接受新值 + 拒绝未知值）；既有 `smoke:p10-acceptance` 不退化；server tsc / lint / build 干净；客户端 0 改动。
+  - 不做：真 OpenAI / Gemini provider（P13）/ 任何 worker 集成（P12.T4+）/ 任何业务逻辑（仅枚举 + stub）。
+  - 红线：§3.3（AIProvider 抽象不变）/ §2.8（LocalMock `available=true` 但内容是 stub，不冒充真 AI）。
+
+- [ ] **P12.T2 [MUST]** 4 个新表 migration：`scene_groups` / `scene_group_items` / `curated_selections` / `slideshow_renders`
+  - 范围：4 个独立 STRICT 表 migration，含 FK / CHECK / 索引 / partial unique index（对应 design.md §4.2 表设计）；每张表配 repository 类（prepared statement + insert/find/list/upsert/setActive 等基础方法）。
+  - 输出：migration `019_create_scene_groups.sql` / `020_create_scene_group_items.sql` / `021_create_curated_selections.sql` / `022_create_slideshow_renders.sql`（全部 STRICT，含设计要求的所有字段、FK、UNIQUE、CHECK 约束 + 索引）；`server/src/media/sceneGroupsRepository.ts` / `sceneGroupItemsRepository.ts` / `curatedSelectionsRepository.ts` / `slideshowRendersRepository.ts`；`media/index.ts` 重导出；smoke `migration-019` 至 `migration-022`（4 个，每个验证表存在 / 列齐全 / UNIQUE 索引 / CHECK 拒绝非法值 / FK CASCADE）+ smoke `scene-groups-repository` / `curated-selections-repository`（CRUD 基础覆盖）。
+  - 验证：4 个 migration smoke + 2 个 repository smoke 全绿；既有 `smoke:p11-multi-video-render` 不退化（验证 migration 没破坏旧路径）；server tsc / lint / build 干净。
+  - 不做：任何业务 service / worker / route（P12.T4+）；ALTER 现有表（P12.T3）；前端（P12.T11+）。
+  - 红线：§2.4 软删除支持（slideshow_renders 有 `deleted_at`，curated_selections 不删除历史 round 行）/ §3.8 reason 字段贯穿 / §4 任意写库走 prepared statement。
+
+- [ ] **P12.T3 [MUST]** 5 个 ALTER migration：`processing_jobs` / `ai_invocations` / `media_versions` / `media_analysis` / `trips`
+  - 范围：5 个 ALTER migration，扩展既有表以支持 P12 多 target / 成本缓存 / 单多版本分离 / AI 模糊检测 / idle scanner；含 backfill 既有行的逻辑（既有 P0–P11 行不能 NULL `target_type` / `dedupe_key`）。
+  - 输出：
+    - `023_extend_processing_jobs_multi_target.sql`：加 `trip_id` FK / `target_type` TEXT NOT NULL CHECK ∈ {`media`,`trip`,`audio`,`composition`,`slideshow`,`scene_group`} / `target_id` TEXT NOT NULL / `dedupe_key` TEXT NOT NULL；新建 UNIQUE `(job_type, target_type, target_id, dedupe_key)`；backfill 既有行 `target_type='media'` + `target_id=media_id` + `dedupe_key={mediaId}:{jobType}` 或 UUID（按 job_type 决定）；保留向后兼容查询。**`scene_group` 是 P12.T6 `scene_best_pick` worker 需要**（target_id = scene_groups.id）— 不加这个值 P12.T6 入队会被 CHECK 卡住。
+    - `024_extend_ai_invocations.sql`：加 `trip_id` FK / `target_type` CHECK / `target_id` / `input_hash`；新建 partial unique `(trip_id, request_type, target_type, target_id, input_hash) WHERE status='success'`；backfill 既有行 `target_type='media'` + `request_type='image_ai_refine'` + `input_hash=NULL`（不参与缓存）。
+    - `025_extend_media_versions_v2.sql`：废除全局 `(media_id, version_type)` UNIQUE；加 `params_hash` TEXT NULL / `is_active` INTEGER DEFAULT 1 / `deleted_at` TEXT NULL 三列；为 13 个 version_type 分两组建 partial unique（Single-instance / Multi-history，详见 design.md §4.2.1）；CHECK 枚举追加 `ai_refined_param` / `final_composition` / `slideshow`；backfill 既有行 `is_active=1` + `params_hash`（multi-history 按 params SHA256，缺失用 `id` 兜底）。
+    - `026_extend_media_analysis_ai_blur.sql`：加两列：(a) `ai_blur_class` TEXT CHECK ∈ {`sharp`,`maybe_blurry`,`blurry`,`unknown`} DEFAULT `unknown`，独立于 Code Laplacian `blur_class`；(b) `ai_blur_reason` TEXT NULL（AI 返回的人类可读判断依据，让前端"为什么这张被判模糊"能直接展示）。两列均允许 NULL（既有 P0–P11 行默认 unknown / NULL）。
+    - `027_extend_trips_curation.sql`：加 `last_upload_at` / `last_curation_at` / `curation_auto_enabled` INTEGER NOT NULL DEFAULT 1；3 列均无 backfill 需求（NULL 即"从未发生"语义自然）。
+    - smoke `migration-023` 至 `migration-027`（5 个，每个验证新列存在 + CHECK + UNIQUE + backfill 行无 NULL 违规）。
+  - 验证：5 个 migration smoke 全绿；backfill 后既有 `smoke:p11-multi-video-render` / `smoke:video-render-worker` / `smoke:p10-acceptance` / `smoke:p9-acceptance` 全部不退化；server tsc / lint / build 干净。
+  - 不做：worker / route / 前端 / 业务逻辑（migration only）。
+  - 红线：§4 全程事务 + WHERE status='expected' 保护 / §2.4 既有行软删除不被破坏 / dedupe_key NOT NULL 强约束（不允许 NULL 旁路 UNIQUE）。
+
+- [ ] **P12.T4 [MUST]** 场景分组 worker：Code (时间+GPS) baseline + AI embedding 细化
+  - 范围：实现 `scene_grouping` job worker（target_type=`trip`），负责对一个 trip 在指定 round 内做场景分组。流程：(1) **只拉 trip 全部 active image media**（`media_items.type='image' AND deleted_at IS NULL`）；**video 不参与 P12 精选 pipeline**（视频走 P11 剪辑路径 + P12 幻灯片旁路，但不进 curated album）；(2) 按 `SCENE_GROUPING_TIME_WINDOW_SEC` + `SCENE_GROUPING_GPS_RADIUS_M` 做 Code 粗分组（无 GPS 的纯按时间窗）；(3) 若 `SCENE_GROUPING_EMBEDDING_ENABLED=true` 且 `AI_ENABLED=true` 且 provider supports `scene_embedding`，对每个粗组内成员调 AI embedding，DBSCAN 或层次聚类细分；(4) 单一事务内写 `scene_groups` 行（每组一行）+ `scene_group_items` 行（每个成员一行，含 `rank_in_group` / `group_score` / `reason`）；(5) AI 失败 / 不可用 → 退回 Code 粗分组结果，写 reason='code_baseline'。
+  - 输出：`server/src/jobs/sceneGroupingWorker.ts`（含纯函数 `groupByTimeAndGps` + `clusterByEmbedding` 便于单测） / `server/src/media/sceneGroupingService.ts`；config 加 4 个 env（`SCENE_GROUPING_TIME_WINDOW_SEC=300` / `SCENE_GROUPING_GPS_RADIUS_M=50` / `SCENE_GROUPING_EMBEDDING_ENABLED=true` / `SCENE_GROUPING_MIN_GROUP_SIZE=1`）；smoke `scene-grouping-worker`（覆盖：5 张照片不同 GPS 时间 / AI off Code 兜底 / AI 失败降级 / 单事务回滚 / scene_group_items 完整成员）。
+  - 验证：smoke `scene-grouping-worker` 全绿 + 既有 `smoke:p10-acceptance` 不退化；server tsc / lint / build 干净。
+  - 不做：L3–L7（后续 task）/ AI provider 真实接入 / 前端（P12.T11）。
+  - 红线：§2.4 不动 media_items / media_analysis 主字段 / §3.5 Code 优先 / §3.6 worker 异步 / §3.7 单 media 失败不阻塞整组 / §3.8 reason 完整。
+
+- [ ] **P12.T5 [MUST]** AI 二次模糊检测 worker（`ai_blur_check`）
+  - 范围：实现 `ai_blur_check` job worker（target_type=`media`），输入单张 media 的缩略图（≤ 512 px），输出 `media_analysis.ai_blur_class` ∈ {`sharp`,`maybe_blurry`,`blurry`}。LocalMock 实现：基于既有 `blur_class` 镜像返回（如果 Code 测 `sharp` 但 quality_score 低 → AI 返 `maybe_blurry`；其他保持）。
+  - 输出：`server/src/jobs/aiBlurCheckWorker.ts`；service 层提供 enqueue helper；smoke `ai-blur-check-worker`（覆盖：happy / 缺缩略图 → fail / AI off skip / ai_invocations 写入正确 / 同 media + input_hash 二次调用走缓存不重复花配额）。
+  - 验证：smoke `ai-blur-check-worker` 全绿；`smoke:p10-acceptance` 不退化；server tsc / lint / build 干净。
+  - 不做：基于 ai_blur_class 做精选筛选（在 L7 finalize 做）/ 前端展示。
+  - 红线：§2.8 AI off worker 直接 skip 不入队 / §3.6 异步 / §3.8 reason 写入 media_analysis.ai_blur_reason。
+
+- [ ] **P12.T6 [MUST]** AI 场景内最佳挑选 worker（`scene_best_pick`）
+  - 范围：实现 `scene_best_pick` job worker（target_type=`scene_group`），输入 scene_group_id，读 scene_group_items 按 `quality_score` 降序取 top-K（默认 `SCENE_BEST_PICK_TOP_K=5`），把 K 张缩略图喂给 AI，AI 返回 `best_media_id` + `reason` + `confidence`。**写入职责（与 P12.T9 finalize 分工）**：本 worker 只写**草稿行**：UPSERT 本 round 的候选决策行 `curated_selections(trip_id, selection_round, media_id, included, is_current=0, reason, ai_confidence, scene_group_id)`，其中 best_media_id `included=1`，其余 K-1 行 `included=0 + reason='not_best_in_group'`。`is_current=0` 表示"draft，等 L7 finalize"。**禁止**本 worker 写 `is_current=1` — 那是 L7 的职责。
+  - 输出：`server/src/jobs/sceneBestPickWorker.ts`；config 加 `SCENE_BEST_PICK_TOP_K=5`；smoke `scene-best-pick-worker`（覆盖：happy 5 张 / 单成员 1 张组直接选 / AI 返回无效 mediaId（fallback 选 quality_score top 1）/ AI off 走 quality_score top 1 兜底 / 同 group + round + input_hash 缓存命中 / 验证写入行 `is_current=0` not 1）。
+  - 验证：smoke `scene-best-pick-worker` 全绿；server tsc / lint / build 干净。
+  - 不做：处理跨场景的去重（P5 已做）/ 视频参与精选（V1 只精选图片）/ 前端 / `is_current=1` 切换（P12.T9 finalize）。
+  - 红线：§3.8 reason 完整（best 行带 AI reason，其他带 'not_best_in_group'）/ §3.9 user_decision 阶段还没生效，本 worker 不读它 / 与 finalize 职责严格分离避免 UNIQUE 冲突或语义混乱。
+
+- [ ] **P12.T7 [MUST]** AI 精修建议 worker（`refinement_suggest`）
+  - 范围：实现 `refinement_suggest` job worker（target_type=`media`），输入缩略图，AI 返回 JSON 参数（8 字段，详见 design.md §7.6）。LocalMock 实现：返回固定保守参数（brightness +0.05 / contrast +0.05 / saturation 0 / 其他 0），symbolize "AI 建议轻微提亮"。worker 把返回 JSON 存入 `curated_selections.refinement_params`（schema 验证：超出 Schema 上限 ∈ `[-1, 1]` / `[-180, 180]` 的整条丢弃 + 不写 refinement_params）。
+  - 输出：`server/src/jobs/refinementSuggestWorker.ts`；smoke `refinement-suggest-worker`（覆盖：happy / Schema 越界丢弃 / 非 best-pick 的 media 不入队 / AI off skip 不写 refinement_params / 缓存命中）。
+  - 验证：smoke `refinement-suggest-worker` 全绿；server tsc / lint / build 干净。
+  - 不做：Code 应用精修（P12.T8）/ 双层 clamp 的 Runtime 部分（P12.T8）/ 多版本保留。
+  - 红线：§3.8 reason 字段写入 / Schema 越界整条丢弃（不部分接受）。
+
+- [ ] **P12.T8 [MUST]** Code 参数化 sharp enhance worker（`image_refine_param`）
+  - 范围：实现 `image_refine_param` job worker（target_type=`media`），读 `curated_selections.refinement_params`，按 design.md §11.1 的 `REFINEMENT_PARAM_*` 5 个 Runtime 上限对每个字段做 clamp（不抛错，按 clamp 后值应用）；sharp 执行链固定 extract→rotate→modulate→linear→gamma→JPEG q=85；输出文件名**含 round + params_hash short 8 字符**：`derived/{mediaId}/ai_refined_param_r{selectionRound}_{paramsHashShort8}.jpg`（不是固定 `ai_refined_param.jpg`，避免覆盖上一轮）。`params_hash = SHA256({ selectionRound, algorithmVersion, requestedParams, appliedParams })`（**必须包含 selectionRound** — 即使两轮 AI 给出完全相同参数也产生不同 hash，保证 multi-history partial unique 不冲突）；INSERT（不 UPSERT）`media_versions(version_type='ai_refined_param', media_id, params_hash, params={requested:..., applied:..., selectionRound, algorithmVersion})`。
+  - 输出：`server/src/jobs/imageRefineParamWorker.ts`；config 加 5 个 env（`REFINEMENT_PARAM_BRIGHTNESS_MAX_ABS=0.4` / `REFINEMENT_PARAM_CONTRAST_MAX_ABS=0.3` / `REFINEMENT_PARAM_SATURATION_MAX_ABS=0.3` / `REFINEMENT_PARAM_CROP_MIN_AREA=0.5` / `REFINEMENT_PARAM_ROTATION_MAX_DEG=15`）；smoke `image-refine-param-worker`（覆盖：happy / Runtime clamp 生效 / sharp 输出验证非空 + 维度合理 / 同 media 不同 round 即使参数相同也产生不同 params_hash 并落不同文件名 / 同 round 重跑命中 partial unique 不重复写 / refinement_params=null 时 skip 不生成派生 / 验证旧 round 文件依然存在不被覆盖 / 缓存命中）。
+  - 验证：smoke `image-refine-param-worker` 全绿；既有 `smoke:image-enhance-worker` 不退化（确认 sharp 链不冲突）；server tsc / lint / build 干净。
+  - 不做：image-to-image AI 路径（P10.T5 已有，本任务并行不替换）/ 前端 AI Refined 徽章（P12.T11）。
+  - 红线：§2.1 原图不动 / §2.3 不动既有派生 / §7.6 不允许伪装 ai_refined_param（refinement_params=null 时绝不拷贝原图）。
+
+- [ ] **P12.T9 [MUST]** Curation orchestrator + service + API + Repository
+  - 范围：实现 `curation_run` orchestrator worker（target_type=`trip`），按 §7.8.3 顺序串接 L2 → L3 → L4 → L5 → L6 → L7：(1) enqueue L2 等阻塞完成 → (2) parallel L3 best-effort 收集 partial_failures → (3) parallel L4 best-effort → (4) parallel L5 + AI 配额闸 → (5) parallel L6 image channel → (6) blocking L7 `curation_finalize` 把 draft 升级为 current。同时实现 **6 个 endpoint**（详见 design.md §3.3）+ Repository.getCurrentCuratedMediaIds（按 §7.8.4 合并公式：aiCurrent ∪ userPins − userUnpins）+ Repository.curatedOverridesUpsert/clearOne/clearAll。
+  - **L7 `curation_finalize` 写入职责（与 P12.T6 draft 分工）**：本 worker **不重复 INSERT** 已存在的 P12.T6 draft 行；只做三件事：(a) UPDATE 旧 round 全部行 `is_current=0`；(b) UPDATE 本 round 全部 P12.T6 已写的 draft 行 `is_current=1`（一句 UPDATE，无 INSERT）；(c) 补齐 P12.T6 漏掉的兜底行（例如某组 P12.T6 完全失败时，按 quality_score top 1 INSERT 一行 `included=1, is_current=1, reason='finalize_code_fallback'`）。**禁止**本 worker 写 round=0（user override 由 P12.T11 API 直接维护）。
+  - 输出：
+    - `server/src/jobs/curationRunWorker.ts`（orchestrator + partial_failures 累积）
+    - `server/src/jobs/curationFinalizeWorker.ts`（L7：UPDATE 旧 round → 0，UPDATE 本 round draft → 1，仅补齐缺失行；不写 round=0）
+    - `server/src/media/curationService.ts`（trip 404 / 调度 + dedupe_key 生成 `{tripId}:r{round}:{...}`）
+    - `server/src/media/curationRepository.ts`（`getCurrentCuratedMediaIds` / `listCuratedByRound` / `upsertOverride` / `deleteOverrideById` / `deleteAllOverridesByTrip`）
+    - `server/src/routes/curation.ts`（**6 个 endpoint**：POST /curate / GET /curated / POST /curated-overrides / DELETE /curated-overrides/:mediaId / DELETE /curated-overrides / GET /scene-groups）
+    - `server/src/media/curationSchemas.ts`（zod `.strict()`）
+    - 1 个新 error code：`CURATION_IN_PROGRESS`（409，同 trip 同 round 已在跑）
+    - smoke `curation-orchestrator`（覆盖：happy 3 张照片 → 1 个组 → 1 张精选 / AI off 全程 Code 兜底 / L3 部分 job 失败 best-effort 通过 / L7 完成后 round 切换（draft is_current=0 → final is_current=1，无重复 INSERT） / re-curate 新 round 旧 round is_current=0 / user override round=0 在合并公式正确 + 永不被 L7 覆盖 / scene_group_items 完整成员可查 / dedupe_key 防双触发 / L7 在 P12.T6 全失败时按 quality_score 补齐兜底行）。
+  - 验证：smoke `curation-orchestrator` 全绿；server tsc / lint / build 干净；client 0 改动。
+  - 不做：前端（P12.T11）/ idle scanner（P12.T10）/ 幻灯片（P12.T12）。
+  - 红线：§3.9 round=0 user override 永不被 AI 覆盖 / §3.7 best-effort 单 job 失败不阻塞 / §3.8 partial_failures 完整审计 / §3.6 异步入队 / §4 finalize 事务保护。
+
+- [ ] **P12.T10 [MUST]** Upload API 更新 `last_upload_at` + idle scanner 周期任务
+  - 范围：(1) 修改 Upload API（`POST /api/trips/:tripId/media/upload`），在 busboy 处理每个文件成功 + 写入 `media_items` 后，在同一事务内 UPDATE `trips.last_upload_at = now()`（**严禁**由 image/video 处理 worker 触碰这列，详见 design.md §4.2 红线注释）；(2) 实现 idle scanner：bootstrap 启动一个 setInterval 定时器（`CURATION_IDLE_SCANNER_INTERVAL_MS` 默认 5 分钟）扫描 `trips WHERE deleted_at IS NULL AND curation_auto_enabled=1 AND last_upload_at IS NOT NULL AND last_upload_at < (now() - CURATION_IDLE_TIMEOUT_MS) AND (last_curation_at IS NULL OR last_curation_at < last_upload_at)`，命中行 enqueue `curation_run`（dedupe_key 含新 round 编号避免重复）+ UPDATE `trips.last_curation_at`。
+  - 输出：`server/src/routes/upload.ts` 改一处事务（按 mediaItem insert 路径同事务追加 trips UPDATE）；`server/src/jobs/curationIdleScanner.ts`（新建，独立 setInterval，shutdown 时清理）；config 加 3 个 env（`CURATION_AUTO_TRIGGER_ENABLED=true` / `CURATION_IDLE_TIMEOUT_MS=600000` / `CURATION_IDLE_SCANNER_INTERVAL_MS=300000`）；smoke `curation-idle-scanner`（覆盖：未上传过的 trip 不触发 / 上传后立刻不触发 / idle 超时后触发 1 次 / 触发后 last_curation_at 写入 / 同一 idle 窗口不重复触发 / curation_auto_enabled=0 的 trip 不触发 / CURATION_AUTO_TRIGGER_ENABLED=false 全局停摆）+ smoke `upload-last-upload-at`（验证 Upload API 写入 trips.last_upload_at 且不被 worker 触碰）。
+  - 验证：上述 2 个新 smoke 全绿 + 既有 `smoke:upload` 不退化（验证 Upload API 改动不破坏既有路径）；server tsc / lint / build 干净。
+  - 不做：前端"剩余 idle 时间"指示器（polish 不在本任务）/ 手动重置 last_upload_at 的 admin API。
+  - 红线：§3.6 idle scanner 非阻塞（用 setInterval + try-catch 包住每个 trip 调度，单个失败不影响其他）/ §3.8 写库带 reason='auto_idle_triggered' / Upload API 改动不能破坏既有事务幂等。
+
+- [ ] **P12.T11 [MUST]** 前端 Trip detail 多 tab：Curated / All Media / Duplicates + override UI
+  - 范围：`/trips/:id` 升级为多 tab（默认 Curated）+ Section 0 操作条（[Edit] / [Upload] / [Render video] / [Curate album]，**不含 [Slideshow]** — 该链接统一由 P12.T13 在 Trip detail 加，避免本任务和 T13 都改 TripDetailPage）+ Curated tab（场景组分块 + pin/exclude/clear UI + round selector + AI Refined 徽章 + 原图/精修双视图对比）+ All Media tab（既有 Gallery + pin 按钮）+ Duplicates tab（保持现状）；2 个新 API client（curation / scene-groups）+ 1 个新 hook（useCurated 基于 round 切换 refetch）；CSS 按 design.md §2.5 布局。
+  - 输出：
+    - `client/src/api/curation.ts`（5 endpoint 镜像）
+    - `client/src/api/sceneGroups.ts`（GET /scene-groups）
+    - `client/src/hooks/useCurated.ts`（round + AbortController + refetch）
+    - `client/src/hooks/useSceneGroups.ts`
+    - `client/src/pages/TripDetailPage.tsx`（**改造**为多 tab；既有 Gallery 内容挪到 All Media tab，0 内容删除；Curated tab 新建）
+    - `client/src/components/CuratedView.tsx`（scene group 分块 + 卡片 + pin/exclude/clear 操作）
+    - `client/src/components/AllMediaView.tsx`（既有 Gallery + pin 按钮）
+    - `client/src/components/CurateAlbumButton.tsx`（POST /curate + useJobPolling 复用）
+    - `client/src/index.css` 追加 ~250 行（`.tab-bar` / `.curated-section` / `.scene-group-block` / `.curated-card` / `.curated-actions` / `.round-selector` / `.ai-refined-badge` / `.dual-view-toggle` 等）
+  - 验证：`cd client && npm run lint / typecheck / build` 干净；bundle 大小记录；server 0 改动。
+  - 不做：上传 UI（既有，本任务不动）/ 幻灯片入口（P12.T13 单独加）/ duplicates tab 改动 / 多视频合成 UI 改动。
+  - 红线：§3.7 component 失败不影响整页（每 tab 独立 error boundary）/ §3.9 用户 pin/exclude 立即生效不延迟（乐观更新 + 失败 rollback）/ AI off 时 Curated tab 顶部 banner 不假装 "AI Refined"。
+
+- [ ] **P12.T12 [MUST]** 幻灯片 worker + API
+  - 范围：实现 `slideshow_render` job worker（target_type=`slideshow`）走 design.md §8.7 4-stage pipeline（per-image -loop1 -t scale+pad → concat 或 xfade → audioPolicy → ffprobe verify）；输出到 trip-level `storage/trips/{tripId}/outputs/slideshows/{renderId}.mp4`；同事务 INSERT `media_versions(version_type='slideshow', media_id=firstMediaId)` + UPDATE `slideshow_renders.output_media_version_id` + `status='success'`；**4 个 endpoint**（POST /slideshow / GET /slideshows / GET /slideshows/:renderId / GET /slideshows/:renderId/download）；service 层做并发闸（同 trip 同时只允许 1 个 slideshow_render in-flight，409 拒绝）。
+  - **`params_hash` 必须包含 `slideshowRenderId`**：`media_versions.params` JSON 必须含 `slideshowRenderId`（取 `slideshow_renders.id` UUID），`params_hash = SHA256(params JSON 含 slideshowRenderId)`。即使用户用完全相同的输入照片 + 参数重复生成，每次 renderId 不同 → params_hash 不同 → 不撞 multi-history partial unique → 真正保留每一次历史。
+  - **`StorageProvider` interface 扩展**：interface 加 `putOutput(relativePath: string, data: Buffer | Readable, options?: { overwrite?: boolean }): Promise<...>` 方法签名；`LocalStorageProvider` 实现该方法（与既有 `putDerived` 同模式但落 `outputs/` 目录）；mock / test fixture 同步更新（与既有 `putDerived` 平行测试覆盖）。**禁止**只改 LocalStorageProvider 不动 interface — 那会让未来 S3 provider 实现时漏方法。
+  - 输出：`server/src/jobs/slideshowRenderWorker.ts` / `server/src/media/slideshowRenderService.ts` / `server/src/media/slideshowRenderSchemas.ts` / `server/src/routes/slideshowRender.ts`；`server/src/storage/StorageProvider.ts`（interface 加 `putOutput`）+ `server/src/storage/LocalStorageProvider.ts`（实现）+ 既有 `smoke:storage` 扩展含 `putOutput` 覆盖；config 加 8 个 env（`SLIDESHOW_DEFAULT_PER_IMAGE_DURATION_SEC=2.0` / `SLIDESHOW_DEFAULT_TRANSITION_TYPE=xfade` / `SLIDESHOW_DEFAULT_TRANSITION_DURATION_SEC=0.3` / `SLIDESHOW_DEFAULT_RESOLUTION=1920x1080` / `SLIDESHOW_DEFAULT_FPS=30` / `SLIDESHOW_CRF=23` / `SLIDESHOW_PRESET=medium` / `SLIDESHOW_TIMEOUT_MS=600000`）；smoke `slideshow-render-worker`（覆盖：3 张照片 happy 含 xfade / 1 张照片 / 横竖屏混合 letterbox / audioPolicy=mute / audioPolicy=replace_with_library / 默认 getCurrentCuratedMediaIds 输入 / body mediaIds 覆盖 / 原图 SHA256 字节不变 / 并发闸 409 / 失败保留 error_message + 不污染 media_versions / 用户同参数 + 同输入重复生成 → 2 个 slideshow_renders 行 + 2 个 media_versions 行 + 2 个独立 mp4 文件并存不互相覆盖）。
+  - 验证：smoke `slideshow-render-worker` 全绿；既有 `smoke:p11-multi-video-render` 不退化（确认 P11 render worker 不被影响）；server tsc / lint / build 干净。
+  - 不做：image-to-video AI（不在范围）/ Ken Burns 效果 / 拖拽重排（前端 P12.T13 简单数组 reorder 即可）/ 多版本并存策略（multi-history 表已支持，本任务不再额外做）。
+  - 红线：§2.1 原图永不读为可写句柄 / §7.6 不许 UPSERT slideshow（强制 INSERT）/ outputs/ 路径不是 derived/（照片删除不影响幻灯片存活）/ §3.6 异步入队 + jobId 立即返回。
+
+- [ ] **P12.T13 [MUST]** 前端 `/trips/:tripId/slideshow` 页面：新建面板 + 历史列表 + 下载
+  - 范围：新建 `/trips/:tripId/slideshow` 路由（在 `/trips/:id/edit` 之前匹配），实现 design.md §2.5.5 布局：Section A 新建幻灯片面板（输入照片选择 [Use current curated set] vs [Custom 多选拖拽] + 4 个参数控件 + 背景音乐下拉 + [Generate] 按钮 + 触发 POST /slideshow + useJobPolling 复用）；Section B 历史列表（GET /slideshows 列表 + 每行 inline preview + 下载按钮 + 失败行展开 error_message）。从 TripDetailPage 加 [Slideshow] 链接（同 P11.T7 Render video pattern）。
+  - 输出：
+    - `client/src/api/slideshowRender.ts`（4 endpoint 镜像）
+    - `client/src/hooks/useSlideshowRenders.ts`（列表 hook，按 trip 拉历史）
+    - `client/src/pages/SlideshowPage.tsx`（~600 行单页两 section）
+    - `client/src/components/SlideshowGenerateForm.tsx`（输入选择 + 参数 + 提交，复用 useTripMedia / useAudioLibrary）
+    - `client/src/components/SlideshowHistoryList.tsx`（GET /slideshows + 每行卡片 + status pill 复用 P11.T7 `.job-status-badge-*`）
+    - `client/src/App.tsx` 加路由（`/trips/:tripId/slideshow` 在 `/trips/:id` 之前）
+    - `client/src/pages/TripDetailPage.tsx` Section 0 加 [Slideshow] 链接
+    - `client/src/index.css` 追加 ~150 行（`.slideshow-form` / `.slideshow-history` / `.slideshow-preview-inline` 等）
+  - 验证：`cd client && npm run lint / typecheck / build` 干净；新页面 manual smoke（多照片 trip → generate → history 出现新行 → success 后下载）；server 0 改动。
+  - 不做：拖拽排序（V1 用 number input + 上下箭头即可，不引入 react-dnd）/ Ken Burns 预览 / SSE 替代 polling。
+  - 红线：§3.6 异步 + 终态停止 polling / §3.7 多 component 失败隔离 / 视频元素 `preload="metadata"` 节省带宽。
+
+- [ ] **P12.T14 [MUST]** P12 阶段验收：§15.5 验收 10 条 + §15.6 验收 8 条 + 风险闭合 + 文档归档
+  - 范围：端到端 acceptance smoke 覆盖 P12 全 pipeline（10 图 + 2 视频 trip → 上传 → idle 自动触发 → curation_run 7 stage → curated 集 → 生成 slideshow → 下载验证）+ 18 条验收逐条映射到证据（同 P11.T9 模式）；跑全部 P12 / P11 / P10 / P9 smoke 验证 0 退化；server / client tsc / lint / build 全干净；更新 `docs/tasks.md`（P12.T14 标 [x]）+ `docs/progress.md`（新增 P12 阶段终章，含 14 任务 commit 列表 + 18 条验收映射表 + 风险闭合（R-152 ~ R-158 新增；R-151 enum 漂移保持）+ P12 收口结论）。
+  - 输出：
+    - `server/src/scripts/p12-acceptance-smoke.ts`（端到端 ~30 case 覆盖 §15.5 + §15.6 所有验收）
+    - `server/package.json` 加 `smoke:p12-acceptance`
+    - 最小修复（如有发现）— 只做最小必要修复 + 重跑相关 smoke
+    - `docs/tasks.md`（P12.T14 标 [x] + 完整完成条目）
+    - `docs/progress.md` 新增 P12 阶段章节
+  - 验证：跑 14 个新 smoke + 5 个 P11 / 2 个 P10 / 1 个 P9 acceptance smoke = 全绿；server tsc / lint / build 干净；client lint / typecheck / build 干净。
+  - 不做：新功能 / 重构 / 真 AI provider 接入（P13）/ Ken Burns / 拖拽排序（polish）。
+  - 红线：§2.1 / §2.2 / §2.4 / §2.8 / §3.5 / §3.6 / §3.7 / §3.8 / §3.9 / §5 全部红线验证（不只是 P12 引入的，回归既有阶段也要绿）。
+  - 端到端 smoke 覆盖：上传 N 张照片 → idle 自动触发 → 7 层 funnel 完整跑 → curated 集合并公式正确 → user pin/unpin 优先 → AI off Code 兜底 / AI on LocalMock 路径 → 幻灯片生成 + 历史保留 + 下载 mp4 / 原图字节不变 / scene_group_items 完整成员可查 / 失败 partial_failures 累积。
 
 ---
 
@@ -332,5 +486,7 @@
 | §7.18 删除/恢复 | P7.* |
 | §7.19 音频库 | P11.T3 / P11.T6 |
 | §7.20 多视频合成 | P11.T8 |
+| §7.21 AI 精选相册 | P12.T1 – P12.T11 |
+| §7.22 幻灯片视频 | P12.T12 / P12.T13 |
 
 每完成一组任务后，回到 [design.md](design.md) §1 / §13 检查是否需要回填实际偏差。
