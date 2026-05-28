@@ -100,13 +100,15 @@
 |---|---|---|
 | `/` | Trip 列表 | 卡片网格、按时间排序、点击进入详情 |
 | `/trips/new` | 新建 Trip | 表单：标题（必填）、说明、地点、起止日期 |
-| `/trips/:id` | Trip 详情（Gallery） | 网格、筛选、灯箱、视频卡片 |
+| `/trips/:id` | Trip 详情（多 tab，P12 起默认 Curated） | 见 §2.5 |
 | `/trips/:id/edit` | 编辑 Trip | 表单 |
 | `/trips/:id/upload` | 上传页 | 拖拽 + 批量、单文件进度 |
 | `/trips/:id/duplicates` | 重复组列表 | 组卡片、组内对比 |
 | `/duplicate-groups/:id` | 重复组详情 | 切换推荐图、批量删除候选（二次确认） |
 | `/media/:id` | 图片/视频详情 | 元数据、版本切换、增强 / AI 精修按钮 |
 | `/videos/:id/segments` | 视频片段 | 片段列表、片段预览、保留/删除 |
+| `/trips/:tripId/render` | 视频剪辑渲染（P11） | plan 预览、audio 选择、render 触发、job 轮询 |
+| `/trips/:tripId/slideshow` | 幻灯片视频生成与历史（P12 新增） | 见 §2.5 |
 | `/jobs` | 任务状态 | pending/running/failed 列表、重试 |
 
 ### 2.3 关键 UX 规则
@@ -124,6 +126,106 @@
 2. 每个文件一个并发槽，最大并发可配置（默认 3）。
 3. 文件级失败独立重试，不影响其他文件。
 4. 上传成功后立即从后端拿到 `mediaId`，挂上占位卡片，开始轮询处理状态。
+
+### 2.5 Trip 详情页与精选 / 幻灯片入口（P12 新增）
+
+requirements §15.5 + §15.6 要求 Trip 详情页默认展示精选集 + 可切换全部素材 + 提供幻灯片入口。详情页因此从单视图升级为多 tab + 操作面板：
+
+#### 2.5.1 `/trips/:id` 页面结构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Trip 标题 / 说明 / 计数                                       │
+│ [Edit] [Upload] [Render video] [Curate album] [Slideshow]   │
+├──────────────────────────────────────────────────────────────┤
+│  [ Curated ] [ All Media ] [ Duplicates ]   ← Tab 切换       │
+│   ▲ 默认                                                      │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│   ── 视图随 tab 切换 ──                                       │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 2.5.2 Curated tab（默认）
+
+来源：`GET /api/trips/:tripId/curated`。
+
+内容：
+- 按场景组分块展示（每组一个 section header，含 `scene_group_id` + `member_count` + 时间范围 + 代表照片 thumbnail）。
+- 每张精选照片显示：
+  - 缩略图（如有 `ai_refined_param` 版本则有 "AI Refined" 徽章 + 可一键切换"原图 / AI 精修"双视图对比）。
+  - `reason` 文本说明（来自 AI 或 user pin 的标注）。
+  - `source` 徽章：`AI` / `User Pin`。
+  - 操作按钮区分两种语义：
+    - `source = 'AI'`：[Exclude] 按钮 → `POST /curated-overrides {decision: 'excluded'}`，把这张从精选移出。
+    - `source = 'User Pin'`：[Clear pin] 按钮 → `DELETE /curated-overrides/:mediaId`，回到 AI 当前轮次决定（不再强制保留）。
+    - 任何有 override 的行（kept 或 excluded）右上角额外显示 [Clear override] 小图标，明示"该决定来自用户手动，可清除"。
+- 顶部按钮：
+  - **[Curate album]**：调用 `POST /api/trips/:tripId/curate`，新增 round；触发后展示进度条 + job 轮询。
+  - **[Re-curate (force)]**：等同于上面但 `force=true`，即使无新素材也新增 round。
+  - **[Reset overrides]**：调用 `DELETE /api/trips/:tripId/curated-overrides`，回到纯 AI 推荐（带二次确认）。
+  - **[Round selector]**：下拉选历史 round 看历史快照（只读，不再可 unpin 旧 round）。
+
+空状态：
+- 无 AI 配置：显示 "AI is not configured — falling back to quality_score baseline" + 仍然展示 Code 兜底版精选。
+- 完全无素材：显示 "Upload photos to get started" + 链接到 `/trips/:id/upload`。
+- AI 跑过但 0 入选：显示 "All photos were excluded — review and pin photos manually" + 自动切到 All Media tab。
+
+#### 2.5.3 All Media tab
+
+来源：`GET /api/trips/:tripId/curated?includeAll=true`（or 既有 trip media 列表 API）。
+
+内容：
+- 全部 `deleted_at IS NULL` 的素材网格视图（即 P3 起的既有 Gallery 体验）。
+- 每张照片右上角根据其 `source` / `userDecision` 显示：
+  - 精选中：[Pin] 按钮已激活 + 灰色背景。
+  - 不在精选：[Pin] 按钮可点（写入 round=0 user_decision='kept'）。
+  - User excluded：[Unpin] 按钮（清空 user_decision，回到 AI 决定）。
+- 视频卡片照旧（视频不参与精选）。
+
+#### 2.5.4 Duplicates tab
+
+不变（既有 P5 体验）。
+
+#### 2.5.5 `/trips/:tripId/slideshow` 页面
+
+来源：`GET /api/trips/:tripId/slideshows`。
+
+结构：
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Generate new slideshow                                      │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ Input photos: [Use current curated set] / [Custom]    │  │
+│  │ Per-photo duration: [2.0s] slider                     │  │
+│  │ Transition: ( xfade 0.3s | none )                     │  │
+│  │ Resolution: ( 1920x1080 | 1280x720 | 4K )             │  │
+│  │ Background music: ( None | <audio-library row> )      │  │
+│  │ [Generate]                                            │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  History                                                     │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │ 2026-05-28 14:30  ●success  3:24  [▶ Preview] [⬇ DL] │    │
+│  │ 2026-05-27 22:10  ●failed   —     [! Show error]     │    │
+│  │ 2026-05-26 09:00  ●success  2:48  [▶ Preview] [⬇ DL] │    │
+│  └──────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- "Use current curated set" 按 §8.7.1 默认逻辑。
+- "Custom" 切换后展示 All Media 风格的多选 + 拖拽排序 widget（前端单独组件，复用 P11.T7 已有的 useJobPolling）。
+- History 列表用 `GET /api/trips/:tripId/slideshows`，每行支持 inline `<video preload="metadata">` 预览 + 下载（`GET /api/slideshows/:renderId/download`）+ 失败行展开 `error_message`。
+- 同时只允许一个 slideshow_render in-flight（前端检查 + 后端 service 层闸防双触发）。
+
+#### 2.5.6 关键 UX 约束
+
+1. 进入 `/trips/:id` 默认 Curated tab；URL fragment `?tab=all` / `?tab=duplicates` 可深链。
+2. AI off 时 Curated tab 顶部显示橙色 banner："AI is disabled — showing quality-score baseline; configure AI for smarter selection"，但 tab 本身仍可用。
+3. Curate album 与 Slideshow 触发都是异步 job，前端用 `useJobPolling`（P11.T7 复用）2s 轮询，终态停止 + unmount cleanup。
+4. round 选择器只影响 Curated tab 的展示；切到 All Media tab 永远基于"最新状态"。
+5. user_decision='excluded' 的照片在 Curated tab 不显示；要看就切到 All Media tab。
 
 ---
 
@@ -191,6 +293,24 @@ docs/
   - `DELETE /api/audio-library/:id`：仅允许删除用户上传 / 导入的条目；引用检查不通过时返回业务错误。
 - 视频合成 API（P11 新增）：
   - `POST /api/videos/compose`：body 包含 `inputs: [{ mediaVersionId, order }]` + `audioPolicy`；返回 `compositionId` 与初始 `processing_job` 信息；实际渲染异步执行。
+- **AI 精选 API（P12 新增）**：
+  - `POST /api/trips/:tripId/curate`：手动触发精选 pipeline。body 可选 `{ force?: boolean }`（true 时即使没有新增素材也强制 re-curate，新增 round）。返回 `{ jobId, selectionRound }` — **`jobId` 是 `processing_jobs.id` of the `curation_run` orchestrator job**，同时充当本轮 run 的唯一标识（不引入独立 `curation_runs` 表）。前端用 `useJobPolling(jobId)` 轮询进度，子任务（L2 – L7）的 partial_failures 累积在该 row 的 `payload` JSON 字段供 UI 展示。
+  - `GET /api/trips/:tripId/curated`：返回当前精选集（按 §7.8.4 合并公式计算）。可选 query：`round` 看历史轮次（缺省 = current），`includeAll=true` 把"未入选"的也返回以便 UI 显示 unpin 操作。返回 `{ currentRound, items: [{ mediaId, sceneGroupId, reason, refinementParams, source: 'ai' | 'user_pin', userDecision }] }`。
+  - `POST /api/trips/:tripId/curated-overrides`：body `{ mediaId, decision: 'kept' | 'excluded' }`。upsert 一行 `curated_selections` (selection_round=0, user_decision=decision)。前端 [Pin] / [Exclude] 按钮调用。
+  - `DELETE /api/trips/:tripId/curated-overrides/:mediaId`：清空**单张** media 的 round=0 行，让该照片回到 AI 当前轮次决定（即取消单次 pin 或 unpin，不影响其他 override）。前端 [Clear override] 按钮调用 — UI 区分于 "Reset overrides"。
+  - `DELETE /api/trips/:tripId/curated-overrides`：清空该 trip 的**全部** round=0 行（"Reset overrides"，整批回到纯 AI 推荐）；带二次确认。
+  - 三个写 API 的语义层次：单张 POST（pin/unpin）→ 单张 DELETE（clear one）→ 整批 DELETE（reset all）。语义不冲突，前端按按钮触发不同 endpoint，不会出现"unpin 一张照片导致清空整 trip"的错觉。
+  - `GET /api/trips/:tripId/scene-groups?round=N`：列出第 N 轮的全部场景组与组成员（让用户能看到 AI 把哪些照片归到一起）；缺省 round = current。
+- **幻灯片视频 API（P12 新增）**：
+  - `POST /api/trips/:tripId/slideshow`：触发幻灯片渲染。body 可选 `{ mediaIds?: string[], perImageDurationSec?, transitionType?, transitionDurationSec?, outputResolution?, outputFps?, audioPolicy?, backgroundAudioId? }`；缺省按 §8.7.1 默认输入（`getCurrentCuratedMediaIds`）+ §8.7.2 默认参数。返回 `{ renderId, jobId }`，渲染异步执行。
+  - `GET /api/trips/:tripId/slideshows`：列出该 trip 的全部 `slideshow_renders` 行（按 `created_at DESC`），每行含 status / 参数摘要 / 输出 mediaVersionId。
+  - `GET /api/slideshows/:renderId`：单条详情，含完整 `input_media_ids` 数组 + 完整参数 + 输出 `media_versions` 关联。
+  - `GET /api/slideshows/:renderId/download`：直接重定向到 `/storage/...` 下的 mp4 文件，并设置 `Content-Disposition: attachment`（让浏览器走下载而非预览）。404 当 status ≠ `success` 或 output 不存在。
+
+所有 P12 API 遵守：
+- 错误码用 `code` 字段，前端按 code 渲染本地化文案（如 `AI_NOT_CONFIGURED`、`AI_QUOTA_EXCEEDED`、`CURATION_IN_PROGRESS`、`SLIDESHOW_NO_INPUT`）。
+- 异步任务返回 `jobId` 让前端走 `useJobPolling` 复用 P11.T7 已有 hook。
+- 幻灯片下载用 `Content-Disposition: attachment` 避免与既有 `/storage/...` 预览路由冲突。
 
 ---
 
@@ -208,17 +328,47 @@ docs/
 
 | 表 | 主要外键 | 关键索引 | 设计要点 |
 |---|---|---|---|
-| `trips` | `cover_media_id → media_items.id`（可空，ON DELETE SET NULL） | `created_at`、`deleted_at` | 软删除字段 `deleted_at` |
+| `trips` | `cover_media_id → media_items.id`（可空，ON DELETE SET NULL） | `created_at`、`deleted_at`、`last_upload_at`（P12，用于 idle scanner） | 软删除字段 `deleted_at`。**P12 新增 3 列**：`last_upload_at` TEXT NULL（每次上传成功 worker 更新；空表示从未上传或被人为重置）；`last_curation_at` TEXT NULL（每次 `curation_run` 任务进入 running 时由 service 层写入）；`curation_auto_enabled` INTEGER NOT NULL DEFAULT 1（trip 级开关，可让用户对单个 trip 关闭自动 curation 而不影响其他 trip；与全局 `CURATION_AUTO_TRIGGER_ENABLED` 是 AND 关系，任一为 false 都不自动触发） |
 | `media_items` | `trip_id → trips.id`（ON DELETE RESTRICT，先处理） | `trip_id`、`file_hash`、`status`、`deleted_at` | `user_decision` 默认 `undecided` |
-| `media_analysis` | `media_id → media_items.id`（ON DELETE CASCADE） | `media_id`（唯一） | 1:1 关系，`raw_result` 存 JSON |
+| `media_analysis` | `media_id → media_items.id`（ON DELETE CASCADE） | `media_id`（唯一） | 1:1 关系，`raw_result` 存 JSON。P12 新增列 `ai_blur_class` ∈ {`sharp`,`maybe_blurry`,`blurry`,`unknown`}，默认 `unknown`，独立于现有 `blur_class`（Code Laplacian），不互相覆盖 |
 | `duplicate_groups` | `trip_id`, `recommended_media_id`（SET NULL） | `trip_id`、`group_type` | 删除推荐图前必须先 reset |
 | `duplicate_group_items` | `group_id`（CASCADE）、`media_id`（CASCADE） | `(group_id, media_id)` 唯一 | 记录每张在组内的状态 |
-| `media_versions` | `media_id`（CASCADE） | `(media_id, version_type)` | `version_type` 枚举严格校验 |
+| `media_versions` | `media_id`（CASCADE） | 见右栏：分类型部分唯一索引 | `version_type` 闭合枚举（详见 §4.2.1）。P12 起**废除全局 `(media_id, version_type)` UNIQUE**，按版本类型分两类：**Single-instance**（`thumbnail` / `preview` / `video_cover` / `video_proxy` / `metadata` / `video_optimized`）— 每个 media 至多一条 active 行，partial unique index `(media_id, version_type) WHERE is_active=1 AND deleted_at IS NULL`；**Multi-history**（`enhanced` / `ai_refined` / `ai_refined_param` / `edited` / `final_composition` / `slideshow`）— 允许同 media 多行历史，partial unique index `(media_id, version_type, params_hash) WHERE deleted_at IS NULL` 防止字节相同的重复入库。新增字段：`params_hash` TEXT NULL（SHA256 of params JSON，multi-history 行的去重键，single-instance 行可空）、`is_active` INTEGER DEFAULT 1（标记该行是否是当前活跃版本；multi-history 类型允许多行 is_active=1）、`deleted_at` TEXT NULL（软删除，与 media_items 保持一致）|
 | `video_segments` | `media_id`（CASCADE） | `media_id`、`is_recommended` | 每段独立缩略图 / 预览 |
-| `processing_jobs` | `media_id`（CASCADE 或 SET NULL，见下） | `status`、`job_type`、`started_at` | 状态机表，详见 §8 |
-| `ai_invocations` | `media_id`、`job_id`（SET NULL） | `created_at` | 审计用，不参与业务流 |
+| `processing_jobs` | `media_id`（CASCADE 或 SET NULL，见下）、`trip_id`（SET NULL，P12 新增） | `status`、`job_type`、`started_at`、`(target_type, target_id)`、`(job_type, target_type, target_id, dedupe_key)` UNIQUE | 状态机表，详见 §9。P12 扩展为多 target：除 `media_id` 外新增 `trip_id`（trip 级任务）+ `target_type` ∈ {`media`,`trip`,`audio`,`composition`,`slideshow`} + `target_id` TEXT（指向对应表主键）+ `payload` JSON（任务参数）+ `dedupe_key` TEXT（去重键，详见 §7.8.3 与 §9.1）。`media_id` 保留用于 media 级任务的向后兼容；trip / composition / slideshow 级任务把 `media_id` 留空，由 `target_type` + `target_id` 标识目标 |
+| `ai_invocations` | `media_id`（SET NULL）、`trip_id`（SET NULL，P12 新增）、`job_id`（SET NULL） | `created_at`、`(trip_id, request_type, target_type, target_id, input_hash)` UNIQUE WHERE status='success'（部分唯一索引） | 审计 + 成本缓存。P12 扩展：新增 `trip_id` / `target_type` ∈ {`media`,`trip`,`audio`,`composition`,`slideshow`,`scene_group`} / `target_id` TEXT / `request_type` 闭合枚举（值同 `AIRequestType`：`image_ai_refine` / `ai_caption` / `ai_classify` / `aesthetic_score` / `video_plan` / `ranking` / `scene_embedding` / `ai_blur_check` / `scene_best_pick` / `refinement_suggest`） / `input_hash` TEXT（输入素材 + 关键参数的 SHA256，用于成本缓存键，详见 §7.8.3）。`target_type='scene_group'` 时 `target_id` = `scene_groups.id`；其余按 target_type 指向对应表主键。P0–P11 既有行 migration 补齐 `target_type='media'` + `target_id = media_id` + `request_type = 'image_ai_refine'` + `input_hash = NULL`（无法事后回填的视为不参与缓存）|
 | `audio_library` | 无强外键（与媒体解耦） | `source_type`、`is_default`、`is_user_uploaded` | 系统默认 + 用户上传 + URL 导入条目；删除时需先校验是否被进行中的渲染任务引用（详见 §8.5） |
 | `video_compositions` | `trip_id`（SET NULL）、`output_media_version_id`（SET NULL） | `status`、`created_at` | 多视频合成历史；inputs 列表通过子表或 JSON 字段记录顺序敏感的剪辑视频引用 |
+| `scene_groups` (P12) | `trip_id`（CASCADE）、`representative_media_id → media_items.id`（SET NULL） | `(trip_id, selection_round, group_index)` UNIQUE、`representative_media_id` | P12.T2 新增。一行 = 一个场景组（组本身的元信息，不含成员明细）。字段：`id` PK、`trip_id`、`selection_round`、`group_index`（INTEGER，组在该 round 内的序号，从 0 开始；与 `(trip_id, selection_round)` 一起构成稳定的组对外标识）、`captured_at_start`、`captured_at_end`、`gps_center_lat`、`gps_center_lon`、`representative_media_id`、`member_count`、`algorithm_version`、`created_at`。**组成员明细另存于 `scene_group_items` 表**（见下） |
+| `scene_group_items` (P12) | `scene_group_id → scene_groups.id`（CASCADE）、`media_id → media_items.id`（CASCADE） | `(scene_group_id, media_id)` UNIQUE、`(scene_group_id, rank_in_group)` | P12.T2 新增。一行 = "某场景组的一个成员"。字段：`id` PK、`scene_group_id`、`media_id`、`selection_round`（冗余但便于 round 级过滤）、`group_score` real（组内代表性分数，AI embedding 给出的相似度或代码兜底的 quality_score）、`similarity_score` real（与组中心的相似度，可空）、`rank_in_group` INTEGER（组内排序，0 最高）、`reason` text、`created_at`。**L2 写入全部组成员**（无论是否最终入选 curated_selections），让前端"展开场景组"能看到完整成员列表 + AI 把它们归到一起的依据 |
+| `curated_selections` (P12) | `trip_id`（CASCADE）、`media_id`（CASCADE）、`scene_group_id → scene_groups.id`（SET NULL） | `(trip_id, selection_round, media_id)` UNIQUE、`(trip_id, is_current, included)` | P12.T2 新增。一行 = "某 trip 第 N 轮精选中 mediaX 的决定"。字段：`id`、`trip_id`、`media_id`、`scene_group_id`、`selection_round`、`included`(0/1)、`is_current`(0/1)、`reason` text、`ai_confidence` real、`refinement_params` JSON、`user_decision` ∈ {`kept`,`excluded`,null}、`created_at`、`updated_at`。`round >= 1` 行：最新 AI 轮次 `is_current=1`，旧 AI 轮 0；`round = 0` 行：用户 pin/unpin 覆盖层，统一 `is_current=0`，不参与 AI 自动覆盖 |
+| `slideshow_renders` (P12) | `trip_id`（CASCADE）、`output_media_version_id → media_versions.id`（SET NULL）、`background_audio_id → audio_library.id`（SET NULL） | `(trip_id, created_at DESC)`、`status` | P12.T2 新增。一行 = "某 trip 的一次幻灯片渲染历史"。每次用户点 "Generate slideshow" 都 **INSERT 新行**，不 UPSERT。字段：`id` PK、`trip_id`、`status` ∈ {`pending`,`running`,`success`,`failed`,`cancelled`}、`input_media_ids` JSON（顺序敏感数组）、`per_image_duration_sec`、`transition_type`、`transition_duration_sec`、`output_resolution`、`output_fps`、`audio_policy`、`background_audio_id`、`output_media_version_id`、`error_message`、`created_at`、`updated_at`、`deleted_at` TEXT NULL（软删除）。每行对应一个独立的 `media_versions(version_type='slideshow')` 行（INSERT not UPSERT，保留历史） |
+
+#### 4.2.1 `media_versions.version_type` 闭合枚举与单 / 多版本分类
+
+P12 修订后所有合法 `version_type` 值集中列在这里，是单一事实源（重新生成的 CHECK 约束以此为准；任何新增类型必须先改本表再写代码）：
+
+| version_type | 是 Single-instance 还是 Multi-history | 引入阶段 | 说明 |
+| --- | --- | --- | --- |
+| `original` | Single-instance | P0 | 上传原文件元数据行（不一定有 `derived` 文件） |
+| `thumbnail` | Single-instance | P3 | 列表缩略图 |
+| `preview` | Single-instance | P3 | 灯箱 / 编辑器中等分辨率预览 |
+| `metadata` | Single-instance | P3 | EXIF JSON（无文件，仅 params 字段）|
+| `enhanced` | Multi-history | P8 | 一键增强结果（同一原图多次增强允许多行）|
+| `ai_refined` | Multi-history | P10 | AI image-to-image 精修结果 |
+| `ai_refined_param` | Multi-history | P12 | AI 参数化精修结果（每轮可能有新一行）|
+| `video_cover` | Single-instance | P9 | 视频封面静帧 |
+| `video_proxy` | Single-instance | P9 | 720p 视频代理（分析用）|
+| `video_optimized` | Single-instance | P11 | 1080p 浏览器友好转码 |
+| `edited` | Multi-history | P11 | 视频剪辑输出 |
+| `final_composition` | Multi-history | P11 | 多视频合成输出 |
+| `slideshow` | Multi-history | P12 | 幻灯片视频输出 |
+
+约定：
+- **Single-instance**：partial unique index `(media_id, version_type) WHERE is_active=1 AND deleted_at IS NULL`。同 media 同类型允许多行历史只在 `is_active=0` 或 `deleted_at` 非空时存在（用户主动重建时旧行不再 active）。
+- **Multi-history**：partial unique index `(media_id, version_type, params_hash) WHERE deleted_at IS NULL`。`params_hash` 是 `params` JSON 字段规范化后的 SHA256；`is_active=1` 可以并存多行。
+- 任何 type 都通过 `deleted_at IS NULL` 过滤软删除。
+- migration 014→P12 时既有 single-instance 类型行 backfill `is_active=1` + `params_hash=NULL`；既有 multi-history 类型行也 backfill `is_active=1` + 按 params 字段算 `params_hash`（缺 params 的旧行用 `id` 兜底，保证 partial unique 不冲突）。
 
 ### 4.3 删除关联处理顺序
 
@@ -288,6 +438,7 @@ storage/
       outputs/
         edits/{editId}.mp4              # 单个视频的剪辑输出（含 audioPolicy 渲染结果）
         compositions/{compositionId}.mp4 # 多视频合成的最终视频（P11 新增）
+        slideshows/{renderId}.mp4       # 幻灯片视频输出（P12 新增；trip 级输出，不挂在某张照片下）
   audio_library/
     system/
       {audioId}.{ext}                  # 系统内置默认音频；普通删除接口不可删
@@ -398,11 +549,32 @@ Client                Upload API           DB                    Queue
 
 ### 7.6 AI 精修（默认关闭）
 
-- 通过 `AIProvider` 抽象。
-- 用户主动触发，前端必须先弹提示（耗时 / 成本）。
+AI 精修有**两条并存路径**，由不同 request type 区分；用户在不同入口触发不同路径，互不干扰：
+
+| 路径 | request_type | 出参 | version_type | 触发入口 | 引入阶段 |
+| --- | --- | --- | --- | --- | --- |
+| Image-to-image | `image_ai_refine` | AI 返回**精修后的图片字节** | `ai_refined` | 单图详情页"AI Refine"按钮 | P10 |
+| JSON 参数 + sharp 执行 | `refinement_suggest` | AI 返回**精修参数 JSON** + Code（sharp）执行 | `ai_refined_param` | P12 精选 pipeline L5–L6 自动触发 | P12 |
+
+共同约束（两条路径都遵守）：
+- 通过 `AIProvider` 抽象，不直接依赖任何厂商 SDK。
 - 调用前后写 `ai_invocations`（含模型、参数、状态、耗时、费用估算）。
-- 输出 `media_versions(version_type='ai_refined', model_name=...)`。
-- 配置不齐全或 `AI_ENABLED=false` 时，前端按钮置灰并提示“未配置”。
+- 原图与既有派生文件一律不被覆盖。
+- 配置不齐全或 `AI_ENABLED=false` 时，路径降级：
+  - `image_ai_refine`：前端按钮置灰提示 "AI 未配置"，不入队。
+  - `refinement_suggest`：精选 pipeline L5 跳过；L7 把 `curated_selections.refinement_params` 置为 `null` 并**不生成** `ai_refined_param` 派生行。Curated tab 展示原图（thumbnail / preview）而不是任何 "AI Refined" 徽章。**严禁拷贝原图字节伪装成 `ai_refined_param`** — 那会让前端徽章撒谎（显示"AI 已精修"但其实是原图）+ 浪费磁盘 + 让用户对比双视图时困惑。
+- 受 `AI_DAILY_LIMIT` / `AI_TRIP_LIMIT` 配额闸约束。
+
+**JSON 参数路径的细则（P12）**：
+- AI 返回 JSON 字段集合（详见 requirements §7.21.6）：`brightness` / `contrast` / `saturation` / `shadows` / `highlights` / `crop` / `rotation_deg` / `reason`。
+- **两层边界**（明确避免 spec 与 runtime 冲突）：
+  - **Schema 上限**（在 requirements §7.21.6 定义）：AI 返回值的最宽容上限，亮度/对比/饱和/阴影/高光 ∈ `[-1, 1]`、crop 子字段 ∈ `[0, 1]`、`rotation_deg ∈ [-180, 180]`。AI 出参越过此范围视为 schema 违规，整条建议被丢弃（fallback 到不精修）。
+  - **Runtime 安全上限**（在本文 §11.1 `REFINEMENT_PARAM_*` 配置）：实际 sharp 执行允许的窄范围，例如默认 brightness ±0.4、contrast ±0.3、rotation ±15°，确保即使 AI 在 schema 内"激进"输出也不会让图片严重失真。
+  - **执行规则**：Code 先验证 AI 出参在 Schema 上限内；然后用 Runtime 安全上限做 clamp（不抛错，按 clamp 后值应用）；最终参数记入 `media_versions.params` JSON 含 `requested_*`（AI 原始值）+ `applied_*`（clamp 后值）双字段，便于审计与回溯。
+- sharp 执行链固定为：`extract`（crop）→ `rotate` → `modulate`（brightness / saturation）→ `linear`（contrast）→ `gamma`（shadows / highlights 模拟）→ JPEG q=85。
+- 输出文件 `derived/{mediaId}/ai_refined_param.jpg`，并通过 sharp metadata 验证文件非空、维度合理后写入 `media_versions(version_type='ai_refined_param')`。
+- `params` JSON 字段记录完整精修参数（供前端"详情"页展示 + 对比 + 重放）。
+- 同一 `media_id` 多轮精选可以产生多个 `ai_refined_param` 行（不像 `edited` 那样 UPSERT），通过 `params.selection_round` 字段区分。
 
 ### 7.7 Trip 封面渐进策略
 
@@ -420,6 +592,161 @@ Client                Upload API           DB                    Queue
 2. 阶段 3 的“临时封面”仅在 `cover_media_id IS NULL` 时生效，是只读派生值，不持久化，避免与阶段 6 的写库逻辑互相覆盖。
 3. 视频也可作为封面来源（取视频封面帧）：第一版仅在 Trip 中没有任何图片时使用，作为兜底。
 4. 没有任何素材 / 视频封面时，回到默认占位。
+
+### 7.8 精选 pipeline 数据流（P12 新增）
+
+requirements §7.21 定义了 AI 精选相册的功能；本节描述对应的数据流、模块边界、外部 ID 依赖。
+
+#### 7.8.1 funnel 与数据流
+
+```
+                    ┌────────────────────────┐
+   全部素材 →       │ L1  既有质量过滤        │  (P5 dedup + P6 blur/exposure/color
+                    │                        │   已完成；本层是输入)
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L2  场景分组            │  Code (时间+GPS) + AI embedding
+                    │  scene_groups +        │  request_type=scene_embedding
+                    │  scene_group_items     │  job_type=scene_grouping
+                    │  写库（含全部成员）     │
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L3  AI 二次模糊         │  request_type=ai_blur_check
+                    │  写 media_analysis     │  job_type=ai_blur_check
+                    │  .ai_blur_class        │
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L4  组内最佳挑选        │  request_type=scene_best_pick
+                    │  每组 top-K 缩略图 → 1 │  job_type=scene_best_pick
+                    │  写 curated_selections │  (输入 top-K，输出 best_media_id)
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L5  AI 精修建议         │  request_type=refinement_suggest
+                    │  输出 JSON 参数         │  job_type=refinement_suggest
+                    │  写 curated_selections │
+                    │  .refinement_params    │
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L6  Code 应用精修       │  job_type=image_refine_param
+                    │  sharp 执行             │  写 media_versions
+                    │                        │   (version_type='ai_refined_param')
+                    └────────────┬───────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │ L7  精选集 finalize     │  job_type=curation_finalize
+                    │  写 curated_selections │  汇总 included=1 行
+                    │  .included=1           │  + reason + ai_confidence
+                    └────────────────────────┘
+                                 ▼
+                          前端 Curated tab
+```
+
+#### 7.8.2 触发模型
+
+两种触发互不冲突：
+
+- **手动**：`POST /api/trips/:tripId/curate` → 立即入队 orchestrator（job_type=`curation_run`）。返回 `{ jobId, selectionRound }`，其中 `jobId` 即 `curation_run` orchestrator job 的 `processing_jobs.id`（不引入独立 `curation_runs` 表），同时充当本轮 run 的唯一标识，前端用 `useJobPolling(jobId)` 轮询。详见 §3.3 API 定义。
+- **自动 idle 触发**：
+  - 每次上传完成更新 `trips.last_upload_at`（详见 §4.2 trips 行）。
+  - 周期 scanner 任务（每 `CURATION_IDLE_SCANNER_INTERVAL_MS`，默认 5 分钟）扫描：`SELECT FROM trips WHERE deleted_at IS NULL AND curation_auto_enabled = 1 AND last_upload_at IS NOT NULL AND last_upload_at < (now() - CURATION_IDLE_TIMEOUT_MS) AND (last_curation_at IS NULL OR last_curation_at < last_upload_at)`。
+  - 命中行入队 `curation_run` 任务（`target_type='trip'` / `target_id=tripId` / `dedupe_key='{tripId}:r{newRound}'`），并把 `trips.last_curation_at = now()` 写入避免下一轮扫描重复入队。
+  - **三层关停**：全局 env `CURATION_AUTO_TRIGGER_ENABLED=false` 关闭整个 scanner；trip 级 `trips.curation_auto_enabled = 0` 对单个 trip 跳过；运行时如果 `AI_ENABLED=false` 也仍然会跑（但走 Code 兜底路径，无 AI 调用，零成本）。
+
+#### 7.8.3 Orchestrator 设计
+
+`curation_run` 任务是一个**协调器**，本身不做计算，只负责按顺序入队 L2 – L7 的子任务，并在每一步完成后推进 round 状态：
+
+```
+curation_run(tripId, round)
+  ├─ L2: enqueue scene_grouping(tripId, round)        wait → success (blocking)
+  ├─ L3: foreach media in candidates:
+  │       enqueue ai_blur_check(mediaId, round)       parallel, best-effort,
+  │                                                   collect partial failures
+  ├─ L4: foreach scene_group:
+  │       enqueue scene_best_pick(groupId, round)     parallel, best-effort
+  ├─ L5: foreach picked media:
+  │       enqueue refinement_suggest(mediaId, round)  parallel, AI 配额闸,
+  │                                                   best-effort
+  ├─ L6: foreach refinement:
+  │       enqueue image_refine_param(mediaId, round)  parallel, image channel,
+  │                                                   best-effort
+  └─ L7: enqueue curation_finalize(tripId, round)     blocking
+```
+
+容错策略：
+- **L2 是阻塞 step**：场景分组必须完成才能进入 L3+（其他层都依赖 `scene_groups` 与 `scene_group_items` 行存在）。L2 必须**在单一事务内**同时写 `scene_groups` 行（每个组一行）+ `scene_group_items` 行（组内每个成员一行，含 `rank_in_group` / `group_score` / `reason`）。L2 自身失败 → 整个事务回滚，run 标 `failed`，已写的两表行一并消失，保证不残留半截组。
+- **L3 / L4 / L5 / L6 是 best-effort step**：每层入队 N 个并行子任务，orchestrator 等所有子任务 settle（success / failed / cancelled / 超时）再推进。**单 job 失败不阻塞整个 run**，失败的 media 在该层"漏过"但 L7 仍然 finalize；orchestrator 在 `processing_jobs.payload` 里累积 `partial_failures: [{ step, mediaId, errorMessage }]`，前端可看到"本轮哪些照片漏过 AI 模糊检测 / 漏过最佳挑选 / 漏过精修建议"。
+- **L7 是 blocking step**：finalize 把已完成层的结果合并成"本轮精选集"写入 `curated_selections`（`included=1` 行）+ 把旧 round 的 `is_current` 改 0、本 round 改 1。L7 失败 → run 标 `failed`，但已写入的中间结果（scene_groups / ai_blur_class / refinement_params）保留，供下次重跑跳过已完成部分。
+- **AI 不可用降级**：L3 / L4 / L5 跳过；L7 基于 L2 输出 + `media_analysis.quality_score` 排序选出每组 top 1 写入 `curated_selections`。CLAUDE.md §2.8 兜底路径。
+- **AI 部分可用降级**：L3 / L4 / L5 任一层全部子任务失败时，该层视为整体跳过；L7 用上一层（如 L4 失败时回退到 quality_score 排序）兜底，不让中间失败传播成 run 失败。
+- **Idempotent**：同 round 重复入队受 `(job_type, target_type, target_id, dedupe_key)` UNIQUE 约束保护，重复入队返回既有非终态 jobId；不同 round 的 dedupe_key 不同（`{tripId}:r{round}:{...}`），所以 multi-round 工作流不会被卡住。详细去重模型见 §9.1。**AI 调用结果缓存**走 `ai_invocations` 表（§4.2），与 `processing_jobs` UNIQUE 约束解耦 — "本 trip 同一张照片同一 request_type 不重复花 AI 钱" 的保证由 ai_invocations 的 `(trip_id, request_type, target_type, target_id, input_hash)` UNIQUE 给。
+
+#### 7.8.4 精选轮次（round）语义
+
+`selection_round` 是单调递增整数，每次完整 `curation_run` 自增一次，记录在 `curated_selections.selection_round` 与 `media_versions.params.selection_round`。约定：
+
+- **`round >= 1`**：AI 生成的轮次。每行带 `is_current` 标志，最新一轮 `is_current=1`，旧轮 `is_current=0`。
+- **`round = 0`**：用户 override 的"虚拟轮次"，存放 pin / unpin 决定。`round=0` 行的 `is_current` 字段不参与"最新轮"语义，**统一约定 `round=0` 行的 `is_current=0`**（避免与 AI 轮次的 is_current 冲突）；它们是叠加层，不是替换层。
+- 一张 `media_id` 在 trip 内最多 1 行 round=0（受 `(trip_id, selection_round, media_id) UNIQUE` 保护）；用户切换 pin/unpin 是 UPDATE 该行，不新插入。
+
+**"当前精选集"合并公式**（前端 Curated tab 渲染 + curation_finalize 写入逻辑都按此公式）：
+
+```
+let aiCurrent = curated_selections
+                  WHERE trip_id = T
+                    AND selection_round = MAX(selection_round WHERE round >= 1)
+                    AND is_current = 1
+                    AND included = 1
+
+let userPins = curated_selections
+                  WHERE trip_id = T
+                    AND selection_round = 0
+                    AND user_decision = 'kept'
+
+let userUnpins = curated_selections
+                  WHERE trip_id = T
+                    AND selection_round = 0
+                    AND user_decision = 'excluded'
+
+CurrentSelection(T) = (aiCurrent ∪ userPins) − userUnpins   (按 media_id 去重)
+```
+
+- "AI 选中 + 用户手动加入" 都进精选，**user_decision='excluded' 优先级最高**（即使 AI 选中也排除）。
+- 同一 media_id 同时出现在 aiCurrent 与 userPins 时去重（按 media_id 取一行，UI 优先显示 user pin 的 reason）。
+- re-curate 创建新 AI round 时 `aiCurrent` 自动切到新 round；用户 round=0 行不动，自然保留。
+
+**implementation 注**：
+- `curation_finalize` 任务写入新 AI round 时，**不**直接 INSERT 用户 pin/unpin 行；只 UPDATE 旧 AI round 的 `is_current=0`、INSERT 新 AI round 行（`is_current=1`）。round=0 行由前端 pin/unpin API 单独维护。
+- Repository 层提供 `getCurrentCuratedMediaIds(tripId)` 直接返回合并后的精选 media_id 集合，前端无需关心 round 细节。
+- 用户希望"忘掉某条 pin/unpin、回到纯 AI 推荐"时，提供一个"reset overrides" API：`DELETE FROM curated_selections WHERE trip_id=? AND selection_round=0`。
+
+#### 7.8.5 不覆盖原则（红线）
+
+- L2 – L7 全程不修改原图，不修改 P5/P6 写入的 `media_analysis` 主字段；只追加新列（`ai_blur_class`）或写新表（`scene_groups` / `scene_group_items` / `curated_selections`）或新 `media_versions` 行（`ai_refined_param`）。
+- 用户 override 优先级高于 AI 推荐：re-curate 时 `curated_selections.user_decision IN ('kept', 'excluded')` 的行不被覆盖（CLAUDE.md §3.9）。
+- 精选轮次历史不删除：旧轮次的 `curated_selections` 行只标 `is_current=0`，不 DELETE。
+
+#### 7.8.6 V1 范围限定：场景组结构不可手动重排
+
+requirements §16.7 "AI 场景分组误差" 的控制措施第 2 条提到 "用户可手动把 AI 误归到 A 组的照片移到 B 组"。**V1（P12）不实现此能力**，理由：
+
+- P12 实现范围已经包含 4 个新表 + 多个 worker + AI request type + 前端 tab 改造，再加场景组手动重排会显著拉长交付。
+- 场景组结构是 AI 算法的中间产物，用户**不需要直接编辑它**就能纠正精选结果。
+- 已有纠错路径足够覆盖 §15.5 全部 10 条验收：
+  - 用户对单张照片 **[Pin]** → `POST /curated-overrides {decision:'kept'}` 把误漏的照片加入精选。
+  - 用户对单张照片 **[Exclude]** → `POST /curated-overrides {decision:'excluded'}` 把误选的照片移出精选。
+  - 用户 **[Clear pin / Clear override]** → `DELETE /curated-overrides/:mediaId` 单张回到 AI 决定。
+  - 用户 **[Reset overrides]** → `DELETE /curated-overrides` 整批回到 AI 决定。
+
+V1 disposition：用户**只能编辑精选结果**（`curated_selections`），**不能编辑 AI 的场景分组结构**（`scene_groups` / `scene_group_items`）。未来如果有真实需求，新增：
+- `PATCH /api/trips/:tripId/scene-groups/:groupId/items/:mediaId` body `{ targetSceneGroupId }` 端点。
+- 配套 `scene_group_item_overrides` 表（或 `scene_group_items.user_override_group_id` 列）记录手动重排，re-curate 时不被 AI 覆盖。
+- 该升级与 R-147（精选历史 / 多 edit 保留）共属"未来扩展点"，按真实需求驱动。
 
 ---
 
@@ -565,6 +892,109 @@ Client                Upload API           DB                    Queue
 - 多视频合成只读取输入剪辑视频，绝不修改、删除、覆盖它们。
 - 多视频合成产生新文件 `outputs/compositions/{compositionId}.mp4` 和新的 `media_versions` 行；同一组输入可重复触发合成，每次都是独立的输出。
 
+### 8.7 幻灯片视频（P12 新增）
+
+requirements §7.22 定义了幻灯片视频的功能；本节描述渲染管线、ffmpeg 命令链与 P11 视频渲染基础设施的复用关系。
+
+#### 8.7.1 输入与输出
+
+- **输入**：一组图片 `media_items`。
+  - **默认来源**：调用 Repository 层 `getCurrentCuratedMediaIds(tripId)`，该方法按 §7.8.4 的合并公式返回当前精选集：`(aiCurrent ∪ userPins) − userUnpins`。**禁止**在 worker 内直接查 `curated_selections.included=1`，否则会忽略用户的 unpin 决定 + 漏掉 round=0 的 pin。
+  - **用户可覆盖**：通过 `POST /api/trips/:tripId/slideshow` 的 body `mediaIds` 字段显式传一组 media_id 数组（顺序敏感），完全旁路精选集逻辑；用于"我想用一组不在精选集里的照片做幻灯片"场景。
+  - **顺序规则**：默认按 `media_items.captured_at` 升序（无 captured_at 时回退 `created_at`）；用户显式传 `mediaIds` 时按传入数组顺序。
+- **可选音频**：从 `audio_library` 选一条（含系统默认 / 用户上传 / URL 导入）；或选择"静音"。
+- **输出**（详细历史保留语义见 §8.7.5）：
+  - 每次触发 INSERT 一行 `slideshow_renders`，拿到 `renderId`。
+  - 输出文件落到 **trip 级 outputs 目录**：`storage/trips/{tripId}/outputs/slideshows/{renderId}.mp4`（与 P11 `outputs/edits/` 和 `outputs/compositions/` 同层级，详见 §5.2）。**不挂在某张照片的 derived/ 下**——幻灯片是 trip 级输出，第一张照片只是 cover 候选，不是文件的所有者；如果该照片被软删除 / 永久删除，幻灯片文件归属不会变得诡异。
+  - 渲染成功后 INSERT（**不 UPSERT**）一行 `media_versions(version_type='slideshow')`；`media_id` 仍按需求挂到精选集第一张照片以方便前端 UI 关联（封面缩略图），但 `media_versions.params.storagePath` 指向 trip 级路径而非该照片的 derived 目录。
+  - UPDATE `slideshow_renders.output_media_version_id` 完成关联。
+
+#### 8.7.2 渲染参数（默认值见 §11.1）
+
+| 参数 | 默认 | 范围 | 说明 |
+| --- | --- | --- | --- |
+| `perImageDurationSec` | 2.0 | [1.0, 5.0] | 每张照片停留时长（含转场）|
+| `transitionType` | `xfade` | `xfade` / `none` | 淡入淡出 / 硬切 |
+| `transitionDurationSec` | 0.3 | [0, 1.0] | xfade 时长，0 等同 none |
+| `outputResolution` | `1920x1080` | 1280x720 / 1920x1080 / 3840x2160 | 与 P11.T5 render 统一 |
+| `outputFps` | 30 | 24 / 25 / 30 / 60 | |
+| `audioPolicy` | `replace_with_library` | `replace_with_library` / `mute` | 复用 P11.T4 audioPolicy（`keep_original` 对图片无意义，禁用）|
+| `backgroundAudioId` | null | 任意 audio_library.id | 与 audioPolicy 联动 |
+
+#### 8.7.3 ffmpeg pipeline
+
+复用 P11.T5 render worker 的 4-stage 框架，但替换 Stage 2 / Stage 3 为图片专属逻辑：
+
+**Stage 1：plan + media 验证**
+- 与 P11.T5 一致：trip 存在性、media 存在且非 soft-deleted、image MIME 校验。
+- 计算总时长 = `N * perImageDurationSec`（N 张图片）。
+
+**Stage 2：per-image 强归一化**
+
+每张图片：
+```
+ffmpeg -loop 1 -t {perImageDurationSec} -i {originalPath} \
+       -vf "scale={W}:{H}:force_original_aspect_ratio=decrease,
+            pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,
+            fps={outputFps},format=yuv420p" \
+       -c:v libx264 -preset medium -crf 23 -movflags +faststart \
+       -an \
+       {tmp}/clip_{idx}.mp4
+```
+
+要点：
+- `-loop 1 -t` 把单图变成视频流，时长精确控制。
+- `scale+pad+force_original_aspect_ratio=decrease` 处理横竖屏混合的 letterbox / pillarbox。
+- 复用 P11.T5 的 `libx264 / yuv420p / 30fps` 输出规格，保证 Stage 3 concat 兼容。
+- `-an` 显式去音，因为图片本身无音轨；最终音轨在 Stage 4 注入。
+
+**Stage 3：concat + xfade（如启用）**
+
+- `transitionType='none'`：直接 concat demuxer `-c copy` 拼接（同 P11.T5 Stage 3）。
+- `transitionType='xfade'`：用 filter_complex 串 xfade：
+  ```
+  ffmpeg -i clip_0.mp4 -i clip_1.mp4 -i clip_2.mp4 \
+         -filter_complex "[0:v][1:v]xfade=transition=fade:duration=0.3:offset=1.7[v01];
+                          [v01][2:v]xfade=transition=fade:duration=0.3:offset=3.4[vout]" \
+         -map "[vout]" -c:v libx264 -preset medium -crf 23 \
+         {tmp}/concat.mp4
+  ```
+  - `offset` = 累积时长 - transitionDurationSec
+  - 注意 xfade 会让总时长比 `N * perImageDurationSec` 短 `(N-1) * transitionDurationSec` 秒，前端文案要清楚说明。
+
+**Stage 4：audioPolicy 应用 + 最终封装**
+
+- 复用 P11.T2 `prepareBackgroundMusic`（loop / atrim / afade / loudnorm）准备 audio 轨道，长度精确匹配 Stage 3 输出。
+- `audioPolicy='mute'`：直接 `-an` 输出。
+- `audioPolicy='replace_with_library'`：`ffmpeg -i concat.mp4 -i bgm.aac -c:v copy -c:a aac -shortest`。
+- ffprobe 验证 → `storage.putOutput(overwrite=false, path='trips/{tripId}/outputs/slideshows/{renderId}.mp4')` → **INSERT**（不 UPSERT）`media_versions(version_type='slideshow', media_id=firstMediaId)`，`params.storagePath` 字段记录上述 trip 级路径 → UPDATE `slideshow_renders.output_media_version_id` + `status='success'`。
+- 上述写库步骤必须在同一事务内（避免 media_versions 已插入但 slideshow_renders 还停在 running 的中间状态）。
+
+#### 8.7.4 与 P11 render worker 的关系
+
+幻灯片渲染**不复用** P11.T5 的 `video_render` job 类型 / `edit_plans` 表 / `videoRenderWorker.ts`：
+
+- 新增独立 job type `slideshow_render`、独立 worker `slideshowRenderWorker.ts`、独立 route `POST /api/trips/:tripId/slideshow`。
+- **复用** P11.T2 `audioProcessor.ts`（音频准备）、P11.T3 `audio_library` 表与服务、`storage.putDerived`、`media_versions` 写入、video 通道（共享 `VIDEO_WORKER_CONCURRENCY=1` 预算）。
+- 不复用 `edit_plans` 表：幻灯片"plan"本身简单（图片列表 + 参数），直接放在 `processing_jobs.payload` JSON 字段即可，无需独立表。
+
+#### 8.7.5 历史保留 + 不覆盖原则（红线）
+
+requirements §7.22 / §15.6 显式要求"用户可以查看历史生成的幻灯片视频"。本设计采用**方案 A：保留历史**，每次生成都是新行，不 UPSERT 任何已有记录。
+
+**`slideshow_renders` 表（§4.2 已新增）+ 输出文件命名**：
+- 每次用户触发"Generate slideshow"，先 INSERT 一行 `slideshow_renders`（status=`pending`），拿到 `renderId`。
+- 输出文件路径含 `renderId` + 落到 trip 级 outputs：`storage/trips/{tripId}/outputs/slideshows/{renderId}.mp4`（不是 `derived/{firstMediaId}/...`），多个历史文件并存不互相覆盖；幻灯片文件归属 trip 而非某张照片，照片删除不影响幻灯片存活。
+- 渲染成功后 INSERT 一行新的 `media_versions(version_type='slideshow')`（**不 UPSERT**），把 `id` 写回 `slideshow_renders.output_media_version_id`。
+- `media_versions.params` JSON 字段记录 `{ slideshowRenderId, inputMediaIds, perImageDurationSec, transitionType, transitionDurationSec, outputResolution, outputFps, audioPolicy, backgroundAudioId }` 全套审计。
+- `slideshow` 属于 §4.2.1 闭合枚举中的 **Multi-history** 类，使用 partial unique index `(media_id, version_type, params_hash) WHERE deleted_at IS NULL` 作为唯一约束（详见 §4.2 `media_versions` 行与 §4.2.1 分类）。每次 render 都 **INSERT 新行**（不 UPSERT），`params_hash` 由 params JSON 规范化后取 SHA256。这是 §4.2.1 已经定死的方案，不留 migration 期临时决策余地。
+
+**不覆盖红线**：
+- Stage 2 / 3 / 4 全程在临时目录操作；最终 `storage.putOutput(overwrite=false)` 写到 `trips/{tripId}/outputs/slideshows/{renderId}.mp4`。同名冲突直接失败（renderId 是 UUID，碰撞概率为 0）。
+- 原图字节不被读为可写句柄，永不修改（与 P11.T8 SHA256 验证同理）。
+- 已有的历史 `slideshow-{oldRenderId}.mp4` 文件与 `media_versions` 行永不被删除或覆盖；用户在前端"幻灯片历史"列表能看到每一次生成 + 下载 + 重新触发新一轮渲染。
+- 用户主动"删除某次历史幻灯片"（未来需求）：通过 soft-delete `slideshow_renders.deleted_at` + soft-delete 对应 `media_versions` 行；CLAUDE.md §2.4 红线不允许自动永久删除。
+
 ---
 
 ## 9. 任务队列设计
@@ -573,7 +1003,27 @@ Client                Upload API           DB                    Queue
 
 - 单一事实源：`processing_jobs` 表。
 - 状态机：`pending → running → success | failed`，`failed → retrying → running`，可 `cancelled`。
-- 字段：`id, media_id, job_type, payload(JSON), status, progress, retry_count, error_message, started_at, finished_at, created_at, updated_at`。
+- 字段：`id, media_id, trip_id, target_type, target_id, dedupe_key, job_type, payload(JSON), status, progress, retry_count, error_message, started_at, finished_at, next_run_at, created_at, updated_at`。
+- **多 target 模型（P12 扩展）**：早期 P0 – P11 假定每个任务都属于一张 `media_items`，因此只有 `media_id` 一列。P12 引入 trip 级 / composition 级 / slideshow 级任务（`curation_run` / `scene_grouping` / `slideshow_render` / 已有的 `video_render` / `video_composition`），单 `media_id` 列不足以表达任务目标。扩展规则：
+  - `target_type` ∈ {`media`,`trip`,`audio`,`composition`,`slideshow`}：闭合枚举，CHECK 约束。
+  - `target_id` TEXT：指向对应表主键（`media_items.id` / `trips.id` / `audio_library.id` / `video_compositions.id` / `slideshow_renders.id`）。
+  - `media_id` 与 `trip_id` 是显式 FK 列（便于直接 JOIN + ON DELETE 行为可控）；当 `target_type='media'` 时 `media_id IS NOT NULL`，`target_type='trip'` 时 `trip_id IS NOT NULL`，其余情况 `target_id` 必填、两个 FK 列可空。
+  - 既有 media 级 job（P0 – P11）插入时统一设 `target_type='media'` + `target_id = media_id`；migration 一次性补齐。
+  - 路由层 / repository 层提供 `findByTarget(targetType, targetId)` 检索 API，替代之前的 `findByMediaId`（保留为薄包装）。
+- **去重键 `dedupe_key`（P12 引入）**：单独一列，配合 UNIQUE `(job_type, target_type, target_id, dedupe_key)` 用于"同一逻辑任务不重复入队"。**注意：这是入队幂等键，不是 AI 成本缓存**——AI 调用结果缓存由 §4.2 `ai_invocations` 表的 `(trip_id, request_type, target_type, target_id, input_hash)` 控制，与 `processing_jobs` 解耦。
+  - 设计目的：P12 多轮精选场景下，同一 `(media_id, refinement_suggest)` 在第 1 轮和第 2 轮都需要入队，单纯 `(job_type, target_type, target_id)` UNIQUE 会卡住第 2 轮。`dedupe_key` 把 round 等"作用域"维度纳入幂等键，使 multi-round 工作流不被阻塞。
+  - `dedupe_key` 列**强制 NOT NULL**（CHECK 约束 + 列定义 NOT NULL）。SQLite 多个 NULL 不冲突的语义会让 partial NULL 旁路 UNIQUE 约束 — 等于把"幂等保护"变成"看运气"。一律 NOT NULL，强制每个 enqueue 路径显式给出去重维度，要么有意义、要么用 UUID。
+  - `dedupe_key` 命名规则（约定见 §7.8.3，每个 job_type 的具体格式）：
+    - `curation_run`：`{tripId}:r{round}`
+    - `scene_grouping`：`{tripId}:r{round}`
+    - `ai_blur_check`：`{tripId}:r{round}:{mediaId}`
+    - `scene_best_pick`：`{tripId}:r{round}:g{groupIndex}`
+    - `refinement_suggest`：`{tripId}:r{round}:{mediaId}`
+    - `image_refine_param`：`{tripId}:r{round}:{mediaId}`
+    - `slideshow_render`：`{slideshowRenderId}`（每次新生成一个 UUID 永远唯一）
+    - P0 – P11 既有 media 级 job 的 migration 补齐策略：**禁止留 NULL**。优先生成结构化 key（如 `{mediaId}:{jobType}` 或 `{mediaId}:{operationVersion}`，依据该 job_type 业务幂等需求决定）；确实不需要幂等保护的（如手动重试触发的 reprocess job）用 UUID 作为 dedupe_key，等同于"独一无二一次性"。
+  - **重复入队语义**：service 层 enqueue 之前先 `SELECT FROM processing_jobs WHERE job_type=? AND target_type=? AND target_id=? AND dedupe_key=?`；若已有非终态行（`pending` / `running` / `retrying`）则返回既有 jobId；终态行（`success` / `failed` / `cancelled`）按"是否要重跑"决定 INSERT 新行（不同 round / 不同业务语义 → 不同 dedupe_key 自然不冲突）。
+- `next_run_at` TEXT NULL：retry 退避时间锚点。`status='retrying'` 时不为空；scheduler 用 `next_run_at <= now()` 判定是否可重试。
 
 允许的状态迁移（其他迁移视为非法）：
 
@@ -589,11 +1039,12 @@ retrying → running
 第一版：单进程内 Worker 池，按任务**类别**分组限并发，互不抢占。
 
 - 三类独立通道（每类各自维护并发计数器）：
-  - **图片通道**：`IMAGE_WORKER_CONCURRENCY`，默认 **2**。涵盖 `image_thumbnail / image_metadata / image_hash / image_dedup / image_quality / image_enhance / image_recommendation`。
-  - **视频通道**：`VIDEO_WORKER_CONCURRENCY`，默认 **1**。涵盖 `video_metadata / video_cover / video_proxy / video_keyframes / video_segments / video_segment_analysis` 等所有调用 FFmpeg / ffprobe 的任务。系统范围内并行的 FFmpeg 子进程总数不得超过此值。
-  - **AI 通道**：`AI_WORKER_CONCURRENCY`，默认 **1**，并受日 / Trip 配额额外约束。
+  - **图片通道**：`IMAGE_WORKER_CONCURRENCY`，默认 **2**。涵盖 `image_thumbnail / image_metadata / image_hash / image_dedup / image_quality / image_enhance / image_recommendation`。P12 新增：`image_refine_param`（sharp 参数化精修执行；§7.6 JSON 参数路径）、`scene_grouping`（纯 Code 时间+GPS 粗分组，无 AI 调用）。
+  - **视频通道**：`VIDEO_WORKER_CONCURRENCY`，默认 **1**。涵盖 `video_metadata / video_cover / video_proxy / video_keyframes / video_segments / video_segment_analysis` 等所有调用 FFmpeg / ffprobe 的任务。系统范围内并行的 FFmpeg 子进程总数不得超过此值。P12 新增：`slideshow_render`（图片→视频幻灯片合成）。
+  - **AI 通道**：`AI_WORKER_CONCURRENCY`，默认 **1**，并受日 / Trip 配额额外约束。P12 新增 4 类 AI request type 对应的 worker：`scene_embedding`（embedding 调用，作为 scene_grouping 的可选 enrichment）、`ai_blur_check`（AI 二次模糊检测）、`scene_best_pick`（场景内最佳挑选）、`refinement_suggest`（精修参数 JSON 建议）。
+  - **协调器（不占通道）**：P12 新增 `curation_run` 是纯协调任务，不走 ffmpeg / sharp / AI，只负责按 §7.8.3 顺序入队子任务；它在 AI 通道分配槽位但 in-flight 时间几乎为零（每步入队 + 等待回写）。可选改进：单独 `orchestrator` 通道，V1 暂不引入。
 - 拉取方式：
-  - 轮询 SQL：`SELECT ... WHERE status='pending' OR (status='retrying' AND next_run_at<=now) AND job_type IN (<channel_types>) ORDER BY created_at LIMIT (channelCap - channelInFlight)`。
+  - 轮询 SQL：`SELECT ... WHERE (status='pending' OR (status='retrying' AND next_run_at<=now)) AND job_type IN (<channel_types>) ORDER BY created_at LIMIT (channelCap - channelInFlight)`。注意最外层括号 — SQL 中 `AND` 优先级高于 `OR`，缺少括号会让 `job_type IN (...)` 只约束 `retrying` 分支，导致某个通道意外拉到其他通道的 `pending` 任务（V1 早期 SQL 笔误，P12 修正）。
   - 用 `UPDATE ... WHERE id=? AND status='pending'` 抢占，避免并发拉同一条。
 - 任务执行统一封装：开始更新 `running` + `started_at`；成功更新 `success` + `finished_at`；失败写 `error_message` + 决定 `failed` / `retrying`。
 - 视频任务出队前必须先检查 §8.4 的 ffmpeg 可用状态，不可用则直接 `failed` 不占用并发槽。
@@ -679,6 +1130,31 @@ retrying → running
 - AI：`AI_ENABLED`、`AI_PROVIDER`、`AI_DAILY_LIMIT`、`AI_TRIP_LIMIT`。
 - 上传：`UPLOAD_MAX_FILE_SIZE`、`UPLOAD_ALLOWED_IMAGE_EXT`、`UPLOAD_ALLOWED_VIDEO_EXT`。
 - 删除：`PERMANENT_DELETE_ENABLED`（默认 `false`，第一轮主流程关闭，等软删除 / 恢复 / 外键测试通过后再开启）。
+- **P12 精选 pipeline**：
+  - `CURATION_AUTO_TRIGGER_ENABLED`（默认 `true`）：上传 idle 后自动触发；`false` 时只允许手动触发。
+  - `CURATION_IDLE_TIMEOUT_MS`（默认 `600000`，10 分钟）：上传完成后等多久才允许 auto-trigger。
+  - `CURATION_IDLE_SCANNER_INTERVAL_MS`（默认 `300000`，5 分钟）：周期扫描 `trips.last_upload_at` 的间隔。
+  - `SCENE_GROUPING_TIME_WINDOW_SEC`（默认 `300`，5 分钟）：Code 粗分组时间窗。
+  - `SCENE_GROUPING_GPS_RADIUS_M`（默认 `50`）：Code 粗分组 GPS 半径（米）；无 GPS 的图片只按时间窗分组。
+  - `SCENE_GROUPING_EMBEDDING_ENABLED`（默认 `true`）：是否在 Code 粗分组内做 AI embedding 细分。`AI_ENABLED=false` 时强制视为 false。
+  - `SCENE_BEST_PICK_TOP_K`（默认 `5`）：每组送 AI 挑选的 top-K 缩略图数量。
+  - `CURATION_REFINEMENT_ENABLED`（默认 `true`）：是否在 L5 / L6 跑精修建议 + sharp 执行。`false` 时精选集直接展示原图。
+- **P12 幻灯片视频**：
+  - `SLIDESHOW_DEFAULT_PER_IMAGE_DURATION_SEC`（默认 `2.0`）：每张照片停留时长。
+  - `SLIDESHOW_DEFAULT_TRANSITION_TYPE`（默认 `xfade`）：`xfade` / `none`。
+  - `SLIDESHOW_DEFAULT_TRANSITION_DURATION_SEC`（默认 `0.3`）：xfade 时长。
+  - `SLIDESHOW_DEFAULT_RESOLUTION`（默认 `1920x1080`）。
+  - `SLIDESHOW_DEFAULT_FPS`（默认 `30`）。
+  - `SLIDESHOW_CRF`（默认 `23`，与 P11.T5 render 统一）。
+  - `SLIDESHOW_PRESET`（默认 `medium`，libx264 preset）。
+  - `SLIDESHOW_TIMEOUT_MS`（默认 `600000`，单 job 墙钟上限）。
+- **P12 精修参数边界**（防御 AI 输出越界 — Runtime 安全上限，与 requirements §7.21.6 的 Schema 上限不是冲突而是分层）：
+  - **语义**：requirements §7.21.6 定义的 `[-1, 1]` / `[-180, 180]` 等是 **Schema 上限**（AI 出参允许的最宽容范围；越过即 schema 违规丢弃）。本节定义的是 **Runtime 安全上限**（实际执行允许的窄范围；schema 通过后再按本节配置 clamp）。执行顺序：schema 验证 → runtime clamp → sharp 执行；任何冲突时以本节运行时配置为准。
+  - `REFINEMENT_PARAM_BRIGHTNESS_MAX_ABS`（默认 `0.4`）：clamp 范围 ±0.4。
+  - `REFINEMENT_PARAM_CONTRAST_MAX_ABS`（默认 `0.3`）。
+  - `REFINEMENT_PARAM_SATURATION_MAX_ABS`（默认 `0.3`）。
+  - `REFINEMENT_PARAM_CROP_MIN_AREA`（默认 `0.5`）：最小裁剪后保留面积（相对原图），低于此值拒绝 crop。
+  - `REFINEMENT_PARAM_ROTATION_MAX_DEG`（默认 `15`）：旋转角度上限（绝对值），超过按 clamp。
 
 ### 11.2 环境变量
 
@@ -727,9 +1203,11 @@ retrying → running
 | §10 前端页面 | §2 前端 |
 | §11 处理流程 | §7、§8 任务链 |
 | §12 非功能 | §9 队列、§10 错误处理、§11 配置 |
-| §16 风险 | §7.2 模糊、§7.3 去重、§9 重试、§12 安全 |
+| §16 风险 | §7.2 模糊、§7.3 去重、§9 重试、§12 安全；P12 新增风险：§16.6 AI 成本 → §7.8.3 容错 + §11.1 cost cap envs；§16.7 场景分组误差 → §7.8.6 V1 disposition + §4.2 scene_group_items；§16.8 精修越界 → §7.6 双层 clamp + §11.1 `REFINEMENT_PARAM_*` |
 | §7.13 / §7.14 视频优化与剪辑 | §8.3、§8.5（音频处理）|
 | §7.19 音频库 | §8.5、§5.2 存储布局、§3.3 API |
 | §7.20 多视频合成 | §8.6、§5.2 存储布局、§3.3 API |
+| §7.21 AI 精选相册 | §2.5、§3.3 API、§4.2 表、§4.2.1 version_type、§7.6（双路径）、§7.8（pipeline）、§9.1（dedupe_key）/ §9.2、§11.1 |
+| §7.22 幻灯片视频 | §2.5.5、§3.3 API、§4.2 slideshow_renders 表、§4.2.1 version_type、§5.2 outputs 布局、§8.7、§9.2、§11.1 |
 
 阶段实现进度回写到本文件 §1 / §13，与 `tasks.md` 同步。
