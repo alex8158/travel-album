@@ -96,6 +96,84 @@ export interface AiInvocationMarkFailedArgs {
 }
 
 /**
+ * P12.T5 — writer for ai_invocations rows that participate in the P12
+ * curated-album pipeline. Mirrors {@link AiInvocationInsertData} but
+ * also writes the four columns added in migration 024 (P12.T3):
+ *   * `trip_id`     — denormalised trip ownership (FK SET NULL)
+ *   * `target_type` — closed enum {media,trip,audio,composition,
+ *                     slideshow,scene_group}
+ *   * `target_id`   — table-PK of the target (e.g. media_id when
+ *                     target_type='media', scene_group_id when
+ *                     target_type='scene_group')
+ *   * `input_hash`  — SHA256 of the AI input bytes + key params;
+ *                     drives the partial-UNIQUE cost-cache index
+ *                     `(trip_id, request_type, target_type, target_id,
+ *                       input_hash) WHERE status='success'`
+ *
+ * The legacy {@link AiInvocationsRepository.insert} stays untouched so
+ * P10 workers (which were written before P12.T3 added these columns)
+ * keep compiling. New P12 workers use this method.
+ *
+ * All four new columns are nullable except `target_type` (NOT NULL,
+ * DEFAULT 'media'). Callers SHOULD pass an `inputHash` to participate
+ * in the cost cache; passing NULL means "this row is not cacheable".
+ *
+ * `model_name` may be a placeholder at write time (the same pattern as
+ * the legacy `insert` for `pending` rows); successful calls overwrite
+ * it via {@link AiInvocationsRepository.markSuccess}.
+ */
+export interface AiInvocationInsertWithTargetsData {
+  readonly id: string;
+  readonly mediaId: string | null;
+  readonly tripId: string | null;
+  readonly jobId: string | null;
+  readonly provider: string;
+  readonly modelName: string;
+  readonly requestType: AIRequestType;
+  /** Closed enum mirrored from the migration 024 CHECK. */
+  readonly targetType:
+    | "media"
+    | "trip"
+    | "audio"
+    | "composition"
+    | "slideshow"
+    | "scene_group";
+  readonly targetId: string | null;
+  readonly inputHash: string | null;
+  readonly status: AIInvocationStatus;
+  readonly requestParams?: string | null;
+  readonly responseSummary?: string | null;
+  readonly costEstimate?: number | null;
+  readonly durationMs?: number | null;
+  readonly errorMessage?: string | null;
+  /** ISO-8601 timestamp written into both `created_at` + `updated_at`. */
+  readonly now: string;
+}
+
+/**
+ * Lookup key for the P12 cost-cache. Mirrors the partial UNIQUE
+ * `(trip_id, request_type, target_type, target_id, input_hash)
+ *  WHERE status='success'` declared in migration 024.
+ *
+ * Callers pass the same tuple they would write on a fresh row; when a
+ * match exists the worker reuses it and skips the AI call (saving the
+ * quota + cost).
+ */
+export interface AiInvocationCacheLookup {
+  readonly tripId: string | null;
+  readonly requestType: AIRequestType;
+  readonly targetType:
+    | "media"
+    | "trip"
+    | "audio"
+    | "composition"
+    | "slideshow"
+    | "scene_group";
+  readonly targetId: string | null;
+  readonly inputHash: string;
+}
+
+/**
  * Read projection of one `ai_invocations` row. Mirrors every column
  * in migration 012. Only used by the future P10.T5 worker (to
  * UPDATE the row by id) and by tests / smokes (to assert that the
@@ -160,6 +238,11 @@ export class AiInvocationsRepository {
   private readonly findPendingByJobIdStmt;
   private readonly markSuccessStmt;
   private readonly markFailedStmt;
+  // P12.T5 — writers/readers for the curated-album pipeline. Built
+  // alongside the legacy P10 statements; the legacy `insert` stays
+  // bit-identical so P10 workers compile unchanged.
+  private readonly insertWithTargetsStmt;
+  private readonly findCachedSuccessStmt;
 
   constructor(private readonly db: SqliteDatabase) {
     // INSERT: media_id + job_id NULLABLE so audit rows can outlive
@@ -247,6 +330,61 @@ export class AiInvocationsRepository {
           duration_ms = @durationMs,
           updated_at = @now
       WHERE id = @id AND status = 'pending'
+    `);
+
+    // P12.T5 — write a row covering the four new columns added by
+    // migration 024 (trip_id / target_type / target_id / input_hash)
+    // plus the optional terminal-state columns (response_summary /
+    // cost_estimate / duration_ms / error_message) so the caller can
+    // write success / failed rows in one statement. This is the new
+    // canonical writer for the curated-album pipeline; the legacy
+    // {@link insertStmt} is kept for P10 callers.
+    this.insertWithTargetsStmt = db.prepare(`
+      INSERT INTO ai_invocations (
+        id, media_id, trip_id, job_id,
+        provider, model_name, request_type,
+        target_type, target_id, input_hash,
+        request_params, response_summary,
+        cost_estimate, duration_ms, error_message,
+        status, created_at, updated_at
+      ) VALUES (
+        @id, @mediaId, @tripId, @jobId,
+        @provider, @modelName, @requestType,
+        @targetType, @targetId, @inputHash,
+        @requestParams, @responseSummary,
+        @costEstimate, @durationMs, @errorMessage,
+        @status, @now, @now
+      )
+    `);
+
+    // P12.T5 — cost-cache lookup. Mirrors the partial UNIQUE declared
+    // in migration 024:
+    //   `(trip_id, request_type, target_type, target_id, input_hash)
+    //    WHERE status='success'`
+    //
+    // Returns the most-recent matching row, or NULL when no success
+    // row matches. The partial UNIQUE guarantees AT MOST one row
+    // matches; ORDER BY + LIMIT 1 is defensive. We treat NULL inputs
+    // as their SQL-NULL counterparts via `IS @bound` matching, but
+    // input_hash is NOT NULL by interface contract (cache lookup is
+    // only meaningful when the worker computed an input hash).
+    this.findCachedSuccessStmt = db.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM ai_invocations
+      WHERE status = 'success'
+        AND request_type = @requestType
+        AND target_type = @targetType
+        AND input_hash = @inputHash
+        AND (
+          (trip_id IS NULL AND @tripId IS NULL)
+          OR trip_id = @tripId
+        )
+        AND (
+          (target_id IS NULL AND @targetId IS NULL)
+          OR target_id = @targetId
+        )
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
     `);
   }
 
@@ -346,6 +484,68 @@ export class AiInvocationsRepository {
       now: args.now,
     });
     return info.changes;
+  }
+
+  /**
+   * P12.T5 — write one audit row using the full P12 column set added
+   * by migration 024 (trip_id / target_type / target_id / input_hash)
+   * plus the optional terminal-state columns. The caller decides
+   * whether to write `pending` (then `markSuccess` / `markFailed`
+   * later) or a fully-formed terminal row in one shot.
+   *
+   * Throws on:
+   *   * UNIQUE violation of the partial cost-cache index when status
+   *     is 'success' and a matching tuple already exists (this is
+   *     why the caller should run {@link findSuccessfulCached} first).
+   *   * CHECK failure (unknown target_type, blank model_name, etc.).
+   *   * FK failure (trip_id no longer exists; media_id no longer
+   *     exists; job_id no longer exists).
+   */
+  insertWithTargets(data: AiInvocationInsertWithTargetsData): void {
+    this.insertWithTargetsStmt.run({
+      id: data.id,
+      mediaId: data.mediaId,
+      tripId: data.tripId,
+      jobId: data.jobId,
+      provider: data.provider,
+      modelName: data.modelName,
+      requestType: data.requestType,
+      targetType: data.targetType,
+      targetId: data.targetId,
+      inputHash: data.inputHash,
+      requestParams: data.requestParams ?? null,
+      responseSummary: data.responseSummary ?? null,
+      costEstimate: data.costEstimate ?? null,
+      durationMs: data.durationMs ?? null,
+      errorMessage: data.errorMessage ?? null,
+      status: data.status,
+      now: data.now,
+    });
+  }
+
+  /**
+   * P12.T5 — find the previously-successful audit row matching the
+   * cost-cache key tuple. Returns `null` when no match exists; the
+   * partial UNIQUE on `(trip_id, request_type, target_type, target_id,
+   * input_hash) WHERE status='success'` guarantees AT MOST one match.
+   *
+   * The caller uses this BEFORE calling `aiProvider.invoke` so a
+   * deterministic re-run for the same input bytes skips the second
+   * AI call and reuses the prior verdict (saving quota + cost). The
+   * media_analysis write that wrote the verdict last time is already
+   * persisted on disk so the worker simply returns "cache_hit" and
+   * exits.
+   */
+  findSuccessfulCached(args: AiInvocationCacheLookup): AiInvocationRow | null {
+    const row = this.findCachedSuccessStmt.get({
+      tripId: args.tripId,
+      requestType: args.requestType,
+      targetType: args.targetType,
+      targetId: args.targetId,
+      inputHash: args.inputHash,
+    }) as AiInvocationDbRow | undefined;
+    if (row === undefined) return null;
+    return rowToView(row);
   }
 }
 

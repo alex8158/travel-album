@@ -236,6 +236,12 @@ function syntheticAnalysisRow(args: {
     labels: null,
     reason: null,
     rawResult: args.rawResult ?? null,
+    // P12.T5 — MediaAnalysisRow gained two AI-blur columns (migration
+    // 026 / P12.T3). Synthetic fixtures default to the "not yet
+    // AI-checked" sentinel; this smoke targets the Code finalize
+    // worker which does not read or write these.
+    aiBlurClass: null,
+    aiBlurReason: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

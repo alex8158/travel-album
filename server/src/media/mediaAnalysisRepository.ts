@@ -127,6 +127,15 @@ export interface MediaAnalysisRow {
   readonly labels: string | null;
   readonly reason: string | null;
   readonly rawResult: string | null;
+  /**
+   * P12.T5 — AI second-pass blur verdict (migration 026). Independent
+   * of the Code Laplacian fields above; both verdicts coexist.
+   * `null` when the AI blur worker has not yet processed this media
+   * (and the column DEFAULT 'unknown' applies via the SQL CHECK).
+   */
+  readonly aiBlurClass: "sharp" | "maybe_blurry" | "blurry" | "unknown" | null;
+  /** P12.T5 — human-readable justification for the AI blur verdict. */
+  readonly aiBlurReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -194,6 +203,36 @@ export interface UpsertExposureAnalysisInput {
    * `$.color`, …) are preserved on update via `json_set`.
    */
   readonly rawExposureJson: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Argument bag for `upsertAiBlurAnalysis` (P12.T5). Writes the two
+ * AI-blur columns added by migration 026:
+ *   * `ai_blur_class`  ∈ {sharp, maybe_blurry, blurry, unknown}
+ *   * `ai_blur_reason` — human-readable justification (CLAUDE.md §3.8)
+ *
+ * These columns are intentionally INDEPENDENT of the Code Laplacian
+ * fields (`blur_score`, `sharpness_score`, `is_blurry`,
+ * `raw_result.$.blur`) — the AI verdict and the Code verdict coexist
+ * (migration 026 header). This upsert therefore:
+ *   * Touches ONLY `ai_blur_class` + `ai_blur_reason` (and
+ *     `updated_at`).
+ *   * Leaves `reason` / `labels` / `raw_result` / `quality_score`
+ *     unchanged.
+ *
+ * The INSERT branch produces a minimal row (just media_id + the two
+ * AI columns) for the case where no Code blur worker has run yet on
+ * this media; sibling columns land at their SQL defaults.
+ */
+export interface UpsertAiBlurAnalysisInput {
+  /** Required to generate the row id on the INSERT branch. */
+  readonly id: string;
+  readonly mediaId: string;
+  /** Closed enum mirrored from the migration 026 CHECK. */
+  readonly aiBlurClass: "sharp" | "maybe_blurry" | "blurry" | "unknown";
+  /** Human-readable explanation surfaced by the UI (CLAUDE.md §3.8). */
+  readonly aiBlurReason: string;
   readonly updatedAt: string;
 }
 
@@ -280,6 +319,8 @@ const SELECT_COLUMNS = `
   labels,
   reason,
   raw_result,
+  ai_blur_class,
+  ai_blur_reason,
   created_at,
   updated_at
 `;
@@ -300,6 +341,8 @@ interface RawRow {
   labels: string | null;
   reason: string | null;
   raw_result: string | null;
+  ai_blur_class: string | null;
+  ai_blur_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -321,9 +364,21 @@ function rowToProjection(row: RawRow): MediaAnalysisRow {
     labels: row.labels,
     reason: row.reason,
     rawResult: row.raw_result,
+    aiBlurClass: normaliseAiBlurClass(row.ai_blur_class),
+    aiBlurReason: row.ai_blur_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normaliseAiBlurClass(
+  value: string | null,
+): "sharp" | "maybe_blurry" | "blurry" | "unknown" | null {
+  // The schema CHECK admits only NULL or one of the 4 enum values.
+  // Anything else means migration drift; the cast is documented here
+  // for clarity rather than re-validating at runtime.
+  if (value === null) return null;
+  return value as "sharp" | "maybe_blurry" | "blurry" | "unknown";
 }
 
 function normaliseBoolColumn(value: number | null): 0 | 1 | null {
@@ -385,6 +440,8 @@ export class MediaAnalysisRepository {
   private readonly upsertExposureStmt;
   private readonly upsertColorStmt;
   private readonly upsertFinalQualityStmt;
+  /** P12.T5 — writer for migration 026's two AI-blur columns. */
+  private readonly upsertAiBlurStmt;
   private readonly selectLabelsStmt;
   private readonly findByMediaIdStmt;
 
@@ -484,6 +541,28 @@ export class MediaAnalysisRepository {
     // current `labels` value for the dimension-vocab merge. A separate
     // statement (instead of reusing findByMediaIdStmt) avoids hauling
     // every column over for what is a one-string read.
+    // P12.T5 — touch ONLY ai_blur_class + ai_blur_reason + updated_at.
+    // ai_blur_class lives in its own enum CHECK independent of the
+    // existing Code blur columns; this upsert never reads or writes
+    // them, so the AI verdict and the Code verdict coexist (migration
+    // 026 header). The INSERT branch lands a minimal row when no Code
+    // blur worker has run yet.
+    this.upsertAiBlurStmt = db.prepare(`
+      INSERT INTO media_analysis (
+        id, media_id,
+        ai_blur_class, ai_blur_reason,
+        created_at, updated_at
+      ) VALUES (
+        @id, @mediaId,
+        @aiBlurClass, @aiBlurReason,
+        @updatedAt, @updatedAt
+      )
+      ON CONFLICT(media_id) DO UPDATE SET
+        ai_blur_class  = excluded.ai_blur_class,
+        ai_blur_reason = excluded.ai_blur_reason,
+        updated_at     = excluded.updated_at
+    `);
+
     this.selectLabelsStmt = db.prepare(`SELECT labels FROM media_analysis WHERE media_id = ?`);
 
     this.findByMediaIdStmt = db.prepare(`
@@ -621,6 +700,30 @@ export class MediaAnalysisRepository {
       qualityScore: input.qualityScore,
       reason: input.reason,
       rawFinalJson: input.rawFinalJson,
+      updatedAt: input.updatedAt,
+    });
+    return info.changes;
+  }
+
+  /**
+   * Write the AI-blur columns for one media row (P12.T5). Idempotent
+   * over the same inputs. Does NOT touch the Code Laplacian fields
+   * (`blur_score` / `sharpness_score` / `is_blurry` /
+   * `raw_result.$.blur`); the AI verdict and the Code verdict coexist
+   * (migration 026 header).
+   *
+   * Returns the number of rows changed. Always 1 on success (INSERT
+   * counts as 1; ON CONFLICT … DO UPDATE also reports 1). Throws on
+   * CHECK violation (an `ai_blur_class` outside the closed enum) or
+   * FK violation (media row deleted between caller's findById and
+   * this UPSERT).
+   */
+  upsertAiBlurAnalysis(input: UpsertAiBlurAnalysisInput): number {
+    const info = this.upsertAiBlurStmt.run({
+      id: input.id,
+      mediaId: input.mediaId,
+      aiBlurClass: input.aiBlurClass,
+      aiBlurReason: input.aiBlurReason,
       updatedAt: input.updatedAt,
     });
     return info.changes;

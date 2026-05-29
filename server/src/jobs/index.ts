@@ -267,4 +267,25 @@ export {
   type SceneGroupingSettings,
 } from "./sceneGroupingService.js";
 
+// P12.T5 — ai_blur_check baseline service. Per-media + per-trip
+// entry points; uses the LocalMock AIProvider stub (P12.T1) — no
+// real external AI calls. Writes media_analysis.ai_blur_class +
+// ai_blur_reason (migration 026) and ai_invocations rows with the
+// full P12 column set (migration 024). Cost cache via input_hash.
+export {
+  AI_BLUR_CHECK_ALGORITHM_VERSION,
+  AI_BLUR_CHECK_JOB_TYPE,
+  AI_BLUR_CHECK_REQUEST_TYPE,
+  AI_BLUR_CHECK_SOURCE_PREFERENCE,
+  AI_BLUR_CHECK_TARGET_TYPE,
+  DEFAULT_AI_BLUR_CHECK_SETTINGS,
+  runAiBlurCheckForMedia,
+  runAiBlurCheckForTrip,
+  type AiBlurCheckDeps,
+  type AiBlurCheckOutcome,
+  type AiBlurCheckSettings,
+  type MediaResult as AiBlurCheckMediaResult,
+  type TripResult as AiBlurCheckTripResult,
+} from "./aiBlurCheckService.js";
+
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

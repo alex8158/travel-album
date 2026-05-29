@@ -55,7 +55,9 @@ export {
 } from "./LocalMockProvider.js";
 export {
   AiInvocationsRepository,
+  type AiInvocationCacheLookup,
   type AiInvocationInsertData,
+  type AiInvocationInsertWithTargetsData,
   type AiInvocationMarkFailedArgs,
   type AiInvocationMarkSuccessArgs,
   type AiInvocationRow,

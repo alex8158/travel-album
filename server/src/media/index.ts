@@ -162,6 +162,7 @@ export {
   MediaAnalysisRepository,
   mergeDimensionLabels,
   type MediaAnalysisRow,
+  type UpsertAiBlurAnalysisInput,
   type UpsertBlurAnalysisInput,
   type UpsertColorAnalysisInput,
   type UpsertExposureAnalysisInput,
