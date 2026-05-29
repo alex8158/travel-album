@@ -190,3 +190,34 @@ export type {
   MediaVersionsView,
   SelectVersionResult,
 } from "./mediaTypes.js";
+
+// P12.T2 — curated-album pipeline data layer. Four new tables
+// (scene_groups / scene_group_items / curated_selections /
+// slideshow_renders) each get a thin repository. Workers / services
+// will be wired in P12.T4+; this re-export gives them a single
+// public surface.
+export {
+  SceneGroupsRepository,
+  type SceneGroupInsertData,
+  type SceneGroupView,
+} from "./sceneGroupsRepository.js";
+export {
+  SceneGroupItemsRepository,
+  type SceneGroupItemInsertData,
+  type SceneGroupItemView,
+} from "./sceneGroupItemsRepository.js";
+export {
+  CuratedSelectionsRepository,
+  type CuratedSelectionAiInsert,
+  type CuratedSelectionView,
+  type CuratedUserDecision,
+} from "./curatedSelectionsRepository.js";
+export {
+  SlideshowRendersRepository,
+  type SlideshowAudioPolicy,
+  type SlideshowMarkStatusOptions,
+  type SlideshowRenderInsertData,
+  type SlideshowRenderStatus,
+  type SlideshowRenderView,
+  type SlideshowTransitionType,
+} from "./slideshowRendersRepository.js";
