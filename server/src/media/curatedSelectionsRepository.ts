@@ -136,6 +136,8 @@ export class CuratedSelectionsRepository {
   private readonly upsertOverrideStmt;
   private readonly deleteOverrideByTripMediaStmt;
   private readonly deleteOverridesByTripStmt;
+  /** P12.T6 — scene_best_pick worker's idempotency primitive. */
+  private readonly deleteDraftsForGroupStmt;
   private readonly markRoundCurrentTxn;
 
   constructor(private readonly db: SqliteDatabase) {
@@ -281,6 +283,31 @@ export class CuratedSelectionsRepository {
       DELETE FROM curated_selections
        WHERE trip_id = ? AND selection_round = 0
     `);
+
+    // P12.T6 — scene_best_pick draft cleanup. Used by the worker for
+    // idempotent re-run: before INSERTing the new draft rows for a
+    // (trip, round, scene_group) tuple, the worker DELETEs any prior
+    // draft rows so the second run does not collide with the
+    // `(trip_id, selection_round, media_id)` UNIQUE index.
+    //
+    // Three predicates are deliberately layered:
+    //   * `selection_round = ?` AND `selection_round > 0` — never
+    //     touch the round=0 user-override layer (CLAUDE.md §3.9
+    //     red line; design.md §7.8.4).
+    //   * `scene_group_id = ?` — never touch other groups in the
+    //     same round.
+    //   * `user_decision IS NULL` — defence-in-depth: only AI / Code
+    //     rows are draftable. A row that somehow carries a
+    //     user_decision (would violate the layer-discipline CHECK,
+    //     but we still guard at the writer) is preserved.
+    this.deleteDraftsForGroupStmt = db.prepare(`
+      DELETE FROM curated_selections
+       WHERE trip_id = ?
+         AND selection_round = ?
+         AND selection_round > 0
+         AND scene_group_id = ?
+         AND user_decision IS NULL
+    `);
   }
 
   /** Insert an AI-layer row (round >= 1). user_decision is forced
@@ -402,6 +429,30 @@ export class CuratedSelectionsRepository {
   /** Batch override clear (Reset overrides). Returns the row count. */
   deleteOverridesByTrip(tripId: string): number {
     const info = this.deleteOverridesByTripStmt.run(tripId);
+    return info.changes;
+  }
+
+  /**
+   * P12.T6 — delete every AI-draft row for one (trip, round, scene
+   * group) tuple. The DELETE is scoped so the round=0 user-override
+   * layer and the rows of other scene groups in the same round are
+   * never touched. Returns the number of rows deleted.
+   *
+   * `selectionRound` must be >= 1 (round=0 is the user-override layer
+   * and is not reachable here by SQL anyway — the WHERE clause
+   * enforces `selection_round > 0`).
+   */
+  deleteDraftsForGroup(
+    tripId: string,
+    selectionRound: number,
+    sceneGroupId: string,
+  ): number {
+    if (selectionRound <= 0) {
+      throw new Error(
+        `CuratedSelectionsRepository.deleteDraftsForGroup: selectionRound must be >= 1 (got ${selectionRound})`,
+      );
+    }
+    const info = this.deleteDraftsForGroupStmt.run(tripId, selectionRound, sceneGroupId);
     return info.changes;
   }
 }

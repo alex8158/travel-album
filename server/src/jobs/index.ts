@@ -288,4 +288,30 @@ export {
   type TripResult as AiBlurCheckTripResult,
 } from "./aiBlurCheckService.js";
 
+// P12.T6 — scene_best_pick baseline service. Per-group + per-trip
+// entry points. Writes curated_selections draft rows (AI layer:
+// selection_round >= 1, is_current=0, no user_decision) for the
+// top-K members of each scene group. AI off / unsupported / provider
+// error → Code top-1 fallback (still writes a draft + an audit row).
+// Cost cache via input_hash on the canonical top-K mediaId list.
+export {
+  DEFAULT_SCENE_BEST_PICK_SETTINGS,
+  DEFAULT_SCENE_BEST_PICK_TOP_K,
+  SCENE_BEST_PICK_BLUR_MULTIPLIERS,
+  SCENE_BEST_PICK_DEFAULT_QUALITY,
+  SCENE_BEST_PICK_DUPLICATE_PENALTY,
+  SCENE_BEST_PICK_JOB_TYPE,
+  SCENE_BEST_PICK_REQUEST_TYPE,
+  SCENE_BEST_PICK_TARGET_TYPE,
+  SCENE_BEST_PICK_WORKER_VERSION,
+  computeScore as sceneBestPickComputeScore,
+  runSceneBestPickForGroup,
+  runSceneBestPickForTrip,
+  type GroupResult as SceneBestPickGroupResult,
+  type SceneBestPickDeps,
+  type SceneBestPickOutcome,
+  type SceneBestPickSettings,
+  type TripResult as SceneBestPickTripResult,
+} from "./sceneBestPickService.js";
+
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";

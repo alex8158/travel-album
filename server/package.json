@@ -90,7 +90,8 @@
     "smoke:migration-026": "tsx src/scripts/migration-026-smoke.ts",
     "smoke:migration-027": "tsx src/scripts/migration-027-smoke.ts",
     "smoke:scene-grouping-service": "tsx src/scripts/scene-grouping-service-smoke.ts",
-    "smoke:ai-blur-check-service": "tsx src/scripts/ai-blur-check-service-smoke.ts"
+    "smoke:ai-blur-check-service": "tsx src/scripts/ai-blur-check-service-smoke.ts",
+    "smoke:scene-best-pick-service": "tsx src/scripts/scene-best-pick-service-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
