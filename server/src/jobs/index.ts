@@ -247,4 +247,24 @@ export {
   type TrimAudioOptions,
 } from "./audioProcessor.js";
 
+// P12.T4 — scene_grouping baseline service. Pure function, no handler
+// registration (the orchestrator + scene_grouping job_type wiring land
+// in P12.T9). AI scene-embedding enrichment is a seam (typed
+// `SceneEmbeddingProvider`) that the baseline never invokes.
+export {
+  DEFAULT_SCENE_GROUPING_SETTINGS,
+  DEFAULT_SCENE_GROUPING_TIME_GAP_SECONDS,
+  SCENE_GROUPING_ALGORITHM_VERSION_CODE_TIME,
+  SCENE_GROUPING_JOB_TYPE,
+  SCENE_GROUPING_MAX_CANDIDATES,
+  runSceneGroupingForTrip,
+  type SceneEmbeddingProvider,
+  type SceneGroupingDeps,
+  type SceneGroupingPlanGroup,
+  type SceneGroupingPlanMember,
+  type SceneGroupingRequest,
+  type SceneGroupingResult,
+  type SceneGroupingSettings,
+} from "./sceneGroupingService.js";
+
 export type { JobInsertData, JobStatus, JobView, ProcessingJob } from "./jobTypes.js";
