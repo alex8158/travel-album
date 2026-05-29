@@ -83,7 +83,12 @@
     "smoke:migration-021": "tsx src/scripts/migration-021-smoke.ts",
     "smoke:migration-022": "tsx src/scripts/migration-022-smoke.ts",
     "smoke:scene-groups-repository": "tsx src/scripts/scene-groups-repository-smoke.ts",
-    "smoke:curated-selections-repository": "tsx src/scripts/curated-selections-repository-smoke.ts"
+    "smoke:curated-selections-repository": "tsx src/scripts/curated-selections-repository-smoke.ts",
+    "smoke:migration-023": "tsx src/scripts/migration-023-smoke.ts",
+    "smoke:migration-024": "tsx src/scripts/migration-024-smoke.ts",
+    "smoke:migration-025": "tsx src/scripts/migration-025-smoke.ts",
+    "smoke:migration-026": "tsx src/scripts/migration-026-smoke.ts",
+    "smoke:migration-027": "tsx src/scripts/migration-027-smoke.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

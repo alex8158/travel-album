@@ -181,11 +181,19 @@ async function main(): Promise<void> {
         "model_name",
         "params",
         "status",
+        // Added in migration 025 (P12.T3) — additive-only extension for
+        // the curated-album pipeline. params_hash + is_active + deleted_at
+        // are scaffolding for multi-history versions (wired in P12.T8);
+        // the global UNIQUE(media_id, version_type) is preserved so the
+        // existing MediaVersionsRepository.upsert keeps working.
+        "params_hash",
+        "is_active",
+        "deleted_at",
         "created_at",
         "updated_at",
       ];
       record(
-        "table_info: all 13 expected columns present",
+        "table_info: all 16 expected columns present",
         expected.every((c) => names.includes(c)) && names.length === expected.length,
         `columns=${JSON.stringify(names)}`,
       );
